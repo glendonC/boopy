@@ -292,4 +292,127 @@ export async function fieldReadiness(
   } catch {
     /* No ADB invocation on failure. */
   }
+  if (server) {
+    try {
+      const rows = (await deps.adb(['devices', '-l']))
+        .split('\n')
+        .map((line) => line.trim().split(/\s+/))
+        .filter((parts) => parts[1] === 'device' && parts.some((part) => part.startsWith('usb:')));
+      deviceCount = rows.length;
+      const chosen = selectedSerial
+        ? rows.find((parts) => parts[0] === selectedSerial)
+        : rows.length === 1
+          ? rows[0]
+          : undefined;
+      const serial = chosen?.[0];
+      if (serial && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(serial)) {
+        usb = true;
+        const prefix = ['-s', serial];
+        const mappings = await deps.adb([...prefix, 'reverse', '--list']);
+        reverseObserved = true;
+        reverse = mappings.split('\n').some((line) => {
+          const parts = line.trim().split(/\s+/);
+          return parts[1] === 'tcp:47900' && parts[2] === 'tcp:47900';
+        });
+        const packageOutput = await deps.adb([...prefix, 'shell', 'pm', 'path', 'com.boopy.quest']);
+        const apkPath = installedBaseApk(packageOutput);
+        installed = apkPath !== null;
+        if (apkPath !== null) {
+          try {
+            const output = await deps.adb([...prefix, 'shell', 'toybox', 'sha256sum', apkPath]);
+            const candidate = /^([a-fA-F0-9]{64}) {2}/.exec(output)?.[1];
+            const installedHash =
+              candidate &&
+              (output === `${candidate}  ${apkPath}` ||
+                output === `${candidate}  ${apkPath}\n` ||
+                output === `${candidate}  ${apkPath}\r\n`)
+                ? candidate.toLowerCase()
+                : undefined;
+            const localHash = await deps.hashFile(join(root, '../quest/Builds/Boopy.apk'));
+            if (installedHash && /^[a-f0-9]{64}$/.test(localHash))
+              artifactMatch = installedHash === localHash ? 'match' : 'mismatch';
+          } catch {
+            /* Unsupported hash or unavailable artifact remains unknown. */
+          }
+        }
+        const row = (await deps.adb([...prefix, 'shell', 'df', '-k', '/sdcard']))
+          .trim()
+          .split('\n')
+          .at(-1)
+          ?.trim()
+          .split(/\s+/);
+        if (row?.[3] && /^\d+$/.test(row[3])) {
+          const value = Number(row[3]);
+          if (Number.isSafeInteger(value)) freeStorageMiB = Math.floor(value / 1024);
+        }
+      }
+    } catch {
+      /* Preserve completed aggregate checks, never provider output. */
+    }
+  }
+  add('Existing local ADB server', server);
+  add('One explicitly selected or unambiguous authorized USB headset', usb);
+  checks.push({
+    check: 'Boopy USB reverse 47900',
+    status: reverse ? 'available' : reverseObserved ? 'missing' : 'unverified',
+    required: true,
+  });
+  checks.push({
+    check: 'Single Boopy base APK located (launch unverified)',
+    status: installed ? 'available' : 'unverified',
+    required: true,
+  });
+  checks.push({
+    check: 'Installed APK matches local APK',
+    status:
+      artifactMatch === 'match'
+        ? 'available'
+        : artifactMatch === 'mismatch'
+          ? 'missing'
+          : 'unverified',
+    required: true,
+  });
+  checks.push({
+    check: 'Headset free storage meets chosen reserve',
+    status:
+      freeStorageMiB === null ? 'unverified' : freeStorageMiB >= reserve ? 'available' : 'missing',
+    required: true,
+  });
+  return {
+    mode: 'read-only-mac-usb-field-preflight',
+    prerequisitesPassed: checks.every((entry) => !entry.required || entry.status === 'available'),
+    questOnlySupported: false,
+    inference: 'unverified',
+    deviceHttp: 'unverified',
+    recording: 'unverified',
+    wearerAcceptance: 'unverified',
+    consumerConnections: { muse: 'unverified', grok: 'unverified' },
+    artifactMatch,
+    sourceMapping: 'unverified',
+    usbDeviceCount: deviceCount,
+    freeStorageMiB,
+    chosenStorageReserveMiB: reserve,
+    limits:
+      'Prerequisites only. No model call, capture, recording, account delivery or source-checkpoint mapping is proven. APK match is only a bounded artifact comparison. No service or USB mapping is changed.',
+    checks,
+  };
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    const { values } = parseArgs({
+      options: { 'quest-only': { type: 'boolean' }, 'min-storage-mib': { type: 'string' } },
+    });
+    const result = await fieldReadiness({
+      questOnly: values['quest-only'],
+      minStorageMiB:
+        values['min-storage-mib'] === undefined ? undefined : Number(values['min-storage-mib']),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    process.exitCode = result.prerequisitesPassed ? 0 : 1;
+  } catch {
+    console.error(
+      'Field preflight could not finish. Check local selections; no capture or connection is claimed.',
+    );
+    process.exitCode = 1;
+  }
 }
