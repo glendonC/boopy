@@ -360,4 +360,118 @@ describe('bounded multiple-object segmentation', () => {
     assert.equal(calls, 3, 'two workers, then first completed worker starts one queued request');
     assert.equal(aborted, true);
   });
+  it('retains completed batched concept results at the budget boundary', async () => {
+    const completedResult = { outcome: 'no-match' as const, latencyMs: 0, confidence: null };
+    const segmenter: Segmenter = {
+      provider: 'meta',
+      model: 'sam-3.1',
+      segment: async () => completedResult,
+      segmentMany: async (_inputs, _signal, completed) => {
+        completed?.(0, completedResult);
+        return await new Promise<never>(() => {});
+      },
+    };
+    const results = await segmentItems(segmenter, [input, { ...input, concept: 'different' }], 10);
+    assert.deepEqual(results[0], completedResult);
+    assert.equal(results[1]?.outcome, 'failed');
+  });
+});
+
+describe('segmentation journal and opt-in', () => {
+  const fake = (outcome: 'contour' | 'failed'): Segmenter => ({
+    provider: 'meta',
+    model: 'sam-3.1',
+    segment: async () => ({
+      outcome,
+      latencyMs: 42,
+      confidence: null,
+      ...(outcome === 'contour' && {
+        contour: [
+          { x: 0.25, y: 0.4 },
+          { x: 0.6, y: 0.42 },
+          { x: 0.62, y: 0.7 },
+          { x: 0.28, y: 0.68 },
+        ],
+        mask: Buffer.from('synthetic mask'),
+      }),
+    }),
+  });
+  it('defaults to no hosted refinement or segmenter journal events', async () => {
+    const { boopy, journal } = testBoopy();
+    const view = await boopy.start(startRequest('Help me describe this trip.'));
+    assert.ok(view.items.every((i) => i.grounding.spatial === undefined));
+    assert.ok(journal.all().every((e) => e.type !== 'grounding.refined'));
+  });
+  it('journals proposed spatial evidence separately, replays it and retains it on commit', async () => {
+    const { boopy, deps, journal } = testBoopy({ segmenter: fake('contour') });
+    const view = await boopy.start(startRequest('Help me describe this trip.'));
+    const referent = view.items.find((i) => i.id === view.referentId);
+    assert.ok(referent);
+    assert.equal(referent.status, 'proposed');
+    assert.equal(referent.confidence, 0.85);
+    assert.equal(referent.grounding.spatial?.confidence, null);
+    assert.equal(referent.grounding.spatial?.verification, 'proposed');
+    assert.ok(referent.grounding.box !== undefined);
+    const event = journal.all().find((e) => e.type === 'grounding.refined');
+    assert.ok(event?.type === 'grounding.refined');
+    assert.equal(
+      event.data.spatial.frameSha256,
+      deps.media.put(Buffer.from(startRequest('x').frame.jpeg, 'base64'), 'jpg'),
+    );
+    assert.equal(event.actor, 'model:meta:sam-3.1');
+    assert.ok(event.data.spatial.maskSha256 !== undefined);
+    assert.equal(
+      deps.media.get(event.data.spatial.maskSha256, 'mask').toString(),
+      'synthetic mask',
+    );
+    const replay = new Boopy(deps);
+    assert.deepEqual(replay.view(view.id).items, view.items);
+    boopy.act(view.id, { itemId: referent.id, action: 'confirm' });
+    const committed = boopy.commit(view.id);
+    const saved = boopy
+      .package(committed.committed?.packageId ?? '')
+      ?.items.find((i) => i.id === referent.id);
+    assert.equal(saved?.verification, 'confirmed');
+    assert.equal(saved?.grounding.spatial?.verification, 'proposed');
+    assert.deepEqual(saved?.grounding.contour, referent.grounding.contour);
+  });
+  it('records failure while keeping interpretation, box, item confidence and status intact', async () => {
+    const { boopy, deps, journal } = testBoopy({ segmenter: fake('failed') });
+    const view = await boopy.start(startRequest('Help me describe this trip.'));
+    const referent = view.items.find((i) => i.id === view.referentId);
+    assert.equal(referent?.status, 'proposed');
+    assert.equal(referent?.confidence, 0.85);
+    assert.ok(referent?.grounding.box !== undefined);
+    assert.equal(referent.grounding.contour, undefined);
+    assert.equal(referent.grounding.spatial?.outcome, 'failed');
+    assert.match(view.notice ?? '', /\b3 outlines unavailable, shown as approximate boxes\./);
+    assert.equal((view.notice ?? '').includes(String.fromCharCode(0x2014)), false);
+    assert.equal(journal.all().filter((e) => e.type === 'interpretation.failed').length, 0);
+    assert.deepEqual(new Boopy(deps).view(view.id).items, view.items);
+  });
+  it('contains invalid segmenter geometry without turning successful interpretation into failure', async () => {
+    const segmenter: Segmenter = {
+      provider: 'meta',
+      model: 'sam-3.1',
+      segment: async () => ({
+        outcome: 'contour',
+        latencyMs: 1,
+        confidence: null,
+        contour: [
+          { x: -1, y: 0 },
+          { x: 1, y: 0 },
+          { x: 1, y: 1 },
+        ],
+        mask: Buffer.from('synthetic invalid geometry'),
+      }),
+    };
+    const { boopy, journal } = testBoopy({ segmenter });
+    const view = await boopy.start(startRequest('Help me describe this trip.'));
+    const referent = view.items.find((i) => i.id === view.referentId);
+    assert.equal(referent?.status, 'proposed');
+    assert.equal(referent?.grounding.spatial?.outcome, 'failed');
+    assert.equal(referent?.grounding.contour, undefined);
+    assert.match(view.notice ?? '', /approximate box/);
+    assert.equal(journal.all().filter((e) => e.type === 'interpretation.failed').length, 0);
+  });
 });
