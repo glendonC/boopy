@@ -367,3 +367,267 @@ function removeUnfinished(own: Created) {
     return 'own';
   }
 }
+
+/**
+ * Writes the content into an output file this process created, through its still open handle.
+ * When the write does not finish, the file is removed if its name still holds it, and the error
+ * says what happened; when the write finishes but the name no longer holds the file, the error
+ * says so instead of the command reporting the file written. The advice follows each error.
+ */
+async function fill(
+  own: Created & { name: string },
+  content: string,
+  advice: { failed: string; replaced: string },
+) {
+  try {
+    await own.file.writeFile(content, 'utf8');
+    await own.file.sync();
+  } catch {
+    const outcome = removeUnfinished(own);
+    const after =
+      outcome === 'removed'
+        ? ', so it was removed'
+        : outcome === 'other' || outcome === 'none'
+          ? `, and ${own.name} is no longer the file Boopy wrote`
+          : outcome === 'unknown'
+            ? `, and Boopy could not confirm ${own.name} is the file it wrote`
+            : '';
+    throw new Error(
+      [`Could not finish writing ${own.name}${after}.`, advice.failed].filter(Boolean).join(' '),
+    );
+  }
+  unfinished.delete(own);
+  const now = atName(own);
+  if (now === 'other')
+    throw new Error(
+      `${own.name} was replaced by another program while Boopy was writing it. ${advice.replaced}`,
+    );
+  if (now === 'none')
+    throw new Error(`${own.name} is no longer the file Boopy wrote. ${advice.replaced}`);
+  if (now === 'unknown')
+    throw new Error(`Boopy could not confirm ${own.name} is the file it wrote. ${advice.replaced}`);
+}
+
+async function writeNew(folderPath: string, name: string, content: string, replaced: string) {
+  const own = await claim(
+    join(folderPath, name),
+    name,
+    `${name} already exists in that folder or cannot be created; existing files are never overwritten.`,
+  );
+  try {
+    await fill(own, content, { failed: '', replaced });
+  } finally {
+    await own.file.close();
+  }
+}
+
+/** A regular file of at most 64 KiB of UTF-8, read at most one byte past the limit. */
+async function readInput(path: string): Promise<string> {
+  const refusal = () =>
+    new Error('Choose a regular UTF-8 file of at most 64 KiB, not a link, folder or device.');
+  let file: FileHandle;
+  try {
+    // Non-blocking, so a FIFO cannot hang the open; it is refused as not a regular file.
+    file = await open(
+      resolve(path),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch {
+    throw refusal();
+  }
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.size > MAX_FILE_BYTES) throw refusal();
+    const bytes = Buffer.alloc(MAX_FILE_BYTES + 1);
+    let total = 0;
+    while (total < bytes.length) {
+      const { bytesRead } = await file.read(bytes, total, bytes.length - total, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > MAX_FILE_BYTES) throw refusal();
+    // Keep a byte order mark so the service hashes exactly the bytes of the file.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      bytes.subarray(0, total),
+    );
+  } catch {
+    throw refusal();
+  } finally {
+    await file.close();
+  }
+}
+
+async function call(
+  connection: Connection,
+  path: string,
+  body?: unknown,
+  method = 'POST',
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const port = connection.port ?? 47901;
+  if (!Number.isInteger(port) || port < 1 || port > 65535)
+    throw new Error('Choose a valid local connector port.');
+  const token = await readConnectorToken(connection.dataDir);
+  let response: Response;
+  try {
+    response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      redirect: 'error',
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+        : AbortSignal.timeout(30_000),
+    });
+  } catch {
+    throw new Error('Could not reach the local Boopy connector. Is the Boopy service running?');
+  }
+  let answer: unknown;
+  try {
+    answer = JSON.parse(await bounded(response));
+  } catch {
+    throw new Error('The local Boopy connector gave an unreadable answer. Nothing was written.');
+  }
+  if (!response.ok) throw refused(response.status, answer);
+  return answer;
+}
+
+async function bounded(response: Response): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > RESPONSE_LIMIT) throw new Error('Answer too large.');
+      chunks.push(chunk.value);
+    }
+  } catch (error) {
+    await reader.cancel();
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** The service's code, words and issues, cleaned of anything that is not plain printable text. */
+function refused(status: number, answer: unknown): Error {
+  const failure = z
+    .object({
+      error: z.object({
+        code: z.string(),
+        message: z.string(),
+        issues: z.array(z.string()).optional(),
+      }),
+    })
+    .safeParse(answer);
+  if (!failure.success) return new Error(`Boopy refused this (${status}).`);
+  const plain = (text: string) => text.replace(/[^\P{C}]/gu, '?').slice(0, 300);
+  const { code, message, issues } = failure.data.error;
+  const named = /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : 'refused';
+  return new Error(
+    [
+      `Boopy refused this (${status} ${named}): ${plain(message)}`,
+      ...(issues ?? []).slice(0, 8).map((issue) => `- ${plain(issue)}`),
+    ].join('\n'),
+  );
+}
+
+const USAGE = `Usage:
+  pnpm activity ask --package ctx_ID --goal "your goal" [--preparation REQUEST_ID] [--language en] [--background "your note"]
+  pnpm activity request --package ctx_ID --goal "your goal" --out-dir FOLDER [--preparation REQUEST_ID] [--language en] [--background "your note"]
+  pnpm activity import --file ACTIVITY.json
+  pnpm activity export --submission sub_ID --out-dir FOLDER
+  pnpm activity reply --file REPLY.json
+Common options: --data-dir (default $BOOPY_DATA_DIR or ~/.boopy) and --port (default $BOOPY_CONNECTOR_PORT or 47901).`;
+
+async function main(args: string[]) {
+  const [command, ...rest] = args.filter((value, index) => !(index === 0 && value === '--'));
+  const { values } = parseArgs({
+    args: rest,
+    strict: true,
+    options: {
+      package: { type: 'string' },
+      goal: { type: 'string' },
+      preparation: { type: 'string' },
+      language: { type: 'string' },
+      background: { type: 'string' },
+      'out-dir': { type: 'string' },
+      file: { type: 'string' },
+      submission: { type: 'string' },
+      'data-dir': { type: 'string' },
+      port: { type: 'string' },
+    },
+  });
+  const port = values.port ?? process.env.BOOPY_CONNECTOR_PORT;
+  const connection = {
+    dataDir: values['data-dir'] ?? process.env.BOOPY_DATA_DIR ?? join(homedir(), '.boopy'),
+    ...(port === undefined ? {} : { port: Number(port) }),
+  };
+  const required = (value: string | undefined, name: string) => {
+    if (value === undefined) throw new Error(`Add --${name}.`);
+    return value;
+  };
+  switch (command) {
+    case 'ask':
+      return askActivity({
+        ...connection,
+        packageId: required(values.package, 'package'),
+        goal: required(values.goal, 'goal'),
+        ...(values.preparation === undefined ? {} : { preparationRequestId: values.preparation }),
+        ...(values.language === undefined ? {} : { personLanguage: values.language }),
+        ...(values.background === undefined ? {} : { background: values.background }),
+      });
+    case 'request':
+      return requestActivity({
+        ...connection,
+        packageId: required(values.package, 'package'),
+        goal: required(values.goal, 'goal'),
+        outDir: required(values['out-dir'], 'out-dir'),
+        ...(values.preparation === undefined ? {} : { preparationRequestId: values.preparation }),
+        ...(values.language === undefined ? {} : { personLanguage: values.language }),
+        ...(values.background === undefined ? {} : { background: values.background }),
+      });
+    case 'import':
+      return importActivity({ ...connection, file: required(values.file, 'file') });
+    case 'export':
+      return exportSubmission({
+        ...connection,
+        submissionId: required(values.submission, 'submission'),
+        outDir: required(values['out-dir'], 'out-dir'),
+      });
+    case 'reply':
+      return importReply({ ...connection, file: required(values.file, 'file') });
+    default:
+      throw new Error('Choose ask, request, import, export or reply.');
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // A stopped command removes the files it created and has not finished, while their names still
+  // hold them: an output file, so the next export into that folder is not refused, and the probe.
+  // A file another process has put at such a name is left and not mentioned.
+  for (const signal of ['SIGINT', 'SIGTERM'] as const)
+    process.once(signal, () => {
+      for (const own of unfinished)
+        if (removeUnfinished(own) === 'removed' && own.name !== null)
+          console.error(`Stopped before ${own.name} was finished, so it was removed.`);
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    });
+  try {
+    const result = await main(process.argv.slice(2));
+    console.log(result.message);
+    if ('exitCode' in result) process.exitCode = result.exitCode;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : 'The activity command failed.');
+    console.error(USAGE);
+    process.exitCode = process.argv.includes('ask') ? 2 : 1;
+  }
+}
