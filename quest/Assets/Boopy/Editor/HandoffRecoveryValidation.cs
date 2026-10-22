@@ -304,5 +304,121 @@ namespace Boopy.Quest.Editor
                 Directory.Delete(path);
             }
         }
+        private static void RecoveryLayouts(string path)
+        {
+            HangulFont.Install();new HandoffRecoveryStore(path).Save(Anchor());using var fixture=new Fixture(path);
+            var current=View(false);current.Id="ses_current_render";Call(fixture.App,"Apply",current);Call(fixture.App,"RestoreHandoffRecovery");
+            fixture.Console.Activate(ConsoleAction.Options);
+            foreach(var large in new[] {false,true})
+            {
+                if((fixture.Console.ComfortScale>1f)!=large)fixture.Console.Activate(ConsoleAction.Size);
+                RenderRecovery(fixture,"context-"+(large?"large":"standard"));
+            }
+            Release(fixture,ConsoleAction.Handoff);
+            fixture.Handler.Complete(0,HttpStatusCode.OK,Complete(new HandoffRequest {RequestId=Identity,PackageId="ctx_recovery"}));
+            foreach(var large in new[] {false,true})
+            {
+                if((fixture.Console.ComfortScale>1f)!=large)fixture.Console.Activate(ConsoleAction.Size);
+                var card=fixture.Console.GetComponentsInChildren<SpatialSurface>().Single(surface=>surface.name=="Evidence instrument");
+                Require(card.BodyText.Contains("Preparation ID: "+Identity) && card.BodyText.Contains("Dismiss removes only this headset recovery record.")
+                    && card.BodyText.Contains("Not sent yet"),"Recovery render lacks exact identity, local dismissal scope or no-delivery state.");
+                RenderRecovery(fixture,"receipt-"+(large?"large":"standard"));
+            }
+        }
+        private static void RenderRecovery(Fixture fixture,string name)
+        {
+            fixture.Eyes.rotation=Quaternion.identity;
+            var follow=fixture.Root.AddComponent<FollowConsole>();follow.Initialize(fixture.Eyes,fixture.Console.transform);
+            fixture.Console.Place(follow.DesiredPosition);UnityEngine.Object.DestroyImmediate(follow);
+            fixture.Console.RefreshVisuals(1f);Physics.SyncTransforms();
+            var camera=fixture.Eyes.GetComponent<Camera>();
+            if(camera==null)camera=fixture.Eyes.gameObject.AddComponent<Camera>();
+            camera.fieldOfView=58;camera.aspect=1;camera.nearClipPlane=.05f;camera.clearFlags=CameraClearFlags.SolidColor;
+            camera.backgroundColor=new Color(.15f,.17f,.19f);camera.allowHDR=false;camera.allowMSAA=false;
+            var target=new RenderTexture(1000,1000,24);target.Create();var image=new Texture2D(1000,1000,TextureFormat.RGB24,false);var prior=RenderTexture.active;
+            try
+            {
+                camera.targetTexture=target;camera.aspect=1;
+                foreach(var text in fixture.Console.GetComponentsInChildren<TextMeshPro>())text.ForceMeshUpdate(true,true);
+                // Save the exact projection first, including when a subsequent layout assertion fails.
+                camera.Render();RenderTexture.active=target;image.ReadPixels(new Rect(0,0,1000,1000),0,0);image.Apply();
+                var output=Path.Combine(Path.GetTempPath(),"boopy-handoff-recovery-"+name+".png");File.WriteAllBytes(output,image.EncodeToPNG());Debug.Log("Boopy recovery synthetic render: "+output);
+                foreach(var text in fixture.Console.GetComponentsInChildren<TextMeshPro>())
+                {
+                    Require(!text.isTextOverflowing,"Recovery copy overflows in "+name+": "+text.name+" = "+text.text);
+                    foreach(var glyph in text.textInfo.characterInfo.Take(text.textInfo.characterCount).Where(g=>g.isVisible))
+                        foreach(var corner in new[] {glyph.bottomLeft,glyph.topRight})
+                        {
+                            var at=camera.WorldToViewportPoint(text.transform.TransformPoint(corner));
+                            Require(at.z>0 && at.x>=0 && at.x<=1 && at.y>=0 && at.y<=1,"Recovery copy leaves viewport in "+name+": "+text.name+" = "+text.text);
+                        }
+                }
+                var controls=fixture.Console.GetComponentsInChildren<SpatialAction>().Where(action=>action.GetComponent<BoxCollider>().enabled).ToArray();
+                for(var x=0;x<controls.Length;x++)for(var y=x+1;y<controls.Length;y++)
+                    Require(!controls[x].GetComponent<BoxCollider>().bounds.Intersects(controls[y].GetComponent<BoxCollider>().bounds),
+                        "Recovery controls overlap: "+controls[x].Action+" / "+controls[y].Action);
+            }
+            finally {camera.targetTexture=null;RenderTexture.active=prior;UnityEngine.Object.DestroyImmediate(target);UnityEngine.Object.DestroyImmediate(image);}
+        }
+
+        private static void OpenRecovery(Fixture fixture){fixture.Console.Activate(ConsoleAction.Options);Release(fixture,ConsoleAction.Handoff);}
+        private sealed class Fixture:IDisposable
+        {
+            public readonly GameObject Root;public readonly Transform Eyes;public readonly ContextConsole Console;
+            public readonly DialogueStrip Dialogue;public readonly BoopyApp App;public readonly SessionScene Scene;
+            public readonly RecoveryTransport Handler=new RecoveryTransport();public readonly HandoffRecoveryStore Store;
+            public Fixture(string path)
+            {
+                Root=new GameObject("Synthetic durable preparation fixture");Eyes=new GameObject("Synthetic eyes").transform;Eyes.SetParent(Root.transform,false);
+                Console=ContextConsole.Create(Root.transform,Eyes);Console.Place(Vector3.forward);Dialogue=DialogueStrip.Create(Root.transform,Eyes);Console.DockDialogue(Dialogue);
+                Scene=SessionScene.Create(Root.transform,Root.AddComponent<RoomCamera>(),Eyes);Scene.PlaceConsole(Console);
+                Store=new HandoffRecoveryStore(path);App=Root.AddComponent<BoopyApp>();
+                Set(App,"head",Eyes);Set(App,"console",Console);Set(App,"dialogue",Dialogue);Set(App,"scene",Scene);
+                Set(App,"client",new ServiceClient(handler:Handler));Set(App,"handoffRecoveryStore",Store);Set(App,"handoffPollMilliseconds",0);
+            }
+            public void Dispose()=>UnityEngine.Object.DestroyImmediate(Root);
+        }
+        private static SessionView View(bool committed)
+        {
+            var view=new SessionView {Id="ses_recovery",State=committed?"committed":"review",Model=new ModelRef {Provider="fixture",Id="synthetic"},
+                Committed=committed?new Committed {PackageId="ctx_recovery",At="1970-01-01T12:00:00.000Z"}:null};
+            view.Items.Add(new Item {Id="itm_recovery",Kind="object",Label="Synthetic source",Status="proposed",Grounding=new Grounding {Kind="box",ObservationId="older-observation",Box=new Box2 {X0=.4f,Y0=.4f,X1=.6f,Y1=.6f}}});return view;
+        }
+        private static HandoffStatus Pending(HandoffRequest selected)=>new HandoffStatus {SessionId="ses_recovery",PackageId=selected.PackageId,RequestId=selected.RequestId,
+            ReceiptId="handoff_11111111-1111-4111-8111-111111111111",SelectionSha256=new string('a',64),Attempt=1,State="preparing-local"};
+        private static HandoffStatus Complete(HandoffRequest selected)=>HandoffPreparationValidation.Completed(selected,"ses_recovery");
+        private sealed class RecoveryTransport:HttpMessageHandler
+        {
+            public readonly List<string> Paths=new List<string>();public readonly List<HttpMethod> Methods=new List<HttpMethod>();public readonly List<TaskCompletionSource<HttpResponseMessage>> Status=new List<TaskCompletionSource<HttpResponseMessage>>();
+            public readonly TaskCompletionSource<HttpResponseMessage> CommitReply=new TaskCompletionSource<HttpResponseMessage>();
+            public readonly TaskCompletionSource<HttpResponseMessage> SessionReply=new TaskCompletionSource<HttpResponseMessage>();
+            public int Commits,Prepares,SessionReads;public bool HoldCommit,HoldSession;public bool SessionCommitted=true;public HandoffRequest? LastSelection;
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken cancel)
+            {
+                var path=request.RequestUri!.AbsolutePath;Paths.Add(path);Methods.Add(request.Method);
+                if(path=="/v1/health")return Task.FromResult(Reply(HttpStatusCode.OK,new {ok=true,service="boopy",interpreter=new {provider="fixture",model="synthetic"}}));
+                if(path=="/v1/sessions/ses_recovery"){Require(request.Method==HttpMethod.Get,"Session recovery must be GET-only.");SessionReads++;return HoldSession?SessionReply.Task:Task.FromResult(Reply(HttpStatusCode.OK,View(SessionCommitted)));}
+                if(path.EndsWith("/commit",StringComparison.Ordinal)){Commits++;return HoldCommit?CommitReply.Task:Task.FromResult(Reply(HttpStatusCode.OK,View(true)));}
+                Require(path.Contains("/handoff-preparations"),"Recovery touched unrelated service endpoint.");
+                if(request.Method==HttpMethod.Post){Prepares++;LastSelection=Wire.Read<HandoffRequest>(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());}
+                else Require(request.Method==HttpMethod.Get,"Preparation status must be GET-only.");
+                var pending=new TaskCompletionSource<HttpResponseMessage>();Status.Add(pending);return pending.Task;
+            }
+            public void Complete(int index,HttpStatusCode code,object body)=>Status[index].SetResult(Reply(code,body));
+        }
+        private static HttpResponseMessage Reply(HttpStatusCode code,object body)=>new HttpResponseMessage(code){Content=new StringContent(Wire.Write(body))};
+        private static void Release(Fixture fixture,ConsoleAction action)
+        {
+            fixture.Console.RefreshVisuals(1f);fixture.Dialogue.RefreshVisuals(1f);Physics.SyncTransforms();
+            var control=fixture.Console.GetComponentsInChildren<SpatialAction>().Single(value=>value.Action==action);
+            fixture.Eyes.rotation=Quaternion.LookRotation(control.transform.position-fixture.Eyes.position,Vector3.up);
+            Set(fixture.App,"pendingControl",action);Set(fixture.App,"pendingUsesHandRay",false);
+            Require((bool)Call(fixture.App,"ReleaseControl",new HandInput(true,null,null))!,"Released recovery control did not activate.");
+        }
+        private static string State(Fixture fixture)=>(string)Get(fixture.App,"handoffState")!;
+        private static object? Call(object target,string name,params object[] args)=>target.GetType().GetMethod(name,Flags)!.Invoke(target,args);
+        private static object? Get(object target,string name)=>target.GetType().GetField(name,Flags)!.GetValue(target);
+        private static void Set(object target,string name,object? value)=>target.GetType().GetField(name,Flags)!.SetValue(target,value);
+        private static void Require(bool value,string words){if(!value)throw new InvalidOperationException(words);}
     }
 }
