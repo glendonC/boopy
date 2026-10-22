@@ -307,5 +307,387 @@ namespace Boopy.Quest
             if (navigator.DetailsOpen) Pages();
             Compose(); Assemble(); gameObject.SetActive(true);
         }
+
+        private void Compose()
+        {
+            if (header == null || card == null || dock == null || options == null || bar == null || evidenceHit == null || headerHit == null) return;
+            header.gameObject.SetActive(true);
+            if(conversationPanelHeight > 0f) header.Configure("", "", header.BodyText, .145f);
+            conversationPanelHeight = 0f; dockedDialogue?.SetConversationContentHeight(0f);
+            var recoveryOffered = captureRecovery && !busy && mode != "listening" && mode != "processing";
+            var evidenceOffered = !captureRecovery && !busy && (mode == "review" || mode == "error") && ChoiceAvailable() && !taskShown;
+            var reviewing = mode == "review";
+            RefreshSuggestions();
+            shownSuggestionIds.Clear();
+            card.gameObject.SetActive(!recoveryOffered && !evidenceOffered && (savePreview || handoffOpen || (reviewing && readerOpen && navigator.Selected != null)));
+            dock.gameObject.SetActive(mode == "processing" || ((mode != "capture" || recoveryOffered || handoffOpen) && mode != "listening" && (!busy || keepChoiceVisible)));
+            options.gameObject.SetActive(!recoveryOffered && !evidenceOffered && optionsOpen && (dock.gameObject.activeSelf || mode == "capture"));
+            foreach (var action in actions.Values) action.gameObject.SetActive(false);
+            actions[ConsoleAction.Handoff].Label(handoffRecoveryOffered ? "Check earlier"
+                : handoffState == "prepared-local" ? "Preparation status" : handoffState == "changed" ? "Prepare again"
+                : handoffState == "not-prepared" || handoffState == "missing" ? "Prepare context"
+                : handoffState == "failed" ? "Retry preparation" : "Check preparation");
+            foreach (var action in new[] { ConsoleAction.Review, ConsoleAction.PrepareSave, ConsoleAction.Handoff }) actions[action].transform.SetParent(dock.transform, false);
+            itemCount!.gameObject.SetActive(card.gameObject.activeSelf && !savePreview && !handoffOpen && !navigator.DetailsOpen);
+            pageCount!.gameObject.SetActive(card.gameObject.activeSelf && !savePreview && !handoffOpen && navigator.DetailsOpen);
+            if (card.gameObject.activeSelf && !savePreview && !handoffOpen)
+            {
+                var selected = navigator.Selected!;
+                var state = ChipStyles.For(selected, false).Tag;
+                var words = navigator.DetailsOpen ? navigator.CurrentPage ?? "No additional evidence." : selected.Statement;
+                card.Configure(navigator.DetailsOpen ? "Source" : state, selected.Label, words,
+                    navigator.DetailsOpen ? .116f : .066f, .130f, maxTitleHeight: .044f);
+                // Stable mode capacity prevents hover inspection from moving action targets.
+                SetCardCapacity(navigator.DetailsOpen ? .370f : .310f);
+                itemCount.text = $"{navigator.ItemIndex + 1} of {navigator.ItemCount}";
+                pageCount.text = $"Page {navigator.PageIndex + 1} of {navigator.PageCount}";
+                var bottom = -card.Size.y / 2f;
+                Put(ConsoleAction.PreviousItem, -.144f, bottom + .102f, !navigator.DetailsOpen && navigator.HasPreviousItem);
+                Put(ConsoleAction.NextItem, .144f, bottom + .102f, !navigator.DetailsOpen && navigator.HasNextItem);
+                itemCount.transform.localPosition = new Vector3(0, bottom + .102f, -.005f);
+                Put(ConsoleAction.ToggleDetails, -.135f, bottom + .035f, true);
+                actions[ConsoleAction.ToggleDetails].Label(navigator.DetailsOpen ? "Back" : "Source");
+                Put(ConsoleAction.Confirm, .135f, bottom + .035f, navigator.DetailsOpen && navigator.CanConfirmSelected);
+                Put(ConsoleAction.ToggleIncluded, .135f, bottom + .035f, !navigator.DetailsOpen);
+                actions[ConsoleAction.ToggleIncluded].Label(ContextReview.IsExcluded(selected) ? "Include" : "Exclude");
+                if (navigator.DetailsOpen)
+                {
+                    Put(ConsoleAction.PreviousText, -.144f, bottom + .102f, navigator.HasPreviousPage);
+                    Put(ConsoleAction.NextText, .130f, bottom + .102f, navigator.HasNextPage);
+                    pageCount.transform.localPosition = new Vector3(-.006f, bottom + .102f, -.005f);
+                }
+                evidenceHit.center = new Vector3(0, .062f, -.004f);
+                evidenceHit.size = new Vector3(.410f, Mathf.Max(.060f, card.Size.y - .150f), .012f);
+                evidenceHit.enabled = !busy;
+            }
+            if (savePreview || handoffOpen)
+            {
+                card.Configure(savePreview ? "Destination · your Mac" : "For your agent",
+                    savePreview ? "Prepare context" : handoffState == "prepared-local" && !handoffRecoveryOffered ? "Ready on your Mac" : "Your selected context",
+                    savePreview ? ContextReview.SaveSummary(view!) :
+                    ManualHandoffWords(),
+                    handoffOpen ? .300f : .180f, .015f, maxTitleHeight: .055f);
+                evidenceHit.enabled = false;
+            }
+            if (dock.gameObject.activeSelf)
+            {
+                var questionRows = reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered;
+                var choice = questionRows ? ActiveChoice() : null;
+                var rowHeights = suggestions.Select((suggestion, index) => ConfigureQuestion(index == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo, suggestion.Question)).ToArray();
+                var questionHeight = questionRows ? rowHeights.Sum() + SpatialTheme.Gap * rowHeights.Length : 0f;
+                var choiceHeights = choice?.Options.Select((option, index) => ConfigureQuestion(ChoiceControl(index),
+                    (choice.SelectedOptionId == option.Id ? "Selected · " : "") + option.Label)).ToArray();
+                dock.Configure("", "", "", bottomSpace: choice == null ? questionHeight + .070f : .015f);
+                if (mode == "processing") { }
+                else if (recoveryOffered)
+                {
+                    actions[ConsoleAction.DismissCapture].Label("Start new");
+                    Put(ConsoleAction.CheckCapture, -.110f, 0, true);
+                    Put(ConsoleAction.DismissCapture, .095f, 0, true);
+                }
+                else if (evidenceOffered)
+                {
+                    Put(ConsoleAction.UseCurrentView, -.0975f, 0, true);
+                    Put(ConsoleAction.UseSpokenOnly, .120f, 0, true);
+                }
+                else if (savePreview || handoffOpen)
+                {
+                    Put(ConsoleAction.Back, -.130f, 0, true);
+                    Put(ConsoleAction.Save, .095f, 0, savePreview && ContextReview.CanSave(view) && !busy && !handoffStorageFailed);
+                    actions[ConsoleAction.DismissCapture].Label("Dismiss");
+                    Put(ConsoleAction.DismissCapture, .095f, 0, handoffOpen && handoffRecordAvailable && !busy);
+                }
+                else if (reviewing && optionsOpen) { }
+                else if (reviewing && readerOpen) Put(ConsoleAction.Review, 0, 0, true);
+                else if (reviewing && choice != null)
+                {
+                    conversationPanelHeight = choiceHeights!.Sum() + SpatialTheme.Gap * choiceHeights.Length + SpatialTheme.Target;
+                    header.ReserveHeight(dockedDialogue?.ConversationPanelHeight(conversationPanelHeight) ?? .160f+conversationPanelHeight);
+                    var bottom = -header.Size.y / 2f;
+                    foreach (var choiceAction in new[] { ConsoleAction.ChoiceOne, ConsoleAction.ChoiceTwo, ConsoleAction.ChoiceThree, ConsoleAction.SendChoice })
+                    {
+                        actions[choiceAction].transform.SetParent(header.transform, false);
+                        actions[choiceAction].SetInteractable(!busy && (choiceAction != ConsoleAction.SendChoice || choice.SelectedOptionId != null));
+                    }
+                    actions[ConsoleAction.SendChoice].Label(choice.SelectedOptionId == null ? "Choose one" : "Send to Boopy");
+                    Put(ConsoleAction.SendChoice, .065f, bottom + .012f + SpatialTheme.Target/2f, true);
+                    var choiceY = bottom + .012f + SpatialTheme.Target + SpatialTheme.Gap;
+                    for (var index = choice.Options.Count - 1; index >= 0; index--)
+                    {
+                        actions[ChoiceControl(index)].SetSelected(choice.SelectedOptionId == choice.Options[index].Id);
+                        Put(ChoiceControl(index), .065f, choiceY + choiceHeights[index] / 2f, true);
+                        choiceY += choiceHeights[index] + SpatialTheme.Gap;
+                    }
+                    dockedDialogue?.SetConversationContentHeight(conversationPanelHeight);
+                    dock.gameObject.SetActive(false);
+                }
+                else if (reviewing && taskActionLabel != null)
+                {
+                    // One row in the follow-ups' place: same control kind, same gap under the line, same backing.
+                    var rowHeight = ConfigureQuestion(ConsoleAction.AnswerTask, taskActionLabel);
+                    conversationPanelHeight = rowHeight;
+                    header.ReserveHeight(dockedDialogue?.ConversationPanelHeight(conversationPanelHeight) ?? .160f + conversationPanelHeight);
+                    var top = header.Size.y / 2f - .080f + (dockedDialogue?.ConversationAnswerBottom ?? -.064f) - .016f;
+                    actions[ConsoleAction.AnswerTask].transform.SetParent(header.transform, false);
+                    Put(ConsoleAction.AnswerTask, .065f, top - rowHeight / 2f, true);
+                    dockedDialogue?.SetConversationContentHeight(conversationPanelHeight);
+                    dock.gameObject.SetActive(false);
+                }
+                else if (reviewing && suggestions.Count > 0)
+                {
+                    conversationPanelHeight=rowHeights.Sum()+SpatialTheme.Gap*Mathf.Max(0,rowHeights.Length-1);
+                    header.ReserveHeight(dockedDialogue?.ConversationPanelHeight(conversationPanelHeight) ?? .160f+conversationPanelHeight);
+                    var top=header.Size.y/2f-.080f+(dockedDialogue?.ConversationAnswerBottom ?? -.064f)-.016f;
+                    for(var index=0;index<suggestions.Count;index++)
+                    {
+                        var control=index==0?ConsoleAction.FollowUpOne:ConsoleAction.FollowUpTwo;
+                        actions[control].transform.SetParent(header.transform,false);
+                        shownSuggestionIds[control]=suggestions[index].Id;
+                        Put(control,.065f,top-rowHeights[index]/2f,true);
+                        top-=rowHeights[index]+SpatialTheme.Gap;
+                    }
+                    dockedDialogue?.SetConversationContentHeight(conversationPanelHeight);
+                    dock.gameObject.SetActive(false);
+                }
+
+                actions[ConsoleAction.Review].Label(readerOpen ? "Done" : ContextLabel());
+                actions[ConsoleAction.PrepareSave].Label("Prepare context");
+
+            }
+            if (options.gameObject.activeSelf)
+            {
+                if (!settingsOpen)
+                {
+                    var earlier = handoffRecoveryOffered || handoffStorageFailed;
+                    var current = ContextReview.CanSave(view) && view?.Committed == null;
+                    var extraRow = earlier && current;
+                    options.Configure("", "", earlier
+                        ? handoffStorageFailed ? "Preparation recovery is unavailable. Dismiss only the headset record; context stays on your Mac."
+                            : "An earlier preparation needs checking. Checking restores only that selected context; nothing is sent."
+                        : view == null ? "Tell me what you see.\nKeep it on your Mac. Continue online when ready."
+                        : ContextReview.ConversationSummary(view) + "\nKeep it on your Mac. Continue online when ready.", maxBodyHeight: .220f,
+                        bottomSpace: extraRow ? .210f : view == null && !earlier ? .015f : .140f);
+                    var bottom = -options.Size.y / 2f;
+                    foreach (var action in new[] { ConsoleAction.Review, ConsoleAction.PrepareSave, ConsoleAction.Handoff }) actions[action].transform.SetParent(options.transform, false);
+                    Put(ConsoleAction.Review, 0, bottom + (extraRow ? .175f : .105f), navigator.Selected != null);
+                    Put(ConsoleAction.PrepareSave, 0, bottom + (extraRow ? .105f : .035f), current && !handoffStorageFailed);
+                    Put(ConsoleAction.Handoff, 0, bottom + .035f, earlier || view?.Committed != null);
+
+                }
+                else
+                {
+                    var connectionWords = connectionState == "connected" ? "Boopy is connected to your Mac."
+                        : connectionState == "unavailable" ? "Boopy can’t reach your Mac. Check the USB cable."
+                        : "Checking the connection to your Mac…";
+                    var sceneWords = liveSceneAvailable == true ? "Scene outlines are available."
+                        : liveSceneAvailable == false ? "Scene outlines are unavailable." : "Scene outline status is unknown.";
+                    var voiceWords = !speechAvailable ? "Voice is unavailable."
+                        : VoiceEnabled ? "Voice reads replies aloud." : "Voice is off.";
+                    options.Configure("Settings", "", connectionWords + "\n" + sceneWords + "\n" + voiceWords, maxBodyHeight: .180f, bottomSpace: .218f);
+                    var settingsBottom = -options.Size.y / 2f;
+                    Put(ConsoleAction.Size, -.108f, settingsBottom + .180f, true); Put(ConsoleAction.Sound, .108f, settingsBottom + .180f, true);
+                    Put(ConsoleAction.Motion, -.108f, settingsBottom + .109f, true);
+                    Put(ConsoleAction.Speech, .108f, settingsBottom + .109f, true);
+                    Put(ConsoleAction.EvidenceSource, 0, settingsBottom + .038f, true);
+                    actions[ConsoleAction.EvidenceSource].Label(InputPolicy.SpokenOnly ? "Include photo: off" : "Include photo: on");
+                    actions[ConsoleAction.Speech].Label(!speechAvailable ? "Voice unavailable" : VoiceEnabled ? "Voice: on" : "Voice: off");
+                    actions[ConsoleAction.Speech].SetInteractable(speechAvailable);
+                    actions[ConsoleAction.Motion].Label(reduced ? "Motion: reduced" : "Motion: full");
+                    actions[ConsoleAction.Size].Label(ComfortScale > 1f ? "Size: large" : "Size: standard");
+                    actions[ConsoleAction.Sound].Label(SoundEnabled ? "Sound: on" : "Sound: off");
+                }
+            }
+            // One stable row owns every global control in every conversation state.
+            foreach(var action in new[] { ConsoleAction.Options, ConsoleAction.Settings, ConsoleAction.Cancel, ConsoleAction.PauseScene, ConsoleAction.Talk, ConsoleAction.FinishTalk })
+                actions[action].transform.SetParent(bar.transform,false);
+            // Full-size horizontal labels: .540 m total span, 12 mm gaps inside the .560 m bar.
+            Put(ConsoleAction.Talk,-.214f,0f,!busy && !captureRecovery && mode!="listening");
+            Put(ConsoleAction.FinishTalk,-.214f,0f,buttonRecording);
+            Put(ConsoleAction.PauseScene,-.080f,0f,true);
+            Put(ConsoleAction.Options,.062f,0f,!busy && !captureRecovery && mode!="listening");
+            Put(ConsoleAction.Cancel,.062f,0f,mode=="processing" || buttonRecording || (busy && keepChoiceVisible) || (busy && (handoffState == "preparing-local" || handoffState == "checking")));
+            actions[ConsoleAction.Cancel].Label(buttonRecording ? "Cancel" : "Stop");
+            Put(ConsoleAction.Settings,.204f,0f,!busy && !captureRecovery && mode!="listening");
+            // Empty contextual rows no longer reserve space or draw a second control location.
+            if(!actions.Values.Any(action=>action.transform.parent==dock.transform && action.gameObject.activeSelf))dock.gameObject.SetActive(false);
+            if(mode=="capture" && !recoveryOffered)options.gameObject.SetActive(optionsOpen);
+            headerHit.center = Vector3.back * .004f; headerHit.size = new Vector3(header.Size.x, header.Size.y, .012f);
+            headerHit.enabled = !dialogueVisible && !recoveryOffered && !evidenceOffered && reviewing && !savePreview && !busy && view?.IntentId != null;
+            header.ReserveHeight(.160f);
+            if (companion != null)
+            {
+                companion.transform.localPosition = new Vector3(-.215f, conversationPanelHeight > 0f ? header.Size.y / 2f - .080f : 0f, -.018f);
+                companion.SetState(voicePreparing || (busy && mode != "processing") ? "processing" : mode == "capture" ? "idle" : mode);
+            }
+            // Protected-source fallback permits explicitly opened global settings only.
+            // Context shares this surface, but its summary and context actions remain conversation content.
+            if (controlsOnly && !settingsOpen) options.gameObject.SetActive(false);
+            // An explicit sheet takes the conversation's place; closing it restores the exact caption.
+            if (options.gameObject.activeSelf || card.gameObject.activeSelf) header.gameObject.SetActive(false);
+            var modules = new[] { bar, options, dock, card, header }.Where(surface => surface.gameObject.activeSelf).ToArray();
+            height = modules.Sum(surface => surface.Size.y) + SpatialTheme.Gap * Mathf.Max(0, modules.Length - 1);
+            // The bar stays put. Requested content unfolds upward from it.
+            var y = -bar.Size.y / 2f;
+            foreach (var surface in modules) { surface.transform.localPosition = new Vector3(0, y + surface.Size.y / 2f, 0); y += surface.Size.y + SpatialTheme.Gap; }
+            if(controlsOnly) { header.gameObject.SetActive(false); card.gameObject.SetActive(false); dock.gameObject.SetActive(false); headerHit.enabled=false; }
+            transform.localScale = Vector3.one * ComfortScale;
+            RefreshVisuals(0f);
+        }
+
+        private string ContextLabel()
+        {
+            var label = view?.Items.FirstOrDefault(item => item.Id == view.IntentId)?.Label;
+            return string.IsNullOrWhiteSpace(label) ? "Conversation" : label.Length <= 60 ? label : "Conversation";
+        }
+
+        /// <summary>Hide this dispatched response's choices locally; its accepted Mac outcome may be unknown.</summary>
+        public void SuppressSuggestions()
+        {
+            if (view?.Dialogue == null) return;
+            suppressedSuggestionSession = view.Id;
+            suppressedSuggestionUtterance = view.Dialogue.UtteranceId;
+            suppressedSuggestionAt = view.Dialogue.At;
+            Compose();
+        }
+        // Production docks its exact caption. Header-only console fixtures retain their standalone behavior.
+        private void RefreshSuggestions()
+        {
+            suggestions.Clear();
+            if (taskShown || view?.Dialogue == null || mode != "review" || busy || view.Committed != null
+                || view.Id == suppressedSuggestionSession && view.Dialogue.UtteranceId == suppressedSuggestionUtterance && view.Dialogue.At == suppressedSuggestionAt
+                || dockedDialogue != null && (!dialogueVisible || dockedDialogue.FullText != view.Dialogue.Text)
+                || view.Dialogue.Actions == null || view.Dialogue.Speaker != "boopy" || view.Dialogue.UtteranceId != view.Utterances.LastOrDefault()?.Id) return;
+            var ids = new HashSet<string>();
+            foreach (var action in view.Dialogue.Actions)
+            {
+                if (action == null || string.IsNullOrWhiteSpace(action.Id) || view.Dialogue.Actions.Count(candidate => candidate != null && candidate.Id == action.Id) != 1 || !ids.Add(action.Id) || string.IsNullOrWhiteSpace(action.Question) || action.Question.Length > 120) continue;
+                if (action.TargetItemId != null && !view.Items.Any(item => item.Id == action.TargetItemId && !ContextReview.IsExcluded(item))) continue;
+                if (action.ObservationId != null && !view.Observations.Any(observation => observation.Id == action.ObservationId)) continue;
+                suggestions.Add(action);
+                if (suggestions.Count == 2) break;
+            }
+        }
+        public ContextualAction? SuggestedAction(ConsoleAction action)
+        {
+            RefreshSuggestions();
+            var index = action == ConsoleAction.FollowUpOne ? 0 : action == ConsoleAction.FollowUpTwo ? 1 : -1;
+            return index >= 0 && index < suggestions.Count && actions[action].gameObject.activeInHierarchy
+                && shownSuggestionIds.TryGetValue(action, out var id) && suggestions[index].Id == id
+                && actions[action].AccessibleLabel == suggestions[index].Question ? suggestions[index] : null;
+        }
+        private static ConsoleAction ChoiceControl(int index) => index == 0 ? ConsoleAction.ChoiceOne : index == 1 ? ConsoleAction.ChoiceTwo : ConsoleAction.ChoiceThree;
+        private ChoiceCard? ActiveChoice() => !taskShown && view?.Dialogue?.Choice is ChoiceCard choice && choice.Supported
+            && (dockedDialogue == null || dialogueVisible && dockedDialogue.FullText == view.Dialogue.Text)
+            && view.Dialogue.Text.Trim() == choice.Prompt.Trim()
+            && view.Dialogue.Speaker == "boopy" && view.Dialogue.UtteranceId == view.Utterances.LastOrDefault()?.Id
+            && view.Committed == null && !(view.Id == suppressedCardSession && choice.Id == suppressedCardId) && mode == "review" ? choice : null;
+        public void SuppressDispatchedChoice()
+        {
+            suppressedCardSession = view?.Id; suppressedCardId = view?.Dialogue?.Choice?.Id; Compose();
+        }
+        public ChoiceSelection? SelectedChoice(ConsoleAction control)
+        {
+            var choice = ActiveChoice();
+            if (choice == null || busy || controlsOnly || !actions.TryGetValue(control, out var button) || !button.gameObject.activeInHierarchy) return null;
+            var index = control == ConsoleAction.ChoiceOne ? 0 : control == ConsoleAction.ChoiceTwo ? 1 : control == ConsoleAction.ChoiceThree ? 2 : -1;
+            var option = control == ConsoleAction.SendChoice ? choice.Options.FirstOrDefault(o => o.Id == choice.SelectedOptionId)
+                : index >= 0 && index < choice.Options.Count ? choice.Options[index] : null;
+            if (control == ConsoleAction.SendChoice && choice.SelectedOptionId == null) return null;
+            if (option == null || control != ConsoleAction.SendChoice && button.AccessibleLabel != (choice.SelectedOptionId == option.Id ? "Selected · " : "") + option.Label) return null;
+            return new ChoiceSelection { UtteranceId = view!.Dialogue!.UtteranceId, ResponseAt = view.Dialogue.At, CardId = choice.Id, OptionId = option.Id };
+        }
+
+        private float ConfigureQuestion(ConsoleAction action, string question)
+        {
+            var control = actions[action]; control.Label(question); control.SetLeftAligned(true);
+            var text = control.GetComponentsInChildren<TextMeshPro>(true).Single(label => label.name == "Verb");
+            var height = Mathf.Max(SpatialTheme.Target, SpatialTheme.Height(text, question, .384f) + .020f);
+            text.rectTransform.sizeDelta = new Vector2(.384f, height - .012f);
+            control.GetComponent<BoxCollider>().size = new Vector3(.400f, height, .012f);
+            control.GetComponentsInChildren<MeshRenderer>(true).Single(renderer => renderer.name == "Action surface").transform.localScale = new Vector3(.400f, height, 1f);
+            return height;
+        }
+
+        private string handoffState = "not-prepared";
+        private string? handoffRequestId;
+        public string HandoffStatusWords => handoffState == "prepared-local"
+            ? "Prepared on your Mac. Not sent yet."
+            : handoffState == "preparing-local" ? "Preparing on your Mac. Not sent yet."
+            : handoffState == "checking" ? "Checking preparation. Not sent yet."
+            : handoffState == "missing" ? "No preparation receipt found. Context kept. Not sent yet."
+            : handoffState == "changed" ? "Sources changed. Prepare again. Not sent yet."
+            : handoffState == "interrupted" ? "Context kept. Preparation status unknown. Not sent yet."
+            : handoffState == "failed" ? "Context kept. Preparation unavailable. Not sent yet."
+            : "Context kept on your Mac. Handoff not prepared. Not sent yet.";
+        public void SetHandoffState(string state, string? requestId = null)
+        {
+            handoffState = state;
+            if (state == "not-prepared") handoffRequestId = null;
+            if (requestId != null && requestId.Length <= 128 && requestId.All(character =>
+                character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+                character >= '0' && character <= '9' || character == '_' || character == '-')) handoffRequestId = requestId;
+            if (view?.Committed == null) return;
+            header!.Configure("", "", HandoffStatusWords, .145f);
+            Compose(); Assemble();
+        }
+        private string ManualHandoffWords()
+        {
+            if (handoffStorageFailed) return "Could not read or keep the preparation recovery record.\nDismiss removes only this headset recovery record. Context stays on your Mac.\nNothing has been sent.";
+            var id = handoffRecoveryOffered ? recoveryPackageId : view?.Committed?.PackageId;
+            if (handoffRecoveryOffered && string.IsNullOrEmpty(id)) return $"Earlier context needs checking.\nPreparation ID: {recoveryPreparationId}\nDismiss removes only this headset recovery record. Context stays on your Mac.\nNothing has been sent.";
+            // Service IDs are short ASCII identifiers. Never shrink arbitrary response text
+            // into an unreadable receipt or silently truncate an identifier used for export.
+            var valid = !string.IsNullOrEmpty(id) && id.Length <= 80 && id.All(character =>
+                character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+                character >= '0' && character <= '9' || character == '_' || character == '-');
+            var requestId = handoffRecoveryOffered ? recoveryPreparationId : handoffRequestId;
+            var preparationId = string.IsNullOrEmpty(requestId) ? "" : $"Preparation ID: {requestId}\n";
+            var recoveryWords = handoffRecoveryOffered ? "Earlier preparation needs checking. Nothing has been sent."
+                : HandoffStatusWords;
+            var dismissWords = handoffRecordAvailable ? "\nDismiss removes only this headset recovery record. Context stays on your Mac." : "";
+            return valid ? $"Context ID: {id}\n{preparationId}{recoveryWords}{dismissWords}"
+                : "Context ID unavailable.\nCheck the context receipt on your Mac.\nNothing has been sent.";
+        }
+
+        private void SetCardCapacity(float capacity)
+        {
+            // Capacity is reserved across selected items; measured text retains its own hierarchy.
+            card!.ReserveHeight(capacity);
+        }
+        private static string ShortId(string? id) => id == null ? "Context saved" : id.Length > 18 ? id.Substring(0, 18) + "..." : id;
+        private static string GeometryCue(Item item) => item.Grounding.Spatial?.Outcome == "contour" && item.Grounding.Contour?.Count >= 3
+            ? "Proposed contour" : item.Grounding.Kind == "box" && item.Grounding.Box != null
+            ? "Approximate box" : item.Grounding.Kind == "point" && item.Grounding.Point != null
+            ? "Image point" : item.Grounding.Kind == "scene" ? "Scene / no object position" : "Position unknown";
+        private void Put(ConsoleAction action, float x, float y, bool show)
+        {
+            var control = actions[action]; control.gameObject.SetActive(show);
+            control.transform.localPosition = new Vector3(x, y, -.001f);
+        }
+        private void Assemble()
+        {
+            foreach (var module in new[] { header, card, dock, options, bar })
+                if (module != null && module != bar && module.gameObject.activeSelf) module.Assemble(0f, reduced);
+            RefreshVisuals(0f);
+        }
+
+        public void Inspect(Item? item)
+        { if (item == null || mode != "review" || readerOpen || savePreview || navigator.DetailsOpen || !navigator.Select(item.Id)) return; Compose(); }
+        public void SetOverflow(int count) { overflow = Mathf.Max(0, count); }
+        public void SetBusy(bool on, bool retainChoice = false) { busy = on; keepChoiceVisible = on && retainChoice; Compose(); }
+        private bool ChoiceDismissed() => view?.State == "review" && view.Committed == null && view.Attention != null && !string.IsNullOrWhiteSpace(view.Attention.UtteranceId) && view.Utterances.LastOrDefault()?.Id == view.Attention.UtteranceId && dismissedChoiceSession == view.Id && dismissedChoiceId == view.Attention.UtteranceId && nextTurnInstruction != null;
+        private bool ChoiceAvailable() => view?.State == "review" && view.Committed == null && view.Attention != null && !string.IsNullOrWhiteSpace(view.Attention.UtteranceId)
+            && view.Utterances.LastOrDefault()?.Id == view.Attention.UtteranceId
+            && (view.Attention.Action == "fresh-view" || view.Attention.Action == "clarify")
+            && (view.Attention.Source == "current-surroundings" || view.Attention.Source == "unknown")
+            && !ChoiceDismissed();
+        private void SelectEvidenceChoice(bool spoken)
+        {
+            if ((mode != "review" && mode != "error") || !ChoiceAvailable() || !(spoken ? InputPolicy.SelectSpokenOnly() : InputPolicy.SelectCurrentView())) return;
+            dismissedChoiceId = view!.Attention!.UtteranceId; dismissedChoiceSession = view.Id;
+            nextTurnInstruction = spoken ? "Talk with photo sharing off." : "Look toward the subject, then Talk.";
+            header!.Configure("Next turn", "", nextTurnInstruction, .145f);
+            Compose(); Assemble();
+        }
     }
 }
