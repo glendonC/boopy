@@ -1,0 +1,49 @@
+{
+  "name": "boopy-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "dev": "node --watch src/main.ts",
+    "probe:muse": "node src/cli/muse-probe.ts",
+    "probe:quest": "node src/cli/quest-health-probe.ts",
+    "simulate": "node src/cli/simulate.ts",
+    "ocr:build": "node src/cli/build-ocr.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "node --test --test-concurrency=2 --test-reporter=spec 'src/**/*.test.ts'",
+    "check": "pnpm typecheck && pnpm lint && pnpm test",
+    "demo:muse": "node src/cli/muse-connector-demo.ts",
+    "export:handoff": "node src/cli/export-handoff.ts",
+    "probe:hackathon": "node src/cli/hackathon-rehearsal.ts",
+    "probe:meterless": "node src/cli/meterless-rehearsal.ts",
+    "export:context": "node src/cli/export-context.ts",
+    "probe:local": "node src/cli/local-rehearsal.ts",
+    "demo:readiness": "node src/cli/demo-readiness.ts",
+    "probe:local-model": "node src/cli/local-model-rehearsal.ts",
+    "export:prepared": "node src/cli/export-prepared.ts",
+    "export:bundle": "node src/cli/export-handoff-bundle.ts",
+    "probe:field": "node src/cli/field-readiness.ts",
+    "activity": "node src/cli/activity.ts"
+  },
+  "dependencies": {
+    "@meta-sam/parser": "0.1.0",
+    "@modelcontextprotocol/client": "^2.3.0",
+    "@modelcontextprotocol/fastify": "^2.0.1",
+    "@modelcontextprotocol/node": "^2",
+    "@modelcontextprotocol/server": "^2.3.0",
+    "fastify": "^5.12.5",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/node": "^24",
+    "typescript": "^7.0.2"
+  }
+}

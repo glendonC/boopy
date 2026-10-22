@@ -1,0 +1,43 @@
+.DS_Store
+.env
+.env.*
+!service/.env.example
+*.log
+
+# Node
+node_modules/
+__pycache__/
+*.pyc
+service/.data/
+service/coverage/
+
+# Unity
+quest/[Ll]ibrary/
+quest/[Tt]emp/
+quest/[Oo]bj/
+quest/[Ll]ogs/
+quest/[Bb]uilds/
+quest/[Uu]ser[Ss]ettings/
+quest/.utmp/
+quest/*.csproj
+quest/*.sln
+quest/*.slnx
+quest/Assets/Resources/DevAgentSettings.asset
+quest/Assets/Resources/DevAgentSettings.asset.meta
+*.apk
+
+# .NET
+bin/
+obj/
+
+# Local scratch, notes, artwork, and lead state. Not part of the public tree.
+.private/
+.lead/
+design/
+
+# Service build outputs
+service/.build/
+
+# Created by Unity builds, empty
+quest/Assets/StreamingAssets/
+quest/Assets/StreamingAssets.meta
