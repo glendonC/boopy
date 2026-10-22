@@ -298,8 +298,11 @@ headset listener opens. They make no hosted calls and do not fall back to anothe
 
 - `BOOPY_LIVE_SCENE=local` requires `BOOPY_SCENE_PYTHON`, `BOOPY_SCENE_DETECTOR`, and
   `BOOPY_SCENE_SEGMENTER` absolute paths. `POST /v1/scene/observe` accepts one UUID-tagged frame and
-  returns proposed Grounding DINO/SAM2 contours with the source and mask ids. The separate scene
-  journal keeps geometry and hashes, not image bytes. No live observation enters a Muse package.
+  returns proposed Grounding DINO/SAM2 contours with the source and mask ids. Each outline's name is
+  the single vocabulary word the detector scores highest for that box, its confidence is that word's
+  own score, and it stays a proposal; a box whose best word is under the text threshold, or exactly
+  tied with another word, is left out. The separate scene journal keeps geometry and hashes, not
+  image bytes. No live observation enters a Muse package.
 - `BOOPY_SPEECH_OUTPUT=qwen` requires `BOOPY_VOICE_PYTHON` and `BOOPY_VOICE_MODEL` absolute paths.
   The selected model is Qwen3-TTS 1.7B 8-bit, with one Sohee voice across English/Korean. Output is
   native 24 kHz PCM16. Synthesis failures leave captions; there is no system-voice fallback.
