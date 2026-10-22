@@ -394,4 +394,140 @@ export async function exportHandoff(
       };
     }
   }
+  const supplementText = renderSelectedSupplement(supplement);
+  const packet = [
+    options.synthetic
+      ? 'FICTIONAL SYNTHETIC BOOPY REHEARSAL. NOT PERSONAL HISTORY.'
+      : 'BOOPY CONTEXT: MANUAL ASSISTANT HANDOFF.',
+    'Nothing has been sent to Muse. Review these files and choose what to paste. No consumer account or delivery is verified.',
+    'Use exact authored words and per-item verification. Accepted model proposals are unconfirmed. Do not infer personal activities, transport, feelings, intensity or event dates from them.',
+    '',
+    'BASELINE: exact immutable exported package.',
+    baselineText,
+    '',
+    'SEPARATE OPTIONAL SUPPLEMENT: explicitly selected evidence; does not modify the baseline package.',
+    supplementText,
+  ].join('\n');
+  const manifest = {
+    type: 'boopy.manual-handoff',
+    version: 1,
+    synthetic: options.synthetic ?? false,
+    baseline: {
+      status: 'available',
+      packageId: options.packageId,
+      file: files.baseline,
+      sha256: createHash('sha256').update(baselineText).digest('hex'),
+    },
+    memory,
+    references,
+    files,
+    delivery: { transport: 'manual', sentToMuse: false, account: 'not-checked' },
+  };
+  await writePrivate(join(directory, files.supplement), supplementText);
+  await writePrivate(join(directory, files.packet), packet);
+  await writePrivate(join(directory, files.manifest), JSON.stringify(manifest, null, 2));
+  return {
+    ...manifest,
+    outputDirectory: directory,
+    artifacts: { baselineText, supplementText, supplement, packet },
+  };
+}
+
+async function writePrivate(path: string, text: string) {
+  const file = await open(path, 'wx', 0o600);
+  try {
+    await file.writeFile(text, 'utf8');
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+async function boundedJson(response: Response): Promise<unknown> {
+  if (!response.ok || !response.body) {
+    await response.body?.cancel();
+    throw new Error('Optional module unavailable.');
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > 2 * 1024 * 1024) throw new Error('Optional result too large.');
+      chunks.push(chunk.value);
+    }
+  } catch (error) {
+    await reader.cancel();
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+if (import.meta.main) {
+  try {
+    const { values } = parseArgs({
+      args: process.argv.slice(2).filter((value, index) => !(index === 0 && value === '--')),
+      options: {
+        package: { type: 'string' },
+        'data-dir': { type: 'string' },
+        'output-dir': { type: 'string' },
+        port: { type: 'string' },
+        'memory-package': { type: 'string', multiple: true },
+        'memory-query': { type: 'string' },
+        synthetic: { type: 'boolean' },
+        'reference-package': { type: 'string' },
+        'reference-item': { type: 'string' },
+        'reference-id': { type: 'string' },
+        'reference-concept': { type: 'string' },
+        'reference-credentials': { type: 'string' },
+      },
+    });
+    if (
+      !values.package ||
+      !values['data-dir'] ||
+      !values['output-dir'] ||
+      !!values['memory-package'] !== !!values['memory-query']
+    )
+      throw new Error('Choose explicit sources and output.');
+    const referenceValues = [
+      values['reference-package'],
+      values['reference-item'],
+      values['reference-id'],
+      values['reference-concept'],
+      values['reference-credentials'],
+    ];
+    if (referenceValues.some(Boolean) && !referenceValues.every(Boolean))
+      throw new Error('Choose complete explicit reference mapping.');
+    const result = await exportHandoff({
+      packageId: values.package,
+      dataDir: values['data-dir'],
+      outputDirectory: values['output-dir'],
+      ...(values.port ? { port: Number(values.port) } : {}),
+      ...(values['memory-package'] && values['memory-query']
+        ? { memory: { packageIds: values['memory-package'], query: values['memory-query'] } }
+        : {}),
+      synthetic: values.synthetic ?? false,
+      ...(referenceValues.every(Boolean)
+        ? {
+            references: ReferenceSelection.parse({
+              packageId: values['reference-package'],
+              itemId: values['reference-item'],
+              conceptKey: values['reference-concept'],
+              referenceId: values['reference-id'],
+              credentialFile: values['reference-credentials'],
+            }),
+          }
+        : {}),
+    });
+    const { artifacts: _artifacts, ...summary } = result;
+    console.log(JSON.stringify(summary, null, 2));
+  } catch {
+    console.error(
+      'Manual handoff export failed. Any completed private baseline remains in the chosen directory. No assistant delivery is claimed.',
+    );
+    process.exitCode = 1;
+  }
 }
