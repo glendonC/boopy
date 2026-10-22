@@ -1521,4 +1521,164 @@ export class Boopy {
     }
     return lines;
   }
+
+  #processing(
+    session: string,
+    stage: TurnStage,
+    utteranceId: string | null,
+    observationId: string | null,
+  ): void {
+    const observer = this.#turnProgress.getStore();
+    if (!observer) return;
+    this.#record({
+      type: 'turn.processing',
+      session,
+      actor: 'system',
+      data: { stage, utteranceId, observationId },
+    });
+    // A disconnected status observer must never fail journaled conversation work.
+    try {
+      observer(stage);
+    } catch {
+      /* Transport observers are optional. */
+    }
+  }
+
+  #correct(session: string, correction: Correction): void {
+    this.#record({ type: 'item.corrected', session, actor: 'person', data: correction });
+  }
+
+  /** The card the person meant: the one under the ray, else the one whose name they said. */
+  #target(session: SessionState, targetItemId: string | null, said: string): Item | null {
+    if (targetItemId !== null) {
+      return session.items.find((item) => item.id === targetItemId) ?? null;
+    }
+    const words = ` ${normalizeWords(said)} `;
+    const named = session.items.filter((item) =>
+      [item.label, item.gloss].some(
+        (name) =>
+          name !== undefined && name.trim() !== '' && words.includes(` ${normalizeWords(name)} `),
+      ),
+    );
+    return named.length === 1 ? (named[0] ?? null) : null;
+  }
+
+  #voiceCorrection(sessionId: string, reading: Reading, heard: Heard, targetItemId: string | null) {
+    const session = this.#open(sessionId);
+    const item = this.#target(session, targetItemId, heard.text);
+    if (item === null) {
+      this.#notices.set(sessionId, 'Which one? Point at a card and say it again.');
+      return;
+    }
+    const via = 'voice';
+    const utteranceId = heard.utteranceId;
+    switch (reading.kind) {
+      case 'item':
+        this.#correct(sessionId, {
+          op: reading.action,
+          itemId: item.id,
+          via,
+          utteranceId,
+          ...(reading.reason !== undefined && { reason: reading.reason }),
+        });
+        this.#notices.set(sessionId, actionNotice(reading.action, item.label));
+        return;
+      case 'relabel':
+        this.#correct(sessionId, {
+          op: 'relabel',
+          itemId: item.id,
+          label: reading.label,
+          via,
+          utteranceId,
+        });
+        this.#notices.set(sessionId, `Renamed "${item.label}" to "${reading.label}".`);
+        return;
+      case 'note':
+        this.#correct(sessionId, {
+          op: 'note',
+          itemId: item.id,
+          note: reading.text,
+          via,
+          utteranceId,
+        });
+        this.#notices.set(sessionId, `Added your note to "${item.label}".`);
+        return;
+    }
+  }
+
+  #add(
+    sessionId: string,
+    text: string,
+    cues: Cues,
+    observationId: string | null,
+    utteranceId: string,
+  ) {
+    const words = text.trim();
+    const label = words.split(/\s+/).slice(0, 5).join(' ');
+    const pointer = cues.pointer;
+    const item: Item = {
+      id: this.#newId('itm'),
+      kind: 'note',
+      label,
+      statement: words,
+      grounding:
+        pointer !== undefined && observationId !== null
+          ? { kind: 'point', observationId, point: pointer.point }
+          : { kind: 'scene' },
+      confidence: null,
+      origin: 'person',
+      status: 'confirmed',
+      emphasis: false,
+    };
+    this.#correct(sessionId, { op: 'add', item, via: 'voice', utteranceId });
+    this.#notices.set(sessionId, `Added "${label}".`);
+  }
+
+  #commit(sessionId: string): void {
+    const session = this.#open(sessionId);
+    const packageId = this.#newId('ctx');
+    const pkg = buildPackage(session, {
+      packageId,
+      committedAt: this.#now().toISOString(),
+      service: this.#deps.service,
+    });
+    this.#record({
+      type: 'context.committed',
+      session: sessionId,
+      actor: 'person',
+      data: { packageId, package: pkg },
+    });
+    this.#notices.set(sessionId, 'Ready on your Mac. Not sent.');
+  }
+}
+
+function actionNotice(action: string, label: string): string {
+  switch (action) {
+    case 'confirm':
+      return `Confirmed "${label}".`;
+    case 'reject':
+      return `Marked "${label}" as not right.`;
+    case 'ignore':
+      return `Ignoring "${label}".`;
+    case 'known':
+      return `Noted that you already know "${label}".`;
+    case 'matters':
+      return `"${label}" matters.`;
+    default:
+      return `"${label}" is back to a proposal.`;
+  }
+}
+
+/** One line on what a package holds. */
+export function summarize(pkg: ContextPackage): string {
+  const count = (verification: string) =>
+    pkg.items.filter((item) => item.verification === verification).length;
+  const parts = [
+    `${count('confirmed') + count('corrected')} confirmed`,
+    `${count('accepted')} accepted`,
+    `${count('authored')} added`,
+    `${pkg.known.length} known`,
+    `${pkg.rejected.length} rejected`,
+  ];
+  return parts.join(', ');
 }
