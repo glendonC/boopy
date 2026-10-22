@@ -689,5 +689,128 @@ namespace Boopy.Quest
             header!.Configure("Next turn", "", nextTurnInstruction, .145f);
             Compose(); Assemble();
         }
+        public Item? NextEvidence() => Activate(ConsoleAction.NextItem);
+
+        public Item? Activate(ConsoleAction action)
+        {
+            if (busy || captureRecovery) return navigator.Selected;
+            if (action == ConsoleAction.UseCurrentView || action == ConsoleAction.UseSpokenOnly)
+            { SelectEvidenceChoice(action == ConsoleAction.UseSpokenOnly); return navigator.Selected; }
+            switch (action)
+            {
+                case ConsoleAction.Actions: actionsOpen = !actionsOpen; optionsOpen = false; break;
+                case ConsoleAction.Review: handoffOpen = false; readerOpen = !readerOpen; actionsOpen = false; optionsOpen = false; break;
+                case ConsoleAction.PrepareSave: actionsOpen = false; savePreview = ContextReview.CanSave(view); readerOpen = false; optionsOpen = false; break;
+                case ConsoleAction.Handoff: handoffOpen = true; optionsOpen = false; break;
+                case ConsoleAction.Back: actionsOpen = false; optionsOpen = false; savePreview = false; handoffOpen = false; break;
+                case ConsoleAction.PreviousItem: navigator.MoveItem(-1); break;
+                case ConsoleAction.NextItem: navigator.MoveItem(1); break;
+                case ConsoleAction.ToggleDetails: navigator.SetDetailsOpen(!navigator.DetailsOpen); if (navigator.DetailsOpen) Pages(); break;
+                case ConsoleAction.PreviousText: navigator.MovePage(-1); break;
+                case ConsoleAction.NextText: navigator.MovePage(1); break;
+                case ConsoleAction.Settings: optionsOpen = !optionsOpen || !settingsOpen; settingsOpen = true; actionsOpen = false; readerOpen = false; savePreview = false; handoffOpen = false; break;
+                case ConsoleAction.Options: optionsOpen = !optionsOpen || settingsOpen; settingsOpen = false; readerOpen = false; savePreview = false; handoffOpen = false; break;
+                case ConsoleAction.Size: ComfortScale = ComfortScale > 1f ? 1f : 1.2f; if (Application.isPlaying) PlayerPrefs.SetInt("Boopy.LargeText", ComfortScale > 1f ? 1 : 0); break;
+                case ConsoleAction.Sound: SoundEnabled = !SoundEnabled; if (Application.isPlaying) PlayerPrefs.SetInt("Boopy.Sound", SoundEnabled ? 1 : 0); break;
+                case ConsoleAction.EvidenceSource: InputPolicy.Toggle(); if (mode == "capture") ConfigureOpening(); Assemble(); break;
+                case ConsoleAction.Speech:
+                    if (!speechAvailable) break;
+                    voicePreferred = !voicePreferred; VoiceEnabled = voicePreferred;
+                    if (Application.isPlaying) SaveVoicePreference();
+                    break;
+                case ConsoleAction.Motion: reduced = !reduced; if (Application.isPlaying) PlayerPrefs.SetInt("Boopy.Motion", reduced ? 0 : 1); Assemble(); break;
+            }
+            Compose();
+            if (action == ConsoleAction.Actions || action == ConsoleAction.Settings || action == ConsoleAction.PrepareSave || action == ConsoleAction.Back || action == ConsoleAction.Handoff || action == ConsoleAction.Review || action == ConsoleAction.ToggleDetails || action == ConsoleAction.Options) Assemble();
+            return navigator.Selected;
+        }
+
+        private void Pages()
+        {
+            if (navigator.Selected == null || card == null) return;
+            var selected = navigator.Selected;
+            var words = "Detail: " + selected.Label + "\n" + ChipStyles.For(selected, false).Tag + " / " + GeometryCue(selected) + "\n" + ContextReview.Evidence(selected);
+            var initial = view?.Utterances.FirstOrDefault(item => item.Kind == "ask");
+            if (initial != null) words += "\nInitial session request: " + initial.Text;
+            var refinement = view?.Utterances.FirstOrDefault(item => item.Id == selected.Grounding.Spatial?.UtteranceId);
+            if (refinement != null) words += "\nShape refinement request: " + refinement.Text;
+            var intent = view?.Items.FirstOrDefault(item => item.Id == view.IntentId);
+            if (intent != null) words += "\nGoal interpretation: " + intent.Label + "\n" + intent.Statement;
+            if (view?.Model != null) words += $"\nSession model: {view.Model.Provider} / {view.Model.Id}, {view.Model.LatencyMs / 1000f:0.0} s";
+            var probe = SpatialTheme.Text(transform, "Page measuring probe", SpatialTheme.Body, SpatialTheme.Ivory);
+            probe.gameObject.SetActive(false); var pages = new List<string>(); var start = 0;
+            while (start < words.Length)
+            {
+                var low = 1; var high = words.Length - start;
+                while (low < high) { var mid = (low + high + 1) / 2; if (SpatialTheme.Height(probe, words.Substring(start, mid), .410f) <= .110f) low = mid; else high = mid - 1; }
+                var length = low; if (start + length < words.Length && length > 1 && char.IsHighSurrogate(words[start + length - 1])) length--;
+                if (start + length < words.Length)
+                {
+                    for (var boundary = length - 1; boundary >= length * .65f; boundary--)
+                    {
+                        if (!char.IsWhiteSpace(words[start + boundary])) continue;
+                        length = boundary + 1;
+                        break;
+                    }
+                }
+                pages.Add(words.Substring(start, length)); start += length;
+            }
+            if (pages.Count == 0) pages.Add("No additional source text.");
+            navigator.SetPages(pages); if (Application.isPlaying) Destroy(probe.gameObject); else DestroyImmediate(probe.gameObject);
+        }
+
+        public ConsoleAction HitAction(Ray ray, out Vector3 point)
+        {
+            foreach (var pair in actions) if ((!busy || pair.Key == ConsoleAction.Cancel || pair.Key == ConsoleAction.PauseScene) && pair.Value.Hit(ray, out point)) return pair.Key;
+            point = default; return ConsoleAction.None;
+        }
+        public bool CanRelease(ConsoleAction action, Ray ray) => action != ConsoleAction.None && HitAction(ray, out _) == action;
+        public bool HitSave(Ray ray, out Vector3 point) => Hit(ConsoleAction.Save, ray, out point);
+        public bool HitNext(Ray ray, out Vector3 point) => Hit(ConsoleAction.NextItem, ray, out point);
+        public bool HitConfirm(Ray ray, out Vector3 point) => Hit(ConsoleAction.Confirm, ray, out point);
+        private bool Hit(ConsoleAction action, Ray ray, out Vector3 point) { point = default; return !busy && actions[action].Hit(ray, out point); }
+        public bool HitEvidence(Ray ray, out Vector3 point) => BodyHit(evidenceHit, ray, out point);
+        public string? HitTarget(Ray ray, out Vector3 point)
+        { if (BodyHit(headerHit, ray, out point)) return view?.IntentId; return BodyHit(evidenceHit, ray, out point) ? SelectedItemId : null; }
+        private bool BodyHit(BoxCollider? box, Ray ray, out Vector3 point)
+        { point = default; if (busy || !gameObject.activeInHierarchy || box == null || !box.enabled || !box.gameObject.activeInHierarchy || !box.Raycast(ray, out var hit, 5f)) return false; point = hit.point; return true; }
+        public bool ContainsRay(Ray ray)
+        {
+            foreach (var surface in new[] { header, card, dock, options, bar })
+            {
+                if (surface == null || !surface.gameObject.activeInHierarchy) continue;
+                var plane = new Plane(transform.forward, surface.transform.position);
+                if (!plane.Raycast(ray, out var distance) || distance > 5f) continue;
+                var local = surface.transform.InverseTransformPoint(ray.GetPoint(distance));
+                if (Mathf.Abs(local.x) <= surface.Size.x / 2f + .02f && Mathf.Abs(local.y) <= surface.Size.y / 2f + .02f) return true;
+            }
+            return false;
+        }
+        public void FocusAt(Ray ray) { focused = HitAction(ray, out _); foreach (var pair in actions) pair.Value.Focus(pair.Key == focused); }
+        public void SetFocus(bool on) { if (!on) ClearFocus(); }
+        public void ClearFocus() { focused = ConsoleAction.None; foreach (var control in actions.Values) { control.Focus(false); control.Press(false); } }
+        public void SetPressed(bool on) { if (actions.TryGetValue(focused, out var control)) control.Press(on); }
+        public void RefreshVisuals(float delta)
+        {
+            if (!reduced) animationTime += Mathf.Max(0f, delta);
+            Face();
+            foreach (var module in new[] { header, card, dock, options, bar }) if (module != null && module.gameObject.activeSelf) module.Refresh(delta);
+            foreach (var control in actions.Values) if (control.gameObject.activeSelf)
+                control.Refresh(delta, control.GetComponentInParent<SpatialSurface>(true)?.Opacity ?? 0f, reduced);
+            if (companion != null)
+            {
+                companion.SetVisible(gameObject.activeInHierarchy && !controlsOnly);
+                companion.SetOpacity(header?.Opacity ?? 1f);
+                companion.Refresh(delta, reduced);
+            }
+            if (mode == "processing")
+            {
+                var elapsed = Time.unscaledTime - requestAt;
+                header!.SetBody(elapsed < 10f ? processingWords : $"{processingWords}\nStill waiting · {Mathf.FloorToInt(elapsed)}s");
+            }
+            header?.Shimmer(animationTime, mode == "processing" || busy);
+        }
+        private void Face() { if (head == null || interactionLocked) return; var direction = transform.position - head.position; if (direction.sqrMagnitude > 1e-6f) transform.rotation = Quaternion.LookRotation(direction, Vector3.up); }
+        private void LateUpdate() => RefreshVisuals(Time.unscaledDeltaTime);
     }
 }
