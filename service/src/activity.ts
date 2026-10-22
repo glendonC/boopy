@@ -769,4 +769,412 @@ export class ActivityStore {
     this.#apply(recorded);
     return recorded;
   }
+
+  /** The same projection for live changes and startup replay; inconsistent events are refused. */
+  #apply(event: Recorded): void {
+    const corrupt: () => never = () => {
+      throw new Error(`Activity event ${event.id} does not fit the recorded activities.`);
+    };
+    switch (event.type) {
+      case 'activity.call-asked': {
+        const data = event.data;
+        if (
+          !CallAskedFields.safeParse(data).success ||
+          event.actor !== (data.kind === 'activity' ? 'person' : 'system')
+        )
+          corrupt();
+        const request = this.#requests.get(data.requestId) ?? corrupt();
+        if (this.#calls.has(data.callId) || request.sessionId !== event.session) corrupt();
+        const found = data.submissionId ? this.#submissions.get(data.submissionId) : undefined;
+        if (
+          data.kind === 'reply' &&
+          (!found?.activity.call ||
+            found.activity.request !== request ||
+            found.submission.replyCall !== null)
+        )
+          corrupt();
+        if (data.kind === 'activity' && data.submissionId !== null) corrupt();
+        const view: ActivityCallView = {
+          callId: data.callId,
+          kind: data.kind,
+          state: 'running',
+          provider: data.provider,
+          model: data.model,
+          askedAt: event.at,
+          finishedAt: null,
+          durationMs: null,
+          packageId: request.packageId,
+          requestId: request.requestId,
+          submissionId: data.submissionId,
+          activityId: found?.activity.activityId ?? null,
+          replyId: null,
+          nextActivityId: null,
+          failure: null,
+          issues: [],
+        };
+        this.#calls.set(data.callId, { view, seq: event.seq });
+        if (found) found.submission.replyCall = data.callId;
+        return;
+      }
+      case 'activity.call-finished': {
+        const data = event.data;
+        const parsed = CallFinishedFields.safeParse(data);
+        if (
+          !parsed.success ||
+          parsed.data.issues.some((issue, index) => issue !== data.issues[index])
+        )
+          corrupt();
+        const state = this.#calls.get(data.callId) ?? corrupt();
+        if (state.view.state !== 'running') corrupt();
+        const request = this.#requests.get(state.view.requestId) ?? corrupt();
+        if (event.session !== request.sessionId || event.actor !== 'system') corrupt();
+        if (data.failure !== null) {
+          const code = data.failure.code;
+          if (
+            data.failure.message !== callFailure(state.view.kind, code).message ||
+            (data.outcome === 'interrupted') !== (code === 'interrupted') ||
+            (code === 'answer_invalid' ? data.issues.length === 0 : data.issues.length !== 0)
+          )
+            corrupt();
+          if (code === 'interrupted' || code === 'assistant_busy') {
+            if (
+              data.durationMs !== null ||
+              data.metrics !== null ||
+              (code === 'assistant_busy' && state.view.kind !== 'reply')
+            )
+              corrupt();
+          } else if (data.durationMs === null) corrupt();
+        }
+        if (data.outcome === 'imported') {
+          if (data.failure !== null || data.issues.length !== 0 || data.durationMs === null)
+            corrupt();
+          if (state.view.kind === 'activity') {
+            const activity = data.activityId ? this.#activities.get(data.activityId) : undefined;
+            if (
+              activity?.call?.callId !== data.callId ||
+              activity.call.durationMs !== data.durationMs ||
+              data.replyId !== null ||
+              data.nextActivityId !== null
+            )
+              corrupt();
+          } else {
+            const found = this.#submissions.get(state.view.submissionId ?? '') ?? corrupt();
+            if (
+              data.activityId !== found.activity.activityId ||
+              found.submission.reply?.call?.callId !== data.callId ||
+              found.submission.reply.call.durationMs !== data.durationMs ||
+              data.replyId !== found.submission.reply.replyId ||
+              data.nextActivityId !== found.submission.reply.nextActivityId ||
+              (data.nextActivityId !== null &&
+                this.#activities.get(data.nextActivityId)?.call?.durationMs !== data.durationMs)
+            )
+              corrupt();
+          }
+        } else if (
+          data.failure === null ||
+          data.replyId !== null ||
+          data.nextActivityId !== null ||
+          data.activityId !== (state.view.kind === 'reply' ? state.view.activityId : null)
+        )
+          corrupt();
+        Object.assign(state.view, {
+          state: data.outcome,
+          finishedAt: event.at,
+          durationMs: data.durationMs,
+          failure: data.failure,
+          issues: data.issues,
+          activityId: data.activityId,
+          replyId: data.replyId,
+          nextActivityId: data.nextActivityId,
+        });
+        return;
+      }
+      case 'activity.request-prepared': {
+        const data = event.data;
+        if (this.#requests.has(data.requestId)) corrupt();
+        this.#requests.set(data.requestId, {
+          requestId: data.requestId,
+          sessionId: event.session,
+          packageId: data.packageId,
+          packetSha256: data.preparation.packetSha256,
+          sources: data.sources,
+        });
+        return;
+      }
+      case 'activity.imported': {
+        const data = event.data;
+        const request = this.#requests.get(data.requestId) ?? corrupt();
+        if (this.#activities.has(data.activityId)) corrupt();
+        if (data.call) {
+          const call = this.#pendingProvenance(
+            data.call,
+            data.requestId,
+            data.parent ? 'reply' : 'activity',
+            corrupt,
+          );
+          if (
+            event.actor !== 'system' ||
+            event.session !== request.sessionId ||
+            data.claimedAuthor !== null ||
+            data.activity === null ||
+            data.issues.length !== 0 ||
+            (data.parent && call.submissionId !== data.parent.submissionId)
+          )
+            corrupt();
+        }
+        if (data.parent !== null) {
+          const parent = this.#submissions.get(data.parent.submissionId);
+          if (
+            parent?.activity.activityId !== data.parent.activityId ||
+            parent.submission.reply?.replyId !== data.parent.replyId ||
+            parent.submission.reply.nextActivityId !== data.activityId
+          )
+            corrupt();
+        }
+        const state: ActivityState = {
+          activityId: data.activityId,
+          request,
+          seq: event.seq,
+          importedAt: event.at,
+          artifactSha256: data.artifactSha256,
+          claimedAuthor: data.claimedAuthor,
+          ...(data.call ? { call: data.call } : {}),
+          fallbackText: data.fallbackText,
+          activity: data.activity,
+          issues: data.issues,
+          parent: data.parent,
+          revision: 0,
+          positions: Object.fromEntries(
+            (data.activity ? (arrangeOf(data.activity)?.tokens ?? []) : []).map((token) => [
+              token.key,
+              null,
+            ]),
+          ),
+          chosen: [],
+          hintsRevealed: 0,
+          submissions: [],
+        };
+        this.#activities.set(data.activityId, state);
+        if (data.parent === null && !data.call) this.#imports.set(data.artifactSha256, state);
+        return;
+      }
+      case 'activity.arranged': {
+        const state = this.#next(event.data, corrupt);
+        state.positions = { ...event.data.positions };
+        return;
+      }
+      case 'activity.sequenced': {
+        const state = this.#next(event.data, corrupt);
+        state.chosen = [...event.data.chosen];
+        return;
+      }
+      case 'activity.hint-revealed': {
+        const state = this.#next(event.data, corrupt);
+        if (event.data.index !== state.hintsRevealed) corrupt();
+        state.hintsRevealed += 1;
+        return;
+      }
+      case 'activity.submitted': {
+        const data = event.data;
+        const state = this.#next(data, corrupt);
+        if (this.#submissions.has(data.submissionId)) corrupt();
+        const previous = state.submissions.at(-1)?.hintsRevealed ?? [];
+        const submission: SubmissionState = {
+          submissionId: data.submissionId,
+          number: state.submissions.length + 1,
+          submittedAt: event.at,
+          revision: data.revision,
+          positions: data.positions,
+          derived: data.derived,
+          chosen: data.chosen,
+          text: data.text,
+          hintsRevealed: data.hintsRevealed,
+          hintsRevealedSincePrevious: data.hintsRevealed.filter(
+            (index) => !previous.includes(index),
+          ),
+          digest: data.digest,
+          export: null,
+          reply: null,
+          replyCall: null,
+        };
+        state.submissions.push(submission);
+        this.#submissions.set(data.submissionId, { activity: state, submission });
+        return;
+      }
+      case 'activity.submission-exported': {
+        const found = this.#submissions.get(event.data.submissionId);
+        if (found === undefined || found.activity.activityId !== event.data.activityId) corrupt();
+        // A later export after an upgrade replaces the latest; earlier ones stay in the journal.
+        found.submission.export = { fileSha256: event.data.fileSha256, exportedAt: event.at };
+        return;
+      }
+      case 'activity.reply-imported': {
+        const data = event.data;
+        const found = this.#submissions.get(data.submissionId);
+        if (
+          found === undefined ||
+          found.activity.activityId !== data.activityId ||
+          (found.submission.export === null &&
+            !(data.call && found.submission.replyCall === data.call.callId)) ||
+          found.submission.reply !== null ||
+          this.#replies.has(data.artifactSha256)
+        )
+          corrupt();
+        if (data.call) {
+          const call = this.#pendingProvenance(
+            data.call,
+            found.activity.request.requestId,
+            'reply',
+            corrupt,
+          );
+          if (
+            call.submissionId !== data.submissionId ||
+            data.claimedAuthor !== null ||
+            event.actor !== 'system' ||
+            event.session !== found.activity.request.sessionId
+          )
+            corrupt();
+        }
+        found.submission.reply = {
+          replyId: data.replyId,
+          importedAt: event.at,
+          claimedAuthor: data.claimedAuthor,
+          artifactSha256: data.artifactSha256,
+          reply: data.reply,
+          nextActivityId: data.nextActivityId,
+          ...(data.call ? { call: data.call } : {}),
+        };
+        this.#replies.set(data.artifactSha256, found);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  #pendingProvenance(
+    provenance: CallProvenance,
+    requestId: string,
+    kind: 'activity' | 'reply',
+    corrupt: () => never,
+  ): ActivityCallView {
+    const call = this.#calls.get(provenance.callId)?.view ?? corrupt();
+    if (
+      call.state !== 'running' ||
+      call.kind !== kind ||
+      call.requestId !== requestId ||
+      call.provider !== provenance.provider ||
+      call.model !== provenance.model ||
+      !Number.isSafeInteger(provenance.durationMs) ||
+      provenance.durationMs < 0
+    )
+      corrupt();
+    return call;
+  }
+
+  /** A change event must name an active activity and the revision after its current one. */
+  #next(data: { activityId: string; revision: number }, corrupt: () => never): ActivityState {
+    const state = this.#activities.get(data.activityId);
+    if (state?.activity === null || state === undefined || data.revision !== state.revision + 1)
+      return corrupt();
+    state.revision = data.revision;
+    return state;
+  }
+
+  #view(state: ActivityState): ActivityView {
+    const activity = state.activity;
+    const sources = new Map(state.request.sources.map((source) => [source.sourceId, source]));
+    return {
+      activityId: state.activityId,
+      revision: state.revision,
+      status: statusOf(state),
+      title: activity?.title ?? null,
+      purpose: activity?.purpose ?? null,
+      instruction: activity ? textView(activity.instruction) : null,
+      fallbackText: state.fallbackText,
+      issues: [...state.issues],
+      provenance: {
+        requestId: state.request.requestId,
+        packageId: state.request.packageId,
+        packetSha256: state.request.packetSha256,
+        artifactSha256: state.artifactSha256,
+        claimedAuthor: state.claimedAuthor,
+        authorship: state.call ? 'called-by-boopy' : 'claimed-by-file',
+        ...(state.call ? { call: { ...state.call } } : {}),
+        importedAt: state.importedAt,
+        parent: state.parent ? { ...state.parent } : null,
+      },
+      components: (activity?.components ?? []).map((component) =>
+        component.type === 'arrange'
+          ? arrangeView(component, state.positions, sources)
+          : sequenceView(state.activityId, component, state.chosen),
+      ),
+      hints: {
+        total: activity?.hints.length ?? 0,
+        revealed: (activity?.hints ?? [])
+          .slice(0, state.hintsRevealed)
+          .map((hint, index) => ({ index, ...textView(hint) })),
+      },
+      canSubmit: activity !== null && submittable(state, activity),
+      submissions: state.submissions.map((submission) => this.#submissionView(submission, state)),
+    };
+  }
+
+  #submissionView(
+    submission: SubmissionState,
+    state: ActivityState,
+  ): ActivityView['submissions'][number] {
+    const reply = submission.reply;
+    const next = reply?.nextActivityId ? this.#activities.get(reply.nextActivityId) : undefined;
+    return {
+      submissionId: submission.submissionId,
+      number: submission.number,
+      submittedAt: submission.submittedAt,
+      revision: submission.revision,
+      digest: submission.digest,
+      arrange:
+        submission.positions && submission.derived
+          ? { positions: { ...submission.positions }, ...structuredClone(submission.derived) }
+          : null,
+      sequence:
+        submission.chosen && submission.text !== null
+          ? { chosen: [...submission.chosen], text: submission.text }
+          : null,
+      hintsRevealed: [...submission.hintsRevealed],
+      hintsRevealedSincePrevious: [...submission.hintsRevealedSincePrevious],
+      export: submission.export
+        ? {
+            state: 'exported-not-sent',
+            fileSha256: submission.export.fileSha256,
+            exportedAt: submission.export.exportedAt,
+          }
+        : null,
+      ...(state.call
+        ? {
+            replyCall: submission.replyCall
+              ? (({ callId, state, failure }) => ({ callId, state, failure }))(
+                  this.call(submission.replyCall),
+                )
+              : null,
+          }
+        : {}),
+      reply: reply
+        ? {
+            replyId: reply.replyId,
+            ...(reply.call ? { call: { ...reply.call } } : {}),
+            importedAt: reply.importedAt,
+            claimedAuthor: reply.claimedAuthor,
+            artifactSha256: reply.artifactSha256,
+            summary: textView(reply.reply.summary),
+            points: reply.reply.points.map((point) => ({
+              about: point.about,
+              text: point.text,
+              language: point.language,
+              gloss: point.gloss ?? null,
+            })),
+            nextActivityId: next?.activityId ?? null,
+          }
+        : null,
+    };
+  }
 }
