@@ -281,4 +281,175 @@ export class HandoffPreparation {
       await file.close();
     }
   }
+
+  async #prepare(request: HandoffPreparationRequest, context: Common, sessionId: string) {
+    try {
+      const sourceSnapshotSha256 = this.#snapshot(request);
+      const baselineRecords = evidenceRecords(this.#dependencies.packageForId(request.packageId));
+      const outputDirectory = await this.#directory(context.receiptId, context.attempt, true);
+      const options: HandoffOptions = {
+        packageId: request.packageId,
+        dataDir: this.#dependencies.dataDir,
+        outputDirectory,
+        port: this.#dependencies.port,
+        memory: request.memory,
+      };
+      if (request.references)
+        options.references = {
+          ...request.references,
+          credentialFile: this.#dependencies.referenceCredentialFile ?? 'unavailable',
+        };
+      const result = await (this.#dependencies.compose ?? exportHandoff)(
+        options,
+        request.references && !this.#dependencies.referenceCredentialFile
+          ? {
+              lookupReference: async () => {
+                throw new Error('Reference provider unavailable.');
+              },
+            }
+          : {},
+      );
+      if (sourceSnapshotSha256 !== this.#snapshot(request))
+        throw new Error('Selected sources changed.');
+      const receipt: HandoffPreparationReceipt = {
+        ...context,
+        state: 'prepared-local',
+        packageId: request.packageId,
+        baselineSha256: result.baseline.sha256,
+        packetSha256: sha256(result.artifacts.packet),
+        selectedPackageIds: result.artifacts.supplement.selectedPackageIds,
+        selectedSourceIds: [
+          ...new Set([
+            ...baselineRecords.map((record) => record.sourceId),
+            ...result.artifacts.supplement.memory.hits.map((hit) => hit.evidence.sourceId),
+            ...result.artifacts.supplement.memory.constraints.map((record) => record.sourceId),
+            ...result.artifacts.supplement.memory.openQuestions.map((record) => record.sourceId),
+            ...result.artifacts.supplement.references.rows.map((row) => row.evidence.sourceId),
+          ]),
+        ],
+        memory: { status: result.memory.status, returnedSources: result.memory.returnedSources },
+        references: {
+          status:
+            request.references && !this.#dependencies.referenceCredentialFile
+              ? 'unavailable'
+              : result.references.status,
+          returnedAssociations: result.references.returnedAssociations,
+          ...(result.references.sourceRecordSha256
+            ? { sourceRecordSha256: result.references.sourceRecordSha256 }
+            : {}),
+        },
+        delivery: 'not-sent',
+        preparedAt: new Date().toISOString(),
+        historicalSnapshot: true,
+        sourceSnapshotSha256,
+      };
+      this.#record({
+        type: 'handoff.preparation-completed',
+        session: sessionId,
+        actor: 'system',
+        data: { ...context, receipt },
+      });
+      return receipt;
+    } catch {
+      this.#record({
+        type: 'handoff.preparation-failed',
+        session: sessionId,
+        actor: 'system',
+        data: { ...context, reason: 'preparation_failed' },
+      });
+      throw new Error('Local handoff preparation failed.');
+    }
+  }
+
+  async #directory(receiptId: string, attempt: number, create: boolean) {
+    const root = resolve(this.#dependencies.outputRoot);
+    if (create) await mkdir(root, { mode: 0o700, recursive: true });
+    const rootInfo = await lstat(root);
+    if (!rootInfo.isDirectory() || rootInfo.mode & 0o077)
+      throw new Error('Private handoff storage unavailable.');
+    const directory = join(root, `${receiptId}-attempt-${attempt}`);
+    if (create) await mkdir(directory, { mode: 0o700 });
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.mode & 0o077)
+      throw new Error('Private handoff storage unavailable.');
+    return directory;
+  }
+
+  #record(event: HandoffPreparationEvent) {
+    this.#dependencies.journal.append(event, `evt_${randomUUID()}`, new Date().toISOString());
+  }
+
+  #snapshot(request: HandoffPreparationRequest) {
+    const ids = [
+      ...new Set([
+        request.packageId,
+        ...(request.memory?.packageIds ?? []),
+        ...(request.references ? [request.references.packageId] : []),
+      ]),
+    ];
+    return sha256(
+      canonical({
+        packages: ids.map((id) => this.#dependencies.packageForId(id)),
+        corrections: this.#dependencies
+          .supersessions()
+          .filter(
+            (link) =>
+              ids.includes(link.predecessor.packageId) || ids.includes(link.successor.packageId),
+          ),
+      }),
+    );
+  }
+
+  #states(): Map<string, Status> {
+    const states = new Map<string, Status>();
+    for (const event of this.#dependencies.journal.all()) {
+      if (event.type === 'handoff.preparation-started')
+        states.set(event.data.requestId, {
+          ...common(event.data),
+          sessionId: event.session,
+          state: 'preparing-local',
+          packageId: event.data.selection.packageId,
+        });
+      else if (event.type === 'handoff.preparation-completed')
+        states.set(event.data.requestId, {
+          ...common(event.data),
+          sessionId: event.session,
+          state: 'prepared-local',
+          sourceState: 'unchanged',
+          packageId: event.data.receipt.packageId,
+          receipt: event.data.receipt,
+        });
+      else if (event.type === 'handoff.preparation-failed')
+        states.set(event.data.requestId, {
+          ...common(event.data),
+          sessionId: event.session,
+          state: 'failed',
+          packageId: states.get(event.data.requestId)?.packageId ?? '',
+          reason: event.data.reason,
+        });
+    }
+    return states;
+  }
+}
+
+function common(value: Common): Common {
+  return {
+    requestId: value.requestId,
+    receiptId: value.receiptId,
+    selectionSha256: value.selectionSha256,
+    attempt: value.attempt,
+  };
+}
+function sha256(text: string | Uint8Array) {
+  return createHash('sha256').update(text).digest('hex');
+}
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value !== null && typeof value === 'object')
+    return `{${Object.entries(value)
+      .filter(([, child]) => child !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`)
+      .join(',')}}`;
+  return JSON.stringify(value);
 }
