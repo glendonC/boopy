@@ -752,4 +752,369 @@ describe('Boopy asks the local model itself (section 11)', () => {
       await s.close();
     }
   });
+
+  it('a call that passes its time limit is stopped and fails', async () => {
+    const s = await setup({ timeoutMs: 200 });
+    try {
+      s.ollama.answer(hang);
+      const started = performance.now();
+      const done = await s.calls.finished((await s.ask()).callId);
+      assert.ok(performance.now() - started >= 180);
+      assert.equal(done.state, 'failed');
+      assert.deepEqual(done.failure, {
+        code: 'assistant_timeout',
+        message: `${PRACTICE}the local model didn't answer in time.`,
+      });
+      await until(() => s.ollama.aborted === 1);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('one call at a time: a practice request while one runs is refused and journals nothing', async () => {
+    const s = await setup();
+    try {
+      s.ollama.answer(after(300, answerWith(activityAnswer(s.camel))));
+      const first = await s.ask();
+      await until(() => s.ollama.requests.length === 1);
+      const recorded = s.journal.all().length;
+      await assert.rejects(
+        s.ask(),
+        (error: unknown) =>
+          error instanceof BoopyError && error.status === 409 && error.code === 'assistant_busy',
+      );
+      assert.equal(s.journal.all().length, recorded);
+      assert.equal(s.ollama.requests.length, 1);
+      assert.equal((await s.calls.finished(first.callId)).state, 'imported');
+      s.ollama.answer(answerWith(activityAnswer(s.camel)));
+      assert.equal((await s.calls.finished((await s.ask()).callId)).state, 'imported');
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a practice request needs one completed preparation, before anything is asked', async () => {
+    const s = await setup({ prepared: false });
+    try {
+      await assert.rejects(
+        s.ask(),
+        (error: unknown) =>
+          error instanceof BoopyError &&
+          error.status === 404 &&
+          error.code === 'prepared_unavailable',
+      );
+      assert.equal(eventsOf(s.journal, 'activity.call-asked').length, 0);
+      assert.equal(s.ollama.requests.length, 0);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a submission on a Boopy-called activity asks for its reply from the rendered submission', async () => {
+    const s = await setup();
+    try {
+      const activityId = await calledActivity(s);
+      const next = activityAnswer(s.camel);
+      s.ollama.answer(answerWith(replyAnswer(next)));
+      const submitted = ActivityView.parse(s.calls.submit(activityId, { revision: 1 }));
+      const submission = submitted.submissions.at(-1);
+      assert.ok(submission);
+      assert.equal(submission.export, null);
+      assert.equal(submission.replyCall?.state, 'running');
+      assert.equal(submission.replyCall?.failure, null);
+      const callId = submission.replyCall?.callId;
+      assert.ok(callId);
+      const done = await s.calls.finished(callId);
+      assert.equal(done.kind, 'reply');
+      assert.equal(done.state, 'imported');
+      assert.equal(done.activityId, activityId);
+      assert.equal(done.submissionId, submission.submissionId);
+      assert.ok(done.replyId);
+      assert.ok(done.nextActivityId);
+
+      const file = sentFile(s, 1);
+      const sent = ActivitySubmissionFile.parse(file.value);
+      assert.equal(file.preamble, sent.instructions.join('\n'));
+      assert.equal(sent.delivery, 'sent-by-boopy-to-local-model');
+      assert.match(sent.note, /Boopy sent this submission to the local model on this Mac\./);
+      assert.equal(sent.submissionId, submission.submissionId);
+      assert.equal(sent.respondWith.echo, submission.digest);
+      assert.equal(sent.activity.authorship, 'called-by-boopy');
+      assert.equal(sent.activity.claimedAuthor, null);
+      const replyAsked = eventsOf(s.journal, 'activity.call-asked').at(-1);
+      assert.equal(replyAsked?.actor, 'system');
+      assert.equal(replyAsked?.data.kind, 'reply');
+      assert.equal(replyAsked?.data.submissionId, submission.submissionId);
+      assert.equal(replyAsked?.data.fileSha256, sha256(file.text));
+
+      const view = ActivityView.parse(s.store.view(activityId));
+      const answered = view.submissions.at(-1);
+      assert.equal(answered?.export, null);
+      assert.equal(answered?.replyCall?.state, 'imported');
+      assert.equal(answered?.reply?.claimedAuthor, null);
+      assert.deepEqual(answered?.reply?.call, {
+        callId,
+        provider: 'ollama',
+        model: MODEL,
+        durationMs: done.durationMs,
+      });
+      const following = ActivityView.parse(s.store.view(done.nextActivityId));
+      assert.equal(following.status, 'active');
+      assert.equal(following.provenance.authorship, 'called-by-boopy');
+      assert.equal(following.provenance.call?.callId, callId);
+      assert.deepEqual(following.provenance.parent, {
+        activityId,
+        submissionId: submission.submissionId,
+        replyId: done.replyId,
+      });
+      assert.equal(eventsOf(s.journal, 'activity.submission-exported').length, 0);
+
+      // The next activity is Boopy-called too, so its submissions ask as well.
+      s.store.arrange(following.activityId, { revision: 0, positions: { a: 0.7, b: 0.2 } });
+      s.ollama.answer(answerWith(replyAnswer()));
+      const again = s.calls.submit(following.activityId, { revision: 1 }).submissions.at(-1);
+      const second = again?.replyCall?.callId;
+      assert.ok(second);
+      const last = await s.calls.finished(second);
+      assert.equal(last.state, 'imported');
+      assert.equal(last.nextActivityId, null);
+      assert.equal(s.ollama.requests.length, 3);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a reply whose next activity does not fit imports nothing and fails the call', async () => {
+    const s = await setup();
+    try {
+      const activityId = await calledActivity(s);
+      const next = activityAnswer(s.camel);
+      s.ollama.answer(
+        answerWith(replyAnswer({ ...next, activity: { ...next.activity, components: [] } })),
+      );
+      const submission = s.calls.submit(activityId, { revision: 1 }).submissions.at(-1);
+      assert.ok(submission?.replyCall);
+      const done = await s.calls.finished(submission.replyCall.callId);
+      assert.equal(done.state, 'failed');
+      assert.equal(done.failure?.code, 'answer_invalid');
+      assert.equal(done.failure?.message, `${REPLY}its answer didn't fit Boopy's format.`);
+      assert.ok(done.issues.length >= 1);
+      const view = s.store.view(activityId);
+      assert.equal(view.submissions.at(-1)?.reply, null);
+      assert.equal(view.submissions.at(-1)?.replyCall?.state, 'failed');
+      assert.equal(s.store.list().length, 1);
+      assert.equal(eventsOf(s.journal, 'activity.reply-imported').length, 0);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a submission on an activity imported from a file asks for nothing and keeps the file view', async () => {
+    const s = await setup();
+    try {
+      const request = await s.store.prepareRequest({ packageId: s.packageId, goal: GOAL });
+      const requestFile = ActivityRequestFile.parse(JSON.parse(request.file));
+      assert.equal(requestFile.delivery, 'not-sent-by-boopy');
+      assert.equal(eventsOf(s.journal, 'activity.request-prepared')[0]?.data.delivery, 'not-sent');
+      const { activityId } = s.store.importActivity(
+        JSON.stringify({
+          type: 'boopy.activity',
+          version: 1,
+          binding: requestFile.respondWith.binding,
+          author: 'Grok Bot',
+          ...activityAnswer(s.camel),
+        }),
+      );
+      s.store.arrange(activityId, { revision: 0, positions: { a: 0.2, b: 0.7 } });
+      const view = s.calls.submit(activityId, { revision: 1 });
+      await sleep(50);
+      assert.equal(s.ollama.requests.length, 0);
+      assert.equal(eventsOf(s.journal, 'activity.call-asked').length, 0);
+      assert.equal(view.provenance.authorship, 'claimed-by-file');
+      assert.equal(view.provenance.claimedAuthor, 'Grok Bot');
+      assert.equal('call' in view.provenance, false);
+      assert.equal('replyCall' in (view.submissions.at(-1) ?? {}), false);
+      assert.equal('call' in (s.store.list()[0] ?? {}), false);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('an automatic reply asked while another call runs is journaled as failed, and the submission stays', async () => {
+    const s = await setup();
+    try {
+      const activityId = await calledActivity(s);
+      s.ollama.answer(hang);
+      const practice = await s.ask();
+      await until(() => s.ollama.requests.length === 2);
+      const submitted = s.calls.submit(activityId, { revision: 1 });
+      const submission = submitted.submissions.at(-1);
+      assert.ok(submission);
+      assert.equal(submission.number, 1);
+      assert.equal(submission.replyCall?.state, 'failed');
+      assert.deepEqual(submission.replyCall?.failure, {
+        code: 'assistant_busy',
+        message: `${REPLY}Boopy was already waiting for the local model. Submit again in a moment.`,
+      });
+      assert.equal(s.ollama.requests.length, 2);
+      const busy = s.store.call(submission.replyCall?.callId ?? '');
+      assert.equal(busy.kind, 'reply');
+      assert.equal(busy.state, 'failed');
+      assert.equal(busy.durationMs, null);
+      assert.equal(eventsOf(s.journal, 'activity.call-asked').at(-1)?.actor, 'system');
+      assert.equal(s.store.call(practice.callId).state, 'running');
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a stop lets a running call finish within the grace, then takes no new calls', async () => {
+    const s = await setup();
+    try {
+      s.ollama.answer(after(150, answerWith(activityAnswer(s.camel))));
+      const asked = await s.ask();
+      await s.calls.close(2000);
+      assert.equal(s.store.call(asked.callId).state, 'imported');
+      await assert.rejects(
+        s.ask(),
+        (error: unknown) =>
+          error instanceof BoopyError &&
+          error.status === 503 &&
+          error.code === 'assistant_unavailable',
+      );
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a stop aborts a call that outlives the grace; the next start journals it interrupted and never asks again', async () => {
+    const s = await setup();
+    try {
+      s.ollama.answer(hang);
+      const asked = await s.ask();
+      const started = performance.now();
+      await s.calls.close(100);
+      assert.ok(performance.now() - started < 1000);
+      await until(() => s.ollama.aborted === 1);
+      assert.equal(eventsOf(s.journal, 'activity.call-finished').length, 0);
+
+      const restarted = s.restart();
+      const interrupted = restarted.call(asked.callId);
+      assert.equal(interrupted.state, 'interrupted');
+      assert.deepEqual(interrupted.failure, {
+        code: 'interrupted',
+        message: `${PRACTICE}Boopy stopped before the local model answered.`,
+      });
+      const [finished] = eventsOf(s.journal, 'activity.call-finished');
+      assert.equal(finished?.actor, 'system');
+      assert.equal(finished?.data.outcome, 'interrupted');
+      assert.equal(finished?.data.durationMs, null);
+      const recorded = s.journal.all().length;
+      const calls = new ActivityCalls({
+        store: s.restart(),
+        assistant: new OllamaActivityAssistant({ url: s.ollama.url, model: MODEL }),
+        timeoutMs: 5000,
+      });
+      await sleep(50);
+      assert.equal(s.journal.all().length, recorded);
+      assert.equal(s.ollama.requests.length, 1);
+      await calls.close(0);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('an interrupted reply call shows on its submission after the next start', async () => {
+    const s = await setup();
+    try {
+      const activityId = await calledActivity(s);
+      s.ollama.answer(hang);
+      const submission = s.calls.submit(activityId, { revision: 1 }).submissions.at(-1);
+      assert.equal(submission?.replyCall?.state, 'running');
+      await s.calls.close(0);
+      const view = s.restart().view(activityId);
+      const after = view.submissions.at(-1);
+      assert.equal(after?.submissionId, submission?.submissionId);
+      assert.equal(after?.digest, submission?.digest);
+      assert.equal(after?.reply, null);
+      assert.equal(after?.replyCall?.state, 'interrupted');
+      assert.deepEqual(after?.replyCall?.failure, {
+        code: 'interrupted',
+        message: `${REPLY}Boopy stopped before the local model answered.`,
+      });
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a restart rebuilds the same calls and views without asking again', async () => {
+    const s = await setup();
+    try {
+      const activityId = await calledActivity(s);
+      s.ollama.answer(answerWith(replyAnswer(activityAnswer(s.camel))));
+      const callId = s.calls.submit(activityId, { revision: 1 }).submissions.at(-1)
+        ?.replyCall?.callId;
+      assert.ok(callId);
+      await s.calls.finished(callId);
+      s.ollama.answer(chat('not an activity'));
+      await s.calls.finished((await s.ask()).callId);
+      const recorded = s.journal.all().length;
+      const restarted = s.restart();
+      assert.deepEqual(restarted.calls(), s.store.calls());
+      assert.deepEqual(restarted.list(), s.store.list());
+      for (const summary of s.store.list())
+        assert.deepEqual(restarted.view(summary.activityId), s.store.view(summary.activityId));
+      assert.equal(s.journal.all().length, recorded);
+      assert.equal(s.ollama.requests.length, 3);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('lists calls newest first and refuses an unknown call', async () => {
+    const s = await setup();
+    try {
+      s.ollama.answer(chat('not an activity'));
+      const first = await s.calls.finished((await s.ask()).callId);
+      s.ollama.answer(answerWith(activityAnswer(s.camel)));
+      const second = await s.calls.finished((await s.ask()).callId);
+      const listed = s.store.calls();
+      assert.deepEqual(
+        listed.map((call) => call.callId),
+        [second.callId, first.callId],
+      );
+      for (const call of listed) ActivityCallView.parse(call);
+      assert.throws(
+        () => s.store.call('cal_unknown'),
+        (error: unknown) =>
+          error instanceof BoopyError && error.status === 404 && error.code === 'call_unknown',
+      );
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('the local model must be on this Mac and must not be named as Grok', () => {
+    for (const url of [
+      'http://192.168.1.10:11434',
+      'http://ollama.example:11434',
+      'https://127.0.0.1:11434',
+      'http://synthetic-user:synthetic-secret@127.0.0.1:11434',
+      'http://127.0.0.1:11434/api',
+      'http://127.0.0.1:11434/?model=x',
+      'http://127.0.0.1:11434/#x',
+      'not a url',
+    ])
+      assert.throws(
+        () => new OllamaActivityAssistant({ url, model: MODEL }),
+        (error: unknown) => error instanceof Error && !error.message.includes('synthetic-secret'),
+      );
+    for (const url of ['http://127.0.0.1:11434', 'http://localhost:11434', 'http://[::1]:11434'])
+      assert.equal(new OllamaActivityAssistant({ url, model: MODEL }).model, MODEL);
+    for (const model of ['grok-2', 'Grok:latest', 'a'.repeat(46), 'javascript:x', 'two words', ''])
+      assert.throws(() => new OllamaActivityAssistant({ url: 'http://127.0.0.1:11434', model }));
+    const assistant = new OllamaActivityAssistant({ url: 'http://127.0.0.1:11434' });
+    assert.equal(assistant.provider, 'ollama');
+    assert.equal(assistant.model, MODEL);
+  });
 });
