@@ -392,4 +392,166 @@ async function* streamEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<{
       yield event as { type: string };
     }
   }
+  if (pending.trim() !== '') throw new Error('Truncated segmentation stream.');
+}
+
+/** The official parser decodes while parsing: cap dimensions before forwarding any event. */
+function validateRasterHeaders(text: string): void {
+  let pixels = 0,
+    count = 0;
+  for (const match of text.matchAll(/data\s*=\s*(\d+),(\d+),/g)) {
+    const width = Number(match[2]),
+      height = Number(match[1]);
+    pixels += width * height;
+    count++;
+    if (
+      !Number.isSafeInteger(width * height) ||
+      width < 1 ||
+      height < 1 ||
+      pixels > MAX_PIXELS ||
+      count > MAX_MASKS
+    )
+      throw new Error('Segmentation raster exceeds limit.');
+  }
+}
+
+function boxOverlap(a: Box, b: Box): number {
+  const overlap =
+    Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) *
+    Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
+  const area = (a.x1 - a.x0) * (a.y1 - a.y0) + (b.x1 - b.x0) * (b.y1 - b.y0) - overlap;
+  return area > 0 ? overlap / area : 0;
+}
+
+/** Ordered grid-edge contour. Only tiny extra boundaries (up to 1% area) may be omitted. */
+export function rasterContour(raster: Uint8Array, width: number, height: number): Point[] {
+  if (width < 1 || height < 1 || width * height !== raster.length || width * height > MAX_PIXELS)
+    throw new Error('Invalid raster size.');
+  const edges = new Map<number, number>();
+  const stride = width + 1;
+  const add = (x0: number, y0: number, x1: number, y1: number) => {
+    const key = y0 * stride + x0;
+    if (edges.has(key) || edges.size >= MAX_BOUNDARY) throw new Error('Complex contour.');
+    edges.set(key, y1 * stride + x1);
+  };
+  const at = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < width && y < height && raster[y * width + x] === 1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!at(x, y)) continue;
+      if (!at(x, y - 1)) add(x, y, x + 1, y);
+      if (!at(x + 1, y)) add(x + 1, y, x + 1, y + 1);
+      if (!at(x, y + 1)) add(x + 1, y + 1, x, y + 1);
+      if (!at(x - 1, y)) add(x, y + 1, x, y);
+    }
+  }
+  const loops: Point[][] = [];
+  while (edges.size > 0) {
+    const start = edges.keys().next().value;
+    if (start === undefined) throw new Error('Empty mask.');
+    const points: Point[] = [];
+    let current = start;
+    do {
+      points.push({ x: current % stride, y: Math.floor(current / stride) });
+      const next = edges.get(current);
+      if (next === undefined) throw new Error('Open contour.');
+      edges.delete(current);
+      current = next;
+    } while (current !== start);
+    loops.push(points);
+  }
+  loops.sort((a, b) => area(b) - area(a));
+  const points = loops[0];
+  if (points === undefined || area(points) < 1) throw new Error('Empty mask.');
+  if (loops.slice(1).reduce((sum, loop) => sum + area(loop), 0) > area(points) * 0.01)
+    throw new Error('Significant multiple boundaries are not supported.');
+  const half = Math.floor(points.length / 2);
+  let tolerance = 0.75;
+  for (let pass = 0; pass < 9; pass++) {
+    const simplified = [
+      ...simplify(points.slice(0, half + 1), tolerance).slice(0, -1),
+      ...simplify([...points.slice(half), points[0] as Point], tolerance).slice(0, -1),
+    ];
+    if (
+      simplified.length >= 3 &&
+      simplified.length <= 256 &&
+      Math.abs(area(simplified) / area(points) - 1) <= 0.05 &&
+      simplePolygon(simplified)
+    )
+      return simplified;
+    tolerance *= 2;
+  }
+  throw new Error('Contour cannot be represented accurately.');
+}
+
+function area(points: readonly Point[]): number {
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    if (a !== undefined && b !== undefined) sum += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(sum / 2);
+}
+
+/** Keep a coarse mask boundary from becoming a crossing polygon after simplification. */
+function simplePolygon(points: readonly Point[]): boolean {
+  const cross = (a: Point, b: Point, c: Point) =>
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const on = (a: Point, b: Point, p: Point) =>
+    cross(a, b, p) === 0 &&
+    p.x >= Math.min(a.x, b.x) &&
+    p.x <= Math.max(a.x, b.x) &&
+    p.y >= Math.min(a.y, b.y) &&
+    p.y <= Math.max(a.y, b.y);
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i],
+      b = points[(i + 1) % points.length];
+    if (a === undefined || b === undefined || (a.x === b.x && a.y === b.y)) return false;
+    for (let j = i + 2; j < points.length; j++) {
+      if (i === 0 && j === points.length - 1) continue;
+      const c = points[j],
+        d = points[(j + 1) % points.length];
+      if (c === undefined || d === undefined) return false;
+      if (
+        on(a, b, c) ||
+        on(a, b, d) ||
+        on(c, d, a) ||
+        on(c, d, b) ||
+        (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0)
+      )
+        return false;
+    }
+  }
+  return true;
+}
+
+function simplify(points: Point[], tolerance: number): Point[] {
+  const first = points[0];
+  const last = points.at(-1);
+  if (first === undefined || last === undefined) return [];
+  const dx = last.x - first.x,
+    dy = last.y - first.y;
+  if (dx === 0 && dy === 0) throw new Error('Contour simplification has coincident endpoints.');
+  let index = 0,
+    distance = tolerance;
+  for (let i = 1; i < points.length - 1; i++) {
+    const point = points[i];
+    if (point === undefined) continue;
+    const t = Math.max(
+      0,
+      Math.min(1, ((point.x - first.x) * dx + (point.y - first.y) * dy) / (dx * dx + dy * dy)),
+    );
+    const d = Math.hypot(point.x - first.x - t * dx, point.y - first.y - t * dy);
+    if (d > distance) {
+      index = i;
+      distance = d;
+    }
+  }
+  return index === 0
+    ? [first, last]
+    : [
+        ...simplify(points.slice(0, index + 1), tolerance).slice(0, -1),
+        ...simplify(points.slice(index), tolerance),
+      ];
 }
