@@ -1,0 +1,65 @@
+{
+  "activityId": "act_m1",
+  "revision": 1,
+  "status": "active",
+  "title": "Petit taxi fare",
+  "purpose": "Check your sense of a fair petit taxi fare before you ride.",
+  "instruction": {
+    "text": "What would you expect to pay for a daytime petit taxi from the medina to Gueliz?",
+    "language": "en",
+    "gloss": null
+  },
+  "fallbackText": "Think of a fair daytime petit taxi fare from the medina to Gueliz in dirhams.",
+  "issues": [],
+  "provenance": {
+    "requestId": "arq_m1",
+    "packageId": "ctx_synthetic2",
+    "packetSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "artifactSha256": "0f4a5c5bfaa6ab80bef59b6636fce842aee50840aed552c46080739d3730206c",
+    "claimedAuthor": "Grok Bot",
+    "authorship": "claimed-by-file",
+    "importedAt": "1970-01-01T10:00:00.000Z",
+    "parent": null
+  },
+  "components": [
+    {
+      "type": "arrange",
+      "axis": {
+        "kind": "number",
+        "min": 0,
+        "max": 200,
+        "step": 5,
+        "unit": "MAD"
+      },
+      "tokens": [
+        {
+          "key": "a",
+          "label": {
+            "text": "My estimate",
+            "language": "en",
+            "gloss": null
+          },
+          "source": null,
+          "position": 0.25,
+          "value": 50
+        }
+      ],
+      "target": null,
+      "derived": {
+        "relation": null,
+        "matchesTarget": null,
+        "order": ["a"],
+        "ties": false,
+        "values": {
+          "a": 50
+        }
+      }
+    }
+  ],
+  "hints": {
+    "total": 1,
+    "revealed": []
+  },
+  "canSubmit": true,
+  "submissions": []
+}

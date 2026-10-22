@@ -1,0 +1,101 @@
+{
+  "type": "boopy.activity-reply",
+  "version": 1,
+  "binding": {
+    "submissionId": "sub_k1",
+    "activityId": "act_k1"
+  },
+  "author": "Grok Bot",
+  "echo": "arrange: 낙타 left of 텐트 (your view); requested 낙타 left of 텐트; arrangement matches | sequence: \"낙타가 텐트 왼쪽에 있어요\" | hints: 1 of 2",
+  "reply": {
+    "summary": {
+      "text": "Synthetic example reply for rendering tests.",
+      "language": "en"
+    },
+    "points": [
+      {
+        "about": "sequence",
+        "text": "Synthetic point about the sentence.",
+        "language": "en"
+      }
+    ]
+  },
+  "next": {
+    "fallbackText": "Now picture the tent to the left of the camel and say that in Korean.",
+    "activity": {
+      "title": "Tent and camel",
+      "purpose": "Practice the same pattern with the tent as the subject.",
+      "instruction": {
+        "text": "텐트를 낙타 왼쪽에 놓고 한국어로 말해 보세요.",
+        "language": "ko",
+        "gloss": "Put the tent to the left of the camel, then say it in Korean."
+      },
+      "components": [
+        {
+          "type": "arrange",
+          "axis": {
+            "kind": "viewer-left-right"
+          },
+          "tokens": [
+            {
+              "key": "a",
+              "label": {
+                "text": "텐트",
+                "language": "ko",
+                "gloss": "tent"
+              },
+              "sourceId": null
+            },
+            {
+              "key": "b",
+              "label": {
+                "text": "낙타",
+                "language": "ko",
+                "gloss": "camel"
+              },
+              "sourceId": "ctx_synthetic1:itm_2"
+            }
+          ],
+          "target": {
+            "subject": "a",
+            "relation": "left-of",
+            "object": "b"
+          }
+        },
+        {
+          "type": "sequence",
+          "joiner": "space",
+          "language": "ko",
+          "tiles": [
+            {
+              "key": "t1",
+              "text": "낙타"
+            },
+            {
+              "key": "t2",
+              "text": "있어요"
+            },
+            {
+              "key": "t3",
+              "text": "텐트가"
+            },
+            {
+              "key": "t4",
+              "text": "왼쪽에"
+            },
+            {
+              "key": "t5",
+              "text": "오른쪽에"
+            }
+          ]
+        }
+      ],
+      "hints": [
+        {
+          "text": "Start with the tent this time.",
+          "language": "en"
+        }
+      ]
+    }
+  }
+}

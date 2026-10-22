@@ -1,0 +1,47 @@
+{
+  "type": "boopy.activity",
+  "version": 1,
+  "binding": {
+    "requestId": "arq_m1",
+    "packageId": "ctx_synthetic2",
+    "packetSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "author": "Grok Bot",
+  "fallbackText": "Think of a fair daytime petit taxi fare from the medina to Gueliz in dirhams.",
+  "activity": {
+    "title": "Petit taxi fare",
+    "purpose": "Check your sense of a fair petit taxi fare before you ride.",
+    "instruction": {
+      "text": "What would you expect to pay for a daytime petit taxi from the medina to Gueliz?",
+      "language": "en"
+    },
+    "components": [
+      {
+        "type": "arrange",
+        "axis": {
+          "kind": "number",
+          "min": 0,
+          "max": 200,
+          "step": 5,
+          "unit": "MAD"
+        },
+        "tokens": [
+          {
+            "key": "a",
+            "label": {
+              "text": "My estimate",
+              "language": "en"
+            },
+            "sourceId": null
+          }
+        ]
+      }
+    ],
+    "hints": [
+      {
+        "text": "Think about the distance and the time of day.",
+        "language": "en"
+      }
+    ]
+  }
+}

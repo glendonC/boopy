@@ -1,0 +1,90 @@
+{
+  "type": "boopy.activity",
+  "version": 1,
+  "binding": {
+    "requestId": "arq_k1",
+    "packageId": "ctx_synthetic1",
+    "packetSha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "author": "Grok Bot",
+  "fallbackText": "Picture the camel to the left of the tent and say it in Korean.",
+  "activity": {
+    "title": "Camel and tent",
+    "purpose": "Practice saying where things are in Korean, using your desert camp.",
+    "instruction": {
+      "text": "낙타를 텐트 왼쪽에 놓고 한국어로 말해 보세요.",
+      "language": "ko",
+      "gloss": "Put the camel to the left of the tent, then say it in Korean."
+    },
+    "components": [
+      {
+        "type": "arrange",
+        "axis": {
+          "kind": "viewer-left-right"
+        },
+        "tokens": [
+          {
+            "key": "a",
+            "label": {
+              "text": "낙타",
+              "language": "ko",
+              "gloss": "camel"
+            },
+            "sourceId": "ctx_synthetic1:itm_2"
+          },
+          {
+            "key": "b",
+            "label": {
+              "text": "텐트",
+              "language": "ko",
+              "gloss": "tent"
+            },
+            "sourceId": null
+          }
+        ],
+        "target": {
+          "subject": "a",
+          "relation": "left-of",
+          "object": "b"
+        }
+      },
+      {
+        "type": "sequence",
+        "joiner": "space",
+        "language": "ko",
+        "tiles": [
+          {
+            "key": "t1",
+            "text": "있어요"
+          },
+          {
+            "key": "t2",
+            "text": "낙타가"
+          },
+          {
+            "key": "t3",
+            "text": "왼쪽에"
+          },
+          {
+            "key": "t4",
+            "text": "텐트"
+          },
+          {
+            "key": "t5",
+            "text": "오른쪽에"
+          }
+        ]
+      }
+    ],
+    "hints": [
+      {
+        "text": "Start with the camel, then say where it is.",
+        "language": "en"
+      },
+      {
+        "text": "The place word comes right before 있어요.",
+        "language": "en"
+      }
+    ]
+  }
+}

@@ -748,4 +748,261 @@ describe('replies', () => {
       1,
     );
   });
+
+  it('turns a next activity into a new activity bound to the original request and its sources', async () => {
+    const test = await setup();
+    const digest = playKorean(test).submissions[0]?.digest ?? '';
+    const store = recordExport(test, 'sub_k1', 'act_k1');
+    const result = store.importReply(
+      reply('sub_k1', 'act_k1', digest, {
+        next: { fallbackText: 'Now say where the tent is.', activity: korean(test.camel) },
+      }),
+    );
+    assert.equal(result.nextActivityId, 'act_k2');
+    assert.equal(result.nextStatus, 'active');
+    const next = ActivityView.parse(store.view('act_k2'));
+    assert.deepEqual(next.provenance.parent, {
+      activityId: 'act_k1',
+      submissionId: 'sub_k1',
+      replyId: 'rep_k1',
+    });
+    assert.equal(next.provenance.requestId, 'arq_k1');
+    assert.equal(next.fallbackText, 'Now say where the tent is.');
+    assert.equal(next.revision, 0);
+    assert.equal(store.view('act_k1').submissions[0]?.reply?.nextActivityId, 'act_k2');
+    const summary = store.list().find((entry) => entry.activityId === 'act_k2');
+    assert.equal(summary?.parentActivityId, 'act_k1');
+
+    const second = await setup();
+    const secondDigest = playKorean(second).submissions[0]?.digest ?? '';
+    const secondStore = recordExport(second, 'sub_k1', 'act_k1');
+    const outside = secondStore.importReply(
+      reply('sub_k1', 'act_k1', secondDigest, {
+        next: { fallbackText: 'Try another.', activity: korean('ctx_elsewhere:itm_1') },
+      }),
+    );
+    assert.equal(outside.nextStatus, 'fallback-only');
+    assert.match(secondStore.view(outside.nextActivityId ?? '').issues.join('\n'), /sourceId/);
+  });
+});
+
+describe('listing, replay and isolation', () => {
+  it('lists newest imports first, at most twenty, with reply state', async () => {
+    const test = await setup();
+    for (let index = 0; index < 22; index += 1)
+      test.store.importActivity(file(test, korean(null), { fallbackText: `Synthetic ${index}.` }));
+    const list = test.store.list();
+    assert.equal(list.length, 20);
+    assert.equal(list[0]?.activityId, 'act_k22');
+    assert.equal(list[19]?.activityId, 'act_k3');
+    assert.ok(list.every((entry) => ActivitySummary.parse(entry)));
+    assert.deepEqual(list[0], {
+      activityId: 'act_k22',
+      title: 'Camel and tent',
+      status: 'active',
+      importedAt: list[0]?.importedAt,
+      claimedAuthor: 'Grok Bot',
+      submissions: 0,
+      awaitingReply: false,
+      replyAvailable: false,
+      parentActivityId: null,
+    });
+  });
+
+  it('refuses unknown, padded and encoded activity IDs', async () => {
+    const test = await setup();
+    test.store.importActivity(file(test, korean(null)));
+    for (const id of ['act_unknown', ' act_k1', 'act_k1 ', 'act%5Fk1', 'ACT_k1'])
+      refuses(test, () => test.store.view(id), 404, 'activity_unknown');
+  });
+
+  it('replays the journal after a restart into identical views, appending nothing', async () => {
+    const test = await setup();
+    const digest = playKorean(test).submissions[0]?.digest ?? '';
+    const store = recordExport(test, 'sub_k1', 'act_k1');
+    store.importReply(
+      reply('sub_k1', 'act_k1', digest, {
+        next: { fallbackText: 'Now say where the tent is.', activity: korean(test.camel) },
+      }),
+    );
+    store.arrange('act_k2', { revision: 0, positions: { a: 0.6, b: 0.4 } });
+    store.importActivity(file(test, { ...korean(null), components: [{ type: 'map' }] }));
+    const before = test.journal.all().length;
+    const restarted = test.restart();
+    const reborn = new Boopy(test.deps);
+    assert.equal(test.journal.all().length, before);
+    assert.deepEqual(restarted.list(), store.list());
+    for (const entry of store.list())
+      assert.deepEqual(restarted.view(entry.activityId), store.view(entry.activityId));
+    assert.deepEqual(reborn.packages(), test.boopy.packages());
+  });
+
+  it('never lets activity events reach sessions, packages, items or disclosures', async () => {
+    const control = await setup();
+    const test = await setup();
+    const digest = playKorean(test).submissions[0]?.digest ?? '';
+    const store = recordExport(test, 'sub_k1', 'act_k1');
+    store.importReply(
+      reply('sub_k1', 'act_k1', digest, {
+        next: { fallbackText: 'Now say where the tent is.', activity: korean(test.camel) },
+      }),
+    );
+    const reborn = new Boopy(test.deps);
+    const controlled = new Boopy(control.deps);
+    const strip = (boopy: Boopy, sessionId: string) => ({
+      packages: boopy.packages().map((pkg) => ({
+        ...pkg,
+        evidence: pkg.version === 2 ? evidenceRecords(pkg).length : 0,
+      })),
+      view: boopy.view(sessionId),
+      disclosures: boopy.disclosures,
+    });
+    assert.deepEqual(strip(reborn, test.sessionId), strip(controlled, control.sessionId));
+    const text = JSON.stringify(strip(reborn, test.sessionId));
+    for (const word of ['낙타가', 'Synthetic example reply', 'act_k1', 'sub_k1', 'Camel and tent'])
+      assert.equal(text.includes(word), false, word);
+    const written = new Set(
+      test.journal
+        .all()
+        .filter((event) => event.seq > control.journal.all().length)
+        .map((event) => event.type),
+    );
+    for (const type of written) assert.match(type, /^activity\./);
+    const next = await reborn.start(startRequest('Another synthetic session.'));
+    const committed = reborn.commit(next.id).committed?.packageId;
+    assert.ok(committed);
+    assert.equal(JSON.stringify(reborn.package(committed)).includes('낙타가'), false);
+  });
+});
+
+describe('example views (service/fixtures/activity)', () => {
+  const fixtures = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'activity');
+  const read = (name: string) => readFileSync(join(fixtures, name), 'utf8');
+
+  /** The store at fixed times and identifiers, as in section 10 of the contract. */
+  async function canonical() {
+    const journal = Journal.open(':memory:');
+    const test = testBoopy({ journal });
+    const session = (await test.boopy.start(startRequest('Synthetic camel and tent.'))).id;
+    for (const [requestId, packageId, packet, sources] of [
+      [
+        'arq_k1',
+        'ctx_synthetic1',
+        '1'.repeat(64),
+        [
+          {
+            sourceId: 'ctx_synthetic1:itm_2',
+            label: 'camel',
+            gloss: '낙타',
+            verification: 'accepted',
+          },
+        ],
+      ],
+      ['arq_m1', 'ctx_synthetic2', '5'.repeat(64), []],
+    ] as const)
+      journal.append(
+        {
+          type: 'activity.request-prepared',
+          session,
+          actor: 'person',
+          data: {
+            requestId,
+            packageId,
+            preparation: {
+              requestId: 'synthetic-preparation',
+              receiptId: 'handoff_x',
+              packetSha256: packet,
+            },
+            goal: 'Synthetic goal.',
+            personLanguage: 'en',
+            background: null,
+            sources: [...sources],
+            fileSha256: '9'.repeat(64),
+            delivery: 'not-sent',
+          },
+        },
+        `evt_request_${requestId}`,
+        '1970-01-01T08:59:00.000Z',
+      );
+    const ids: Record<string, string[]> = {
+      act: ['act_k1', 'act_k2', 'act_m1'],
+      sub: ['sub_k1'],
+      rep: ['rep_k1'],
+    };
+    let at = '';
+    const store = new ActivityStore({
+      journal,
+      now: () => new Date(at),
+      newId: (prefix) => ids[prefix]?.shift() ?? `${prefix}_unexpected`,
+    });
+    const step = <T>(time: string, work: () => T) => {
+      at = `1970-01-01T${time}.000Z`;
+      return work();
+    };
+    step('09:00:00', () => store.importActivity(read('korean-activity.json')));
+    step('09:01:00', () =>
+      store.arrange('act_k1', { revision: 0, positions: { a: 0.22, b: 0.71 } }),
+    );
+    step('09:02:00', () =>
+      store.sequence('act_k1', { revision: 1, chosen: ['t2', 't4', 't3', 't1'] }),
+    );
+    step('09:03:00', () => store.revealHint('act_k1', { revision: 2 }));
+    step('09:04:00', () => store.submit('act_k1', { revision: 3 }));
+    step('09:06:00', () => store.exportSubmission('sub_k1'));
+    step('09:20:00', () => store.importReply(read('korean-reply.json')));
+    step('10:00:00', () => store.importActivity(read('morocco-activity.json')));
+    step('10:01:00', () => store.arrange('act_m1', { revision: 0, positions: { a: 0.25 } }));
+    return {
+      korean: store.view('act_k1'),
+      morocco: store.view('act_m1'),
+      next: store.view('act_k2'),
+    };
+  }
+
+  it('match the views the real store produces from the synthetic files', async () => {
+    const views = await canonical();
+    const files = { 'korean-view.json': views.korean, 'morocco-view.json': views.morocco };
+    for (const [name, view] of Object.entries(files)) {
+      if (process.env.BOOPY_WRITE_ACTIVITY_FIXTURES === '1')
+        writeFileSync(join(fixtures, name), `${JSON.stringify(view, null, 2)}\n`);
+      assert.deepEqual(JSON.parse(read(name)), ActivityView.parse(view), name);
+    }
+    assert.equal(views.korean.revision, 4);
+    assert.equal(views.korean.submissions[0]?.export?.exportedAt, '1970-01-01T09:06:00.000Z');
+    assert.equal(views.korean.submissions[0]?.reply?.nextActivityId, 'act_k2');
+    assert.equal(views.korean.provenance.artifactSha256, sha256(read('korean-activity.json')));
+    assert.equal(views.morocco.revision, 1);
+    assert.deepEqual(views.morocco.submissions, []);
+    assert.equal(views.next.status, 'active');
+  });
+});
+
+describe('hints since the previous submission', () => {
+  it('freezes the hints opened since the previous submission beside the cumulative list', async () => {
+    const test = await setup();
+    const { activityId } = test.store.importActivity(file(test, korean(null)));
+    test.store.arrange(activityId, { revision: 0, positions: { a: 0.2, b: 0.8 } });
+    test.store.revealHint(activityId, { revision: 1 });
+    test.store.submit(activityId, { revision: 2 });
+    test.store.revealHint(activityId, { revision: 3 });
+    test.store.submit(activityId, { revision: 4 });
+    const view = test.store.submit(activityId, { revision: 5 });
+    assert.deepEqual(
+      view.submissions.map((submission) => [
+        submission.hintsRevealed,
+        submission.hintsRevealedSincePrevious,
+      ]),
+      [
+        [[0], [0]],
+        [[0, 1], [1]],
+        [[0, 1], []],
+      ],
+    );
+    assert.ok(ActivityView.parse(view));
+    assert.deepEqual(test.restart().view(activityId).submissions, view.submissions);
+    const fresh = test.store.importActivity(file(test, morocco()));
+    test.store.arrange(fresh.activityId, { revision: 0, positions: { a: 0.5 } });
+    const first = test.store.submit(fresh.activityId, { revision: 1 }).submissions[0];
+    assert.deepEqual([first?.hintsRevealed, first?.hintsRevealedSincePrevious], [[], []]);
+  });
 });
