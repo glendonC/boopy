@@ -376,4 +376,380 @@ describe('Boopy asks the local model itself (section 11)', () => {
       await s.close();
     }
   });
+  it('replays valid historical model names and refuses raw names that need normalization or contain links', async () => {
+    const s = await setup();
+    try {
+      const activityId = await calledActivity(s);
+      for (const [model, valid] of [
+        ['historical/local_model:1.0', true],
+        ['q'.repeat(45), true],
+        [` ${MODEL}`, false],
+        [`${MODEL} `, false],
+        [`${MODEL}\n`, false],
+        ['synthetic://model', false],
+        ['www.synthetic', false],
+        ['file:synthetic', false],
+      ] as const) {
+        const journal = Journal.open(':memory:');
+        try {
+          for (const event of s.journal.all()) {
+            const changed = structuredClone(event);
+            if (changed.type === 'activity.call-asked') changed.data.model = model;
+            if (changed.type === 'activity.imported' && changed.data.call)
+              changed.data.call.model = model;
+            journal.append(changed, changed.id, changed.at);
+          }
+          const replay = () => new ActivityStore({ journal });
+          if (valid) {
+            const store = replay();
+            assert.equal(store.view(activityId).provenance.call?.model, model);
+            assert.equal(ActivityCallView.parse(store.calls()[0]).model, model);
+          } else assert.throws(replay, /does not fit/, model);
+        } finally {
+          journal.close();
+        }
+      }
+    } finally {
+      await s.close();
+    }
+  });
+  it('produces the synthetic called activity and reply fixture used by headset tests', async () => {
+    const s = await setup();
+    try {
+      const activityId = await calledActivity(s);
+      s.ollama.answer(answerWith(replyAnswer(activityAnswer(s.camel))));
+      const callId = s.calls.submit(activityId, { revision: 1 }).submissions.at(-1)
+        ?.replyCall?.callId;
+      assert.ok(callId);
+      await s.calls.finished(callId);
+      const view = s.store.view(activityId);
+      // Wall time is measured in production. Only these two measurement fields are fixed for
+      // the portable synthetic fixture; every ID, binding, state and hash comes from the store.
+      assert.ok(view.provenance.call);
+      view.provenance.call.durationMs = 1500;
+      const reply = view.submissions.at(-1)?.reply;
+      assert.ok(reply?.call);
+      reply.call.durationMs = 1500;
+      const fixture = new URL('../fixtures/activity/called-with-reply.json', import.meta.url);
+      if (process.env.BOOPY_UPDATE_ACTIVITY_FIXTURE === '1')
+        writeFileSync(fixture, `${JSON.stringify(view, null, 2)}\n`);
+      assert.deepEqual(view, ActivityView.parse(JSON.parse(readFileSync(fixture, 'utf8'))));
+    } finally {
+      await s.close();
+    }
+  });
+  it('refuses remote, missing and changed model metadata before sending any prompt', async () => {
+    const s = await setup();
+    try {
+      for (const models of [
+        [],
+        [{ ...LOCAL_MODEL, remote_model: MODEL, remote_host: 'https://cloud.invalid' }],
+        [{ ...LOCAL_MODEL, digest: 'a'.repeat(64) }],
+        [{ ...LOCAL_MODEL, size: 0 }],
+        [{ ...LOCAL_MODEL, details: { format: 'remote' } }],
+      ]) {
+        s.ollama.models = models;
+        const done = await s.calls.finished((await s.ask()).callId);
+        assert.equal(done.failure?.code, 'assistant_error');
+        assert.equal(s.ollama.requests.length, 0);
+      }
+      s.ollama.models = [LOCAL_MODEL];
+      for (const show of [
+        { ...LOCAL_SHOW, remote_model: MODEL },
+        {},
+        {
+          ...LOCAL_SHOW,
+          model_info: { 'general.architecture': 'other', 'general.parameter_count': 35951479808 },
+        },
+      ]) {
+        s.ollama.show = show;
+        const done = await s.calls.finished((await s.ask()).callId);
+        assert.equal(done.failure?.code, 'assistant_error');
+        assert.equal(s.ollama.requests.length, 0);
+      }
+      assert.deepEqual(s.store.list(), []);
+    } finally {
+      await s.close();
+    }
+  });
+  it('a practice request sends the rendered request once and imports a valid answer as Boopy-called', async () => {
+    const s = await setup();
+    try {
+      s.ollama.answer(answerWith(activityAnswer(s.camel)));
+      const asked = await s.ask();
+      ActivityCallView.parse(asked);
+      assert.equal(asked.kind, 'activity');
+      assert.equal(asked.state, 'running');
+      assert.equal(asked.provider, 'ollama');
+      assert.equal(asked.model, MODEL);
+      assert.equal(asked.packageId, s.packageId);
+      const done = await s.calls.finished(asked.callId);
+      ActivityCallView.parse(done);
+      assert.equal(done.state, 'imported');
+      assert.equal(done.failure, null);
+      assert.deepEqual(done.issues, []);
+      assert.ok(done.activityId);
+      assert.ok(Number.isInteger(done.durationMs) && (done.durationMs ?? -1) >= 0);
+
+      assert.equal(s.ollama.requests.length, 1);
+      const [sent] = s.ollama.requests;
+      assert.equal(sent?.method, 'POST');
+      assert.equal(sent?.url, '/api/chat');
+      assert.equal(sent?.body.model, MODEL);
+      assert.equal(sent?.body.stream, false);
+      assert.equal(sent?.body.think, false);
+      assert.equal(sent?.body.keep_alive, '30m');
+      assert.deepEqual(sent?.body.options, { temperature: 0.2, num_predict: 8192 });
+      assert.equal(sent && 'format' in sent.body, false);
+      const system = sent?.body.messages[0];
+      assert.equal(system?.role, 'system');
+      assert.match(
+        system?.content ?? '',
+        /Answer with one JSON object, and nothing else, that matches this JSON Schema:\n\{/,
+      );
+
+      const file = sentFile(s, 0);
+      const request = ActivityRequestFile.parse(file.value);
+      assert.equal(file.preamble, request.instructions.join('\n'));
+      assert.equal(request.delivery, 'sent-by-boopy-to-local-model');
+      assert.match(request.note, /Boopy sent this request to the local model on this Mac\./);
+      assert.equal(request.goal, GOAL);
+      assert.equal(request.context.packet, PACKET);
+      assert.equal(request.requestId, done.requestId);
+      const [prepared] = eventsOf(s.journal, 'activity.request-prepared');
+      assert.equal(prepared?.actor, 'person');
+      assert.equal(prepared?.data.delivery, 'sent-to-local-model');
+      assert.equal(prepared?.data.fileSha256, sha256(file.text));
+
+      const view = ActivityView.parse(s.store.view(done.activityId));
+      assert.equal(view.status, 'active');
+      assert.equal(view.provenance.authorship, 'called-by-boopy');
+      assert.equal(view.provenance.claimedAuthor, null);
+      assert.equal(view.provenance.requestId, done.requestId);
+      assert.deepEqual(view.provenance.call, {
+        callId: asked.callId,
+        provider: 'ollama',
+        model: MODEL,
+        durationMs: done.durationMs,
+      });
+      const [summary] = s.store.list();
+      ActivitySummary.parse(summary);
+      assert.deepEqual(summary?.call, { provider: 'ollama', model: MODEL });
+      assert.equal(summary?.claimedAuthor, null);
+
+      const types = s.journal
+        .all()
+        .map((event) => event.type)
+        .filter((type) => type.startsWith('activity.'));
+      assert.deepEqual(types, [
+        'activity.request-prepared',
+        'activity.call-asked',
+        'activity.imported',
+        'activity.call-finished',
+      ]);
+      const [callAsked] = eventsOf(s.journal, 'activity.call-asked');
+      assert.equal(callAsked?.actor, 'person');
+      assert.deepEqual(callAsked?.data, {
+        callId: asked.callId,
+        kind: 'activity',
+        provider: 'ollama',
+        model: MODEL,
+        requestId: done.requestId,
+        submissionId: null,
+        fileSha256: sha256(file.text),
+      });
+      const [imported] = eventsOf(s.journal, 'activity.imported');
+      assert.equal(imported?.actor, 'system');
+      assert.equal(imported?.data.claimedAuthor, null);
+      assert.deepEqual(imported?.data.call, view.provenance.call);
+      const [finished] = eventsOf(s.journal, 'activity.call-finished');
+      assert.equal(finished?.actor, 'system');
+      assert.deepEqual(finished?.data, {
+        callId: asked.callId,
+        outcome: 'imported',
+        durationMs: done.durationMs,
+        failure: null,
+        issues: [],
+        activityId: done.activityId,
+        replyId: null,
+        nextActivityId: null,
+        metrics: {
+          totalMs: 1500,
+          loadMs: 16,
+          promptEvalMs: 780,
+          evalMs: 615,
+          promptTokens: 3386,
+          outputTokens: 712,
+        },
+      });
+      // Call events never carry prompt or answer text.
+      for (const type of ['activity.call-asked', 'activity.call-finished'])
+        for (const event of eventsOf(s.journal, type))
+          assert.doesNotMatch(JSON.stringify(event.data), /camel|낙타|Synthetic prepared packet/i);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('ignores any binding, echo, author or type the model writes', async () => {
+    const s = await setup();
+    try {
+      s.ollama.answer(
+        answerWith({
+          ...activityAnswer(s.camel),
+          type: 'boopy.activity',
+          version: 1,
+          binding: { requestId: 'arq_other', packageId: 'ctx_other', packetSha256: 'a'.repeat(64) },
+          echo: 'synthetic',
+          author: 'Grok Bot',
+        }),
+      );
+      const done = await s.calls.finished((await s.ask()).callId);
+      assert.equal(done.state, 'imported');
+      assert.ok(done.activityId);
+      const view = s.store.view(done.activityId);
+      assert.equal(view.provenance.claimedAuthor, null);
+      assert.equal(view.provenance.requestId, done.requestId);
+      assert.equal(view.provenance.authorship, 'called-by-boopy');
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('reads the answer with the section 2 container rules', async () => {
+    const s = await setup();
+    try {
+      const json = JSON.stringify(activityAnswer(s.camel), null, 2);
+      for (const content of [
+        `\`\`\`json\n${json}\n\`\`\``,
+        `Here it is.\n\`\`\`json\n${json}\n\`\`\``,
+      ]) {
+        s.ollama.answer(chat(content));
+        const done = await s.calls.finished((await s.ask()).callId);
+        assert.equal(done.state, 'imported');
+      }
+      const unreadable = [
+        'Here is a camel and tent activity for you.',
+        `\`\`\`json\n${json}\n\`\`\`\n\`\`\`json\n${json}\n\`\`\``,
+        `\`\`\`jsonc\n${json}\n\`\`\``,
+        '{"activity": {}, "activity": {}, "fallbackText": "Synthetic."}',
+        '{"__proto__": {}, "fallbackText": "Synthetic."}',
+        '["not", "an", "object"]',
+      ];
+      for (const content of unreadable) {
+        s.ollama.answer(chat(content));
+        const done = await s.calls.finished((await s.ask()).callId);
+        assert.equal(done.state, 'failed');
+        assert.deepEqual(done.failure, {
+          code: 'answer_unreadable',
+          message: `${PRACTICE}its answer wasn't one JSON object.`,
+        });
+        assert.deepEqual(done.issues, []);
+        assert.equal(done.activityId, null);
+      }
+      assert.equal(s.store.list().length, 2);
+      assert.equal(eventsOf(s.journal, 'activity.imported').length, 2);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('an answer that does not fit the format imports nothing and fails with its issues', async () => {
+    const s = await setup();
+    try {
+      const valid = activityAnswer(s.camel);
+      const [arrange, sequence] = valid.activity.components;
+      const answers = [
+        { fallbackText: valid.fallbackText },
+        { activity: valid.activity },
+        { ...valid, fallbackText: 'See https://example.invalid for more.' },
+        { ...valid, fallbackText: '' },
+        {
+          ...valid,
+          activity: {
+            ...valid.activity,
+            components: [
+              { ...arrange, tokens: [{ key: 'a', label: { text: '낙타', language: 'ko' } }] },
+            ],
+          },
+        },
+        { ...valid, activity: { ...valid.activity, components: [sequence, sequence] } },
+        {
+          ...valid,
+          activity: { ...valid.activity, components: [{ type: 'map', places: [] }] },
+        },
+      ];
+      for (const answer of answers) {
+        s.ollama.answer(answerWith(answer));
+        const done = await s.calls.finished((await s.ask()).callId);
+        assert.equal(done.state, 'failed');
+        assert.deepEqual(done.failure, {
+          code: 'answer_invalid',
+          message: `${PRACTICE}its answer didn't fit Boopy's format.`,
+        });
+        assert.ok(done.issues.length >= 1 && done.issues.length <= 8);
+        for (const issue of done.issues) assert.match(issue, /^[^\n]+: [^\n]+$/);
+        assert.equal(done.activityId, null);
+      }
+      assert.deepEqual(s.store.list(), []);
+      assert.equal(eventsOf(s.journal, 'activity.imported').length, 0);
+      assert.equal(eventsOf(s.journal, 'activity.call-finished').length, answers.length);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('a local model error fails the call once and nothing is retried', async () => {
+    const s = await setup();
+    try {
+      const errors: Responder[] = [
+        status(500, '{"error":"synthetic failure"}'),
+        status(501, '{"error":"structured output is unavailable"}'),
+        status(200, 'not json'),
+        status(200, '{"model":"synthetic","done":true}'),
+        status(
+          200,
+          JSON.stringify({ message: { role: 'assistant', content: 'x'.repeat(1_100_000) } }),
+        ),
+      ];
+      for (const [index, error] of errors.entries()) {
+        s.ollama.answer(error);
+        const done = await s.calls.finished((await s.ask()).callId);
+        assert.equal(done.state, 'failed');
+        assert.deepEqual(done.failure, {
+          code: 'assistant_error',
+          message: `${PRACTICE}the local model reported an error.`,
+        });
+        assert.equal(s.ollama.requests.length, index + 1);
+      }
+      assert.deepEqual(s.store.list(), []);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('an unreachable local model fails the call', async () => {
+    const s = await setup();
+    const gone = await FakeOllama.start();
+    const url = gone.url;
+    await gone.close();
+    const calls = new ActivityCalls({
+      store: s.store,
+      assistant: new OllamaActivityAssistant({ url, model: MODEL }),
+      timeoutMs: 5000,
+    });
+    try {
+      const done = await calls.finished(
+        (await calls.askForPractice({ packageId: s.packageId, goal: GOAL })).callId,
+      );
+      assert.equal(done.state, 'failed');
+      assert.deepEqual(done.failure, {
+        code: 'assistant_unreachable',
+        message: `${PRACTICE}the local model isn't answering on this Mac.`,
+      });
+    } finally {
+      await calls.close(0);
+      await s.close();
+    }
+  });
 });
