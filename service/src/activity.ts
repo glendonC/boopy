@@ -404,4 +404,369 @@ export class ActivityStore {
     );
     return { requestId, ...file };
   }
+
+  /**
+   * Section 6. The attempt is frozen; the instructions around it are current. A repeat that
+   * renders the latest export's bytes journals nothing. Bytes that differ, because instructions
+   * changed in an upgrade, are rendered afresh and journaled as a new export; earlier exports stay
+   * in the journal and the view shows the latest.
+   */
+  exportSubmission(submissionId: string): RenderedFile & { submissionId: string } {
+    const found =
+      typeof submissionId === 'string' ? this.#submissions.get(submissionId) : undefined;
+    if (found === undefined) throw new BoopyError(404, 'submission_unknown', 'No such submission.');
+    const { activity: state, submission } = found;
+    const activity = state.activity;
+    if (activity === null) throw new Error('Submission without an active activity.');
+    const render = (exportedAt: string) =>
+      renderSubmissionFile({
+        submissionId,
+        activityId: state.activityId,
+        requestId: state.request.requestId,
+        exportedAt,
+        claimedAuthor: state.claimedAuthor,
+        authorship: state.call ? 'called-by-boopy' : 'claimed-by-file',
+        artifactSha256: state.artifactSha256,
+        activity,
+        submission,
+      });
+    const latest = submission.export;
+    if (latest !== null) {
+      const again = render(latest.exportedAt);
+      if (again.fileSha256 === latest.fileSha256) return { submissionId, ...again };
+    }
+    const exportedAt = this.#now().toISOString();
+    const file = render(exportedAt);
+    this.#record(
+      {
+        type: 'activity.submission-exported',
+        session: state.request.sessionId,
+        actor: 'person',
+        data: {
+          submissionId,
+          activityId: state.activityId,
+          fileSha256: file.fileSha256,
+          delivery: 'not-sent',
+        },
+      },
+      exportedAt,
+    );
+    return { submissionId, ...file };
+  }
+
+  /** Section 2 import order: container, envelope, binding, duplicate, then the body. */
+  importActivity(content: string, call?: CallProvenance): ImportResult {
+    const read = readActivityFile(content);
+    if (read.kind === 'unreadable') throw unreadable();
+    if (read.kind === 'invalid') throw invalid(read.issues);
+    const { binding } = read.file;
+    const request = this.#requests.get(binding.requestId);
+    if (
+      request === undefined ||
+      request.packageId !== binding.packageId ||
+      request.packetSha256 !== binding.packetSha256
+    )
+      throw new BoopyError(
+        409,
+        'activity_binding_mismatch',
+        'This file is not bound to a request recorded in Boopy.',
+      );
+    const existing = this.#imports.get(read.artifactSha256);
+    if (existing && !call) return { ...importResult(existing), duplicate: true };
+    const body = validateActivityBody(read.file.activity, sourceIds(request));
+    if (call && body.issues.length) throw invalid(body.issues);
+    const activityId = this.#newId('act');
+    this.#record({
+      type: 'activity.imported',
+      session: request.sessionId,
+      actor: call ? 'system' : 'person',
+      data: {
+        activityId,
+        ...(call ? { call } : {}),
+        requestId: request.requestId,
+        artifactSha256: read.artifactSha256,
+        container: read.container,
+        claimedAuthor: read.file.author ?? null,
+        fallbackText: read.file.fallbackText,
+        activity: body.activity,
+        issues: body.issues,
+        parent: null,
+      },
+    });
+    return { ...importResult(this.#find(activityId)), duplicate: false };
+  }
+
+  /** Replaces every position at once; only a released drag reaches the service. */
+  arrange(activityId: string, input: unknown): ActivityView {
+    const state = this.#find(activityId);
+    const request = ArrangementRequest.parse(input);
+    const activity = this.#changeable(state, request.revision);
+    const component = arrangeOf(activity);
+    if (component === null) throw missing('arrangement');
+    // z.record drops a __proto__ key, so the raw keys are checked as sent.
+    const sent = Object.keys((input as { positions: object }).positions);
+    const keys = component.tokens.map((token) => token.key);
+    if (sent.length !== keys.length || !keys.every((key) => sent.includes(key)))
+      throw new BoopyError(
+        400,
+        'invalid_request',
+        `positions: Send a position or null for exactly ${keys.join(', ')}.`,
+      );
+    const positions = Object.fromEntries(
+      keys.map((key) => {
+        const x = request.positions[key] ?? null;
+        return [key, x === 0 ? 0 : x];
+      }),
+    );
+    this.#record({
+      type: 'activity.arranged',
+      session: state.request.sessionId,
+      actor: 'person',
+      data: { activityId, revision: state.revision + 1, positions },
+    });
+    return this.view(activityId);
+  }
+
+  sequence(activityId: string, input: unknown): ActivityView {
+    const state = this.#find(activityId);
+    const request = SequenceRequest.parse(input);
+    const activity = this.#changeable(state, request.revision);
+    const component = sequenceOf(activity);
+    if (component === null) throw missing('sequence');
+    const keys = component.tiles.map((tile) => tile.key);
+    if (!request.chosen.every((key) => keys.includes(key)))
+      throw new BoopyError(400, 'invalid_request', 'chosen: Choose tiles from this activity.');
+    this.#record({
+      type: 'activity.sequenced',
+      session: state.request.sessionId,
+      actor: 'person',
+      data: { activityId, revision: state.revision + 1, chosen: [...request.chosen] },
+    });
+    return this.view(activityId);
+  }
+
+  /** Hints are revealed in order. */
+  revealHint(activityId: string, input: unknown): ActivityView {
+    const state = this.#find(activityId);
+    const request = RevisionRequest.parse(input);
+    const activity = this.#changeable(state, request.revision);
+    if (state.hintsRevealed >= activity.hints.length)
+      throw new BoopyError(409, 'no_more_hints', 'There are no more hints.');
+    this.#record({
+      type: 'activity.hint-revealed',
+      session: state.request.sessionId,
+      actor: 'person',
+      data: { activityId, revision: state.revision + 1, index: state.hintsRevealed },
+    });
+    return this.view(activityId);
+  }
+
+  /** Freezes what the person did; Boopy never says whether it is correct. */
+  submit(activityId: string, input: unknown): ActivityView {
+    const state = this.#find(activityId);
+    const request = RevisionRequest.parse(input);
+    const activity = this.#changeable(state, request.revision);
+    if (!submittable(state, activity))
+      throw new BoopyError(
+        409,
+        'nothing_to_submit',
+        'Place something or choose a tile before submitting.',
+      );
+    const arrange = arrangeOf(activity);
+    const sequence = sequenceOf(activity);
+    this.#record({
+      type: 'activity.submitted',
+      session: state.request.sessionId,
+      actor: 'person',
+      data: {
+        activityId,
+        revision: state.revision + 1,
+        submissionId: this.#newId('sub'),
+        positions: arrange ? { ...state.positions } : null,
+        derived: arrange ? deriveArrangement(arrange, state.positions) : null,
+        chosen: sequence ? [...state.chosen] : null,
+        text: sequence ? sequenceText(sequence, state.chosen) : null,
+        hintsRevealed: Array.from({ length: state.hintsRevealed }, (_, index) => index),
+        digest: digestOf(activity, {
+          positions: state.positions,
+          chosen: state.chosen,
+          hintsRevealed: state.hintsRevealed,
+        }),
+      },
+    });
+    return this.view(activityId);
+  }
+
+  /** Section 7: one reply per exported submission, proven by echoing its digest. */
+  importReply(content: string, call?: CallProvenance): ReplyResult {
+    const read = readReplyFile(content);
+    if (read.kind === 'unreadable') throw unreadable();
+    if (read.kind === 'invalid') throw invalid(read.issues);
+    const { binding } = read.file;
+    const found = this.#submissions.get(binding.submissionId);
+    if (
+      found === undefined ||
+      found.activity.activityId !== binding.activityId ||
+      (found.submission.export === null && !(call && found.submission.replyCall === call.callId))
+    )
+      throw new BoopyError(
+        409,
+        'reply_binding_mismatch',
+        'This reply is not bound to a submission exported from Boopy.',
+      );
+    const earlier = this.#replies.get(read.artifactSha256);
+    if (earlier && !call) return { ...this.#replyResult(earlier), duplicate: true };
+    const { activity, submission } = found;
+    if (submission.reply !== null)
+      throw new BoopyError(
+        409,
+        'reply_exists',
+        'This submission already has a reply. Submit again in Boopy for a new one.',
+      );
+    if (normalizeEcho(read.file.echo) !== normalizeEcho(submission.digest))
+      throw new BoopyError(
+        409,
+        'reply_not_matched',
+        'This reply does not quote the exported submission exactly.',
+      );
+    const next = read.file.next;
+    const body = next
+      ? validateActivityBody(next.activity, sourceIds(activity.request), ['next', 'activity'])
+      : null;
+    if (call && body?.issues.length) throw invalid(body.issues);
+    const replyId = this.#newId('rep');
+    const nextActivityId = next ? this.#newId('act') : null;
+    const claimedAuthor = read.file.author ?? null;
+    this.#record({
+      type: 'activity.reply-imported',
+      session: activity.request.sessionId,
+      actor: call ? 'system' : 'person',
+      data: {
+        replyId,
+        submissionId: submission.submissionId,
+        activityId: activity.activityId,
+        artifactSha256: read.artifactSha256,
+        container: read.container,
+        claimedAuthor,
+        ...(call ? { call } : {}),
+        reply: JSON.parse(JSON.stringify(read.file.reply)),
+        nextActivityId,
+      },
+    });
+    if (next && body && nextActivityId)
+      this.#record({
+        type: 'activity.imported',
+        session: activity.request.sessionId,
+        actor: call ? 'system' : 'person',
+        data: {
+          activityId: nextActivityId,
+          requestId: activity.request.requestId,
+          artifactSha256: read.artifactSha256,
+          container: read.container,
+          claimedAuthor,
+          ...(call ? { call } : {}),
+          fallbackText: next.fallbackText,
+          activity: body.activity,
+          issues: body.issues,
+          parent: {
+            activityId: activity.activityId,
+            submissionId: submission.submissionId,
+            replyId,
+          },
+        },
+      });
+    return { ...this.#replyResult(found), duplicate: false };
+  }
+
+  call(callId: string): ActivityCallView {
+    const found = this.#calls.get(callId);
+    if (!found) throw new BoopyError(404, 'call_unknown', 'No such call.');
+    return structuredClone(found.view);
+  }
+
+  calls(): ActivityCallView[] {
+    return [...this.#calls.values()]
+      .sort((a, b) => b.view.askedAt.localeCompare(a.view.askedAt) || b.seq - a.seq)
+      .slice(0, LIST_LIMIT)
+      .map(({ view }) => structuredClone(view));
+  }
+
+  askCall(input: Omit<CallAsked, 'callId'> & { actor: 'person' | 'system' }): ActivityCallView {
+    const request = this.#requests.get(input.requestId);
+    if (!request) throw new Error('Missing call request.');
+    const { actor, ...data } = input;
+    const callId = this.#newId('cal');
+    this.#record({
+      type: 'activity.call-asked',
+      actor,
+      session: request.sessionId,
+      data: { ...data, callId },
+    });
+    return this.call(callId);
+  }
+
+  finishCall(data: CallFinished): ActivityCallView {
+    const call = this.call(data.callId);
+    const request = this.#requests.get(call.requestId);
+    if (!request) throw new Error('Missing call request.');
+    this.#record({
+      type: 'activity.call-finished',
+      actor: 'system',
+      session: request.sessionId,
+      data,
+    });
+    return this.call(data.callId);
+  }
+
+  renderSubmissionForCall(submissionId: string): RenderedFile {
+    const found = this.#submissions.get(submissionId);
+    if (!found?.activity.activity) throw new Error('Missing called submission.');
+    const { activity: state, submission } = found;
+    return renderSubmissionFile({
+      submissionId,
+      activityId: state.activityId,
+      requestId: state.request.requestId,
+      exportedAt: this.#now().toISOString(),
+      claimedAuthor: null,
+      authorship: 'called-by-boopy',
+      artifactSha256: state.artifactSha256,
+      activity: found.activity.activity,
+      submission,
+      delivery: 'sent-by-boopy-to-local-model',
+    });
+  }
+
+  #replyResult(found: { activity: ActivityState; submission: SubmissionState }) {
+    const reply = found.submission.reply;
+    if (reply === null) throw new Error('Reply missing.');
+    const next = reply.nextActivityId ? this.#activities.get(reply.nextActivityId) : undefined;
+    return {
+      replyId: reply.replyId,
+      submissionId: found.submission.submissionId,
+      activityId: found.activity.activityId,
+      nextActivityId: next?.activityId ?? null,
+      nextStatus: next ? statusOf(next) : null,
+    };
+  }
+
+  #find(activityId: string): ActivityState {
+    const state = typeof activityId === 'string' ? this.#activities.get(activityId) : undefined;
+    if (state === undefined) throw new BoopyError(404, 'activity_unknown', 'No such activity.');
+    return state;
+  }
+
+  /** Only an active activity at the named revision can change. */
+  #changeable(state: ActivityState, revision: number): ActivityBody {
+    if (state.activity === null)
+      throw new BoopyError(409, 'activity_unavailable', 'This activity can only be shown as text.');
+    if (revision !== state.revision)
+      throw new BoopyError(409, 'stale_activity', 'This activity changed. Refresh it first.');
+    return state.activity;
+  }
+
+  #record(event: ActivityEvent, at = this.#now().toISOString()): Recorded {
+    const recorded = this.#journal.append(event, `evt_${randomUUID()}`, at);
+    this.#apply(recorded);
+    return recorded;
+  }
 }
