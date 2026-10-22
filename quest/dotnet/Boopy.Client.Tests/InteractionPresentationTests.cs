@@ -330,5 +330,120 @@ namespace Boopy.Client.Tests
             Assert.That(view.Dialogue, Is.EqualTo("이 사진에 뭐가 있어요?"), "Boopy's line stays on the task.");
             Assert.That(view.ChipItem()!.Status, Is.EqualTo("proposed"), "Answering does not confirm the annotation.");
         }
+
+        [Test]
+        public void ACertainAnswerReadsYouNotSent()
+        {
+            var view = InteractionPresentation.Read(Answered("[" + SecondAttempt + "," + FirstAttempt + "]", 3));
+            Assert.That(view.SpeakerLine, Is.EqualTo("You · Not sent"));
+            Assert.That(view.Caption, Is.EqualTo("낙타예요"));
+        }
+
+        [Test]
+        public void OnlyAChipWithBoopysLineOrARecordedAnswerIsPresented()
+        {
+            Assert.That(InteractionPresentation.Read(Lesson()).Presentable, Is.True);
+            Assert.That(InteractionPresentation.Read(Manual()).Presentable, Is.True);
+            Assert.That(InteractionPresentation.Read(Without(Lesson(), "dialogue")).Presentable, Is.False,
+                "Boopy's line was too long for the task: the session keeps its own line.");
+            Assert.That(InteractionPresentation.Read(Without(Lesson(), "annotation")).Presentable, Is.False,
+                "The label was too long for the task: the session keeps its own chip and outline.");
+            Assert.That(InteractionPresentation.Read(OpenSave()).Presentable, Is.False);
+            Assert.That(InteractionPresentation.Read(WrongItem()).Presentable, Is.False);
+            foreach (var partial in new[] { Without(Lesson(), "dialogue"), Without(Lesson(), "annotation"), OpenSave(), WrongItem() })
+            {
+                var answered = JObject.Parse(partial);
+                answered["attempts"] = JArray.Parse("[" + FirstAttempt + "]");
+                Assert.That(InteractionPresentation.Read(answered.ToString()).Presentable, Is.True, "A recorded answer is the task's own line.");
+            }
+        }
+
+        [Test]
+        public void AWrongItemReadsWrongItemWithNoChipAndNoControl()
+        {
+            var body = JObject.Parse(WrongItem());
+            body["attempts"] = JArray.Parse("[" + FirstAttempt + "]");
+            var view = InteractionPresentation.Read(body.ToString());
+            Assert.That(view.Caption, Is.EqualTo("Wrong item."));
+            Assert.That(view.SpeakerLine, Is.EqualTo("Boopy · Not sent"));
+            Assert.That(view.AnswerLabel, Is.Null);
+            Assert.That(view.ChipItem(), Is.Null);
+            Assert.That(view.LastAttempt!.Text, Is.EqualTo("낙타예요"), "The recorded answer stays on the task.");
+        }
+
+        [TestCase("Answer aloud.", "Answer aloud")]
+        [TestCase("Answer aloud", "Answer aloud")]
+        [TestCase("Answer aloud..", "Answer aloud.")]
+        [TestCase("이 사진에 대해 말해 보세요.", "이 사진에 대해 말해 보세요")]
+        [TestCase("What do you see?", "What do you see?")]
+        public void TheAnswerControlDropsOneTrailingPeriod(string prompt, string label)
+        {
+            var view = InteractionPresentation.Read(WithPrompt(prompt));
+            Assert.That(view.AnswerLabel, Is.EqualTo(label));
+            Assert.That(view.Action!.Label, Is.EqualTo(prompt), "The prompt itself is kept as sent.");
+        }
+
+        [Test]
+        public void OnlyAnOpenVoiceReplyGetsAControl()
+        {
+            Assert.That(InteractionPresentation.Read(Manual()).AnswerLabel, Is.Null, "A choice has no person action in protocol v1.");
+            var step = InteractionPresentation.Read(StepTask());
+            Assert.That(step.Action!.Type, Is.EqualTo("task_step"));
+            Assert.That(step.AnswerLabel, Is.Null, "A task step has no person action in protocol v1.");
+            var cancelled = InteractionPresentation.Read(View(
+                "tsk_sahara_later", "continue_saved_task", "src_sahara_still",
+                "Sahara. Save it. Korean later.", 3, false, LessonComponents, phase: "cancelled"));
+            Assert.That(cancelled.AnswerLabel, Is.Null, "A cancelled task takes no answer.");
+            Assert.That(cancelled.Caption, Is.EqualTo("이 사진에 뭐가 있어요?"));
+        }
+
+        private static readonly Action<JObject>[] MalformedTaskFields =
+        {
+            view => view.Remove("taskId"),
+            view => view["taskId"] = 7,
+            view => view["taskId"] = "",
+            view => view.Remove("sessionId"),
+            view => view.Remove("revision"),
+            view => view["revision"] = -1,
+            view => view["revision"] = "1",
+            view => view["revision"] = 1.5,
+            view => view["revision"] = 1_000_001,
+            view => view["revision"] = 1L << 40,
+            view => view.Remove("phase"),
+            view => view["phase"] = "closed",
+            view => view.Remove("attempts"),
+            view => view["attempts"] = new JObject(),
+            view => view["attempts"] = JArray.Parse("[{\"eventId\":\"evt_x\",\"recognitionUncertain\":false,\"kind\":\"practice-attempt\"}]"),
+            view => view["attempts"] = JArray.Parse("[{\"eventId\":\"evt_x\",\"text\":\"\",\"recognitionUncertain\":false,\"kind\":\"practice-attempt\"}]"),
+            view => view["attempts"] = JArray.Parse("[{\"eventId\":\"evt_x\",\"text\":\"Camel\",\"recognitionUncertain\":\"no\",\"kind\":\"practice-attempt\"}]"),
+            view => view["attempts"] = JArray.Parse("[{\"eventId\":\"evt_x\",\"text\":\"Camel\",\"recognitionUncertain\":false,\"kind\":\"verified-answer\"}]"),
+            view => view["attempts"] = JArray.Parse("[{\"text\":\"Camel\",\"recognitionUncertain\":false,\"kind\":\"practice-attempt\"}]"),
+            view => view["attempts"] = JArray.Parse("[\"Camel\"]"),
+            view => ((JObject)view["components"]![1]!).Remove("evidenceIds"),
+            view => view["components"]![1]!["evidenceIds"] = new JArray(),
+            view => view["components"]![1]!["evidenceIds"] = new JArray(7),
+            view => view["components"]![1]!["evidenceIds"] = new JArray(""),
+            view => view["components"]![1]!["evidenceIds"] = new JArray("a", "b", "c", "d", "e"),
+        };
+
+        [Test]
+        public void RejectsMalformedTaskFields([Range(0, 24)] int change)
+        {
+            var body = JObject.Parse(Lesson());
+            MalformedTaskFields[change](body);
+            Assert.Throws<ArgumentException>(() => InteractionPresentation.Read(body.ToString()));
+        }
+
+        [Test]
+        public void RejectsAmbiguousOrTrailingJson()
+        {
+            var twice = Lesson().Replace("\"delivery\":\"not-sent\"", "\"delivery\":\"sent\",\"delivery\":\"not-sent\"");
+            Assert.That(twice, Does.Contain("\"delivery\":\"sent\""));
+            Assert.Throws<ArgumentException>(() => InteractionPresentation.Read(twice), "A repeated field is refused, never resolved.");
+            Assert.Throws<ArgumentException>(() => InteractionPresentation.Read(Lesson() + " {}"));
+            Assert.Throws<ArgumentException>(() => InteractionPresentation.Read("[" + Lesson() + "]"));
+            Assert.Throws<ArgumentException>(() => InteractionPresentation.Read("null"));
+            Assert.Throws<ArgumentException>(() => InteractionPresentation.Read("<html>busy</html>"));
+        }
     }
 }
