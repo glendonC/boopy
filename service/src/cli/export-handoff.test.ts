@@ -364,3 +364,287 @@ it('reference failure is sanitized and cannot lose the baseline or fabricate a c
     await test.close();
   }
 });
+
+it('superseded context is rejected before an independent-reference lookup', async () => {
+  const test = await setup(true);
+  try {
+    const old = evidenceRecords(test.boopy.package(test.oldId)).find(
+      (record) => record.label === 'Camels',
+    );
+    const current = evidenceRecords(test.boopy.package(test.packageId)).find(
+      (record) => record.label === 'Camels',
+    );
+    assert.ok(old && current);
+    test.boopy.supersede({ predecessor: old, successor: current });
+    let calls = 0;
+    const result = await exportHandoff(
+      {
+        ...test.options,
+        references: {
+          packageId: old.packageId,
+          itemId: old.itemId,
+          conceptKey: 'dune',
+          referenceId: 'Q25391',
+          credentialFile: '/synthetic/unused.credentials',
+        },
+      },
+      {
+        lookupReference: async () => {
+          calls++;
+          return independentReference;
+        },
+      },
+    );
+    assert.equal(calls, 0);
+    assert.equal(result.references.status, 'unavailable');
+    assert.equal(result.artifacts.supplement.references.rows.length, 0);
+    assert.equal(result.artifacts.baselineText, test.boopy.package(test.packageId)?.text);
+  } finally {
+    await test.close();
+  }
+});
+
+it('accepts the verified public reference catalog only through exact explicit concept-ID pairs', async () => {
+  for (const association of [
+    { conceptKey: 'desert', referenceId: 'Q8514', koreanTerm: '사막' },
+    { conceptKey: 'dromedary', referenceId: 'Q71516', koreanTerm: '단봉낙타' },
+  ] as const) {
+    const test = await setup(false);
+    try {
+      const record = evidenceRecords(test.boopy.package(test.oldId)).find(
+        (item) => item.disposition === 'context',
+      );
+      assert.ok(record);
+      let called = false;
+      const result = await exportHandoff(
+        {
+          ...test.options,
+          references: {
+            packageId: test.oldId,
+            itemId: record.itemId,
+            ...ZetarisReferenceAssociation.parse(association),
+            credentialFile: '/synthetic/reference-reader.credentials',
+          },
+        },
+        {
+          lookupReference: async (options) => {
+            called = true;
+            assert.equal(options.referenceId, association.referenceId);
+            const reference = independentReference.rows[0];
+            assert.ok(reference);
+            return {
+              ...independentReference,
+              rows: [
+                {
+                  ...reference,
+                  referenceId: association.referenceId,
+                  referenceSourceId: `wikidata:${association.referenceId}`,
+                  referenceUrl: `https://www.wikidata.org/wiki/${association.referenceId}`,
+                  koreanTerm: association.koreanTerm,
+                },
+              ],
+            };
+          },
+        },
+      );
+      assert.equal(called, true);
+      assert.equal(result.references.status, 'available');
+      assert.equal(
+        result.artifacts.supplement.references.rows[0]?.reference.referenceId,
+        association.referenceId,
+      );
+    } finally {
+      await test.close();
+    }
+  }
+});
+
+it('rejects mismatched catalog pairs before any export or lookup', async () => {
+  const test = await setup(false);
+  try {
+    const record = evidenceRecords(test.boopy.package(test.oldId))[0];
+    assert.ok(record);
+    const before = test.journal.all().length;
+    await assert.rejects(
+      exportHandoff({
+        ...test.options,
+        references: {
+          packageId: test.oldId,
+          itemId: record.itemId,
+          conceptKey: 'dune',
+          referenceId: 'Q8514',
+          credentialFile: '/synthetic/reference-reader.credentials',
+        },
+      } as unknown as Parameters<typeof exportHandoff>[0]),
+    );
+    assert.equal(test.journal.all().length, before);
+    await assert.rejects(readFile(join(test.outputDirectory, 'baseline-context.txt')));
+  } finally {
+    await test.close();
+  }
+});
+
+it('semantic available and unavailable metadata survive packet and manifest without verification upgrades', async () => {
+  for (const status of ['available', 'unavailable'] as const) {
+    const fixture = await setup(true, undefined, status);
+    try {
+      const result = await exportHandoff({
+        ...fixture.options,
+        memory: { packageIds: [fixture.oldId, fixture.packageId], query: 'Dunes before noon' },
+      });
+      assert.equal(result.memory.semantic?.status, status);
+      assert.equal(result.artifacts.supplement.memory.semantic?.status, status);
+      assert.match(result.artifacts.packet, /Semantic ranking \(not verification\)/);
+      const manifest = JSON.parse(
+        await readFile(join(fixture.outputDirectory, result.files.manifest), 'utf8'),
+      );
+      assert.deepEqual(manifest.memory.semantic, result.memory.semantic);
+      assert.equal(manifest.delivery.sentToMuse, false);
+      for (const hit of result.artifacts.supplement.memory.hits) {
+        const original = evidenceRecords(
+          fixture.boopy.package(hit.evidence.packageId) as NonNullable<
+            ReturnType<typeof fixture.boopy.package>
+          >,
+        ).find((record) => record.sourceId === hit.evidence.sourceId);
+        assert.deepEqual(hit.evidence, original);
+      }
+    } finally {
+      await fixture.close();
+    }
+  }
+});
+it('unrecognized available semantic model fails the optional module without losing baseline', async () => {
+  const fixture = await setup(true, undefined, 'invalid');
+  try {
+    const result = await exportHandoff({
+      ...fixture.options,
+      memory: { packageIds: [fixture.oldId], query: 'Dunes' },
+    });
+    assert.equal(result.memory.status, 'unavailable');
+    assert.equal(result.memory.semantic, undefined);
+    assert.equal(result.baseline.status, 'available');
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('correction during reference lookup refuses stale association while preserving baseline', async () => {
+  const fixture = await setup(true);
+  try {
+    const old = fixture.boopy.package(fixture.oldId);
+    const current = fixture.boopy.package(fixture.packageId);
+    assert.ok(old && current);
+    const predecessor = evidenceRecords(old).find((record) => record.disposition === 'context');
+    const successor = evidenceRecords(current).find((record) => record.disposition === 'context');
+    assert.ok(predecessor && successor);
+    const result = await exportHandoff(
+      {
+        ...fixture.options,
+        references: {
+          packageId: fixture.oldId,
+          itemId: predecessor.itemId,
+          conceptKey: 'dune',
+          referenceId: 'Q25391',
+          credentialFile: '/synthetic/credentials',
+        },
+      },
+      {
+        lookupReference: async () => {
+          fixture.boopy.supersede({ predecessor, successor });
+          return independentReference;
+        },
+      },
+    );
+    assert.equal(result.references.status, 'unavailable');
+    assert.deepEqual(result.artifacts.supplement.references.rows, []);
+    assert.equal(result.baseline.status, 'available');
+  } finally {
+    await fixture.close();
+  }
+});
+
+it('rechecks separate recalled memory after a gated reference lookup without losing baseline', async () => {
+  const fixture = await setup(true);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  try {
+    const old = fixture.boopy.package(fixture.oldId);
+    const current = fixture.boopy.package(fixture.packageId);
+    assert.ok(old && current);
+    const predecessor = evidenceRecords(old).find(
+      (record) => record.statement === 'Dunes before noon.',
+    );
+    const successor = evidenceRecords(current).find((record) => record.disposition === 'context');
+    assert.ok(predecessor && successor);
+    const pending = exportHandoff(
+      {
+        ...fixture.options,
+        memory: { packageIds: [fixture.oldId], query: 'Dunes before noon' },
+        references: {
+          packageId: fixture.packageId,
+          itemId: successor.itemId,
+          conceptKey: 'dune',
+          referenceId: 'Q25391',
+          credentialFile: '/synthetic/credentials',
+        },
+      },
+      {
+        lookupReference: async () => {
+          entered();
+          await gate;
+          return independentReference;
+        },
+      },
+    );
+    await ready;
+    fixture.boopy.supersede({ predecessor, successor });
+    release();
+    const result = await pending;
+    assert.equal(result.memory.status, 'unavailable');
+    assert.equal(result.memory.returnedSources, 0);
+    assert.equal(result.memory.semantic, undefined);
+    assert.deepEqual(result.artifacts.supplement.memory.hits, []);
+    assert.equal(result.artifacts.supplementText.includes('Dunes before noon'), false);
+    assert.equal(result.references.status, 'available');
+    assert.equal(result.baseline.status, 'available');
+    assert.equal(result.artifacts.baselineText, current.text);
+    assert.equal(result.delivery.sentToMuse, false);
+  } finally {
+    release();
+    await fixture.close();
+  }
+});
+
+it('writes packet and supplement headings without em dashes in both modes', async () => {
+  const test = await setup(false);
+  const emDash = String.fromCharCode(0x2014);
+  try {
+    for (const synthetic of [false, true]) {
+      const output = join(test.directory, `headings-${synthetic}`);
+      await mkdir(output, { mode: 0o700 });
+      const result = await exportHandoff({ ...test.options, outputDirectory: output, synthetic });
+      const packet = result.artifacts.packet;
+      const supplement = await readFile(join(output, result.files.supplement), 'utf8');
+      assert.equal(
+        packet.split('\n')[0],
+        synthetic
+          ? 'FICTIONAL SYNTHETIC BOOPY REHEARSAL. NOT PERSONAL HISTORY.'
+          : 'BOOPY CONTEXT: MANUAL ASSISTANT HANDOFF.',
+      );
+      for (const text of [
+        packet,
+        supplement,
+        await readFile(join(output, result.files.packet), 'utf8'),
+      ])
+        assert.equal(text.includes(emDash), false);
+    }
+  } finally {
+    await test.close();
+  }
+});
