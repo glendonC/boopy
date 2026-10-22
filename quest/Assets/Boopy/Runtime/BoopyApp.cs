@@ -377,5 +377,395 @@ namespace Boopy.Quest
             if (applied && !reportedLiveScene) { Debug.Log("Boopy: live scene first update applied."); reportedLiveScene = true; }
             return applied;
         }
+
+        private void UpdateLiveScene(float now)
+        {
+            if(liveHud==null || room==null || console==null)return;
+            var enabled = AmbientSceneAllowed;
+            liveHud.SetActive(enabled,console.ReducedMotion);
+            liveHud.SetPaused(liveScenePaused);
+            console.SetScenePaused(liveScenePaused);
+            if(!enabled || liveScenePaused) { liveRequest?.Cancel(); return; }
+            var occupied = new System.Collections.Generic.List<LabelRect>();
+            scene?.AppendPresentationKeepouts(occupied, console);
+            liveHud.RefreshAttention(now, occupied, new LabelRect(-.12f, -.09f, .12f, .09f), console.ComfortScale);
+            if (!AmbientCaptureAllowed) { liveRequest?.Cancel(); return; }
+            if(!room.Ready || voice.Recording || liveRequest!=null || now<nextSceneAt)return;
+            _ = ObserveScene();
+        }
+
+        private async Task ObserveScene()
+        {
+            if(room==null || client==null || liveHud==null || !AmbientCaptureAllowed)return;
+            using var request = new CancellationTokenSource(); liveRequest=request;
+            try
+            {
+                var snapshot=room.Capture();
+                if(snapshot?.SourceTime==null || !CameraFrameTime.IsFresh(snapshot.SourceTime.Value,Time.unscaledTime)) {
+                    nextSceneAt=Time.unscaledTime+.4f;
+                    return;
+                }
+                liveHud.SetProcessing(true);
+                var sourceRequest = new SceneObservationRequest {
+                    StreamId=liveStreamId, FrameId=Guid.NewGuid().ToString(), Sequence=liveSequence++, Frame=snapshot.ToFrame()
+                };
+                var result=await client.ObserveSceneAsync(sourceRequest,request.Token);
+                ApplyLiveSceneResult(result,sourceRequest,snapshot,request,Time.unscaledTime);
+                nextSceneAt=Time.unscaledTime+.4f;
+            }
+            catch(OperationCanceledException) { nextSceneAt=Time.unscaledTime+1f; }
+            catch(Exception failure) {
+                if (!request.IsCancellationRequested && AmbientCaptureAllowed && isActiveAndEnabled) {
+                    liveHud?.Unavailable();
+                    if(inputAllowed && !busy && !voice.Recording) SayStatus("Scene recognition unavailable. Retrying…",3f);
+                    Debug.LogWarning("Boopy: live scene unavailable: "+failure.GetType().Name);
+                }
+                nextSceneAt=Time.unscaledTime+3f;
+            }
+            finally { liveHud?.SetProcessing(false); if(ReferenceEquals(liveRequest,request))liveRequest=null; }
+        }
+
+        /// <summary>A chip unfolds after a ray rests on it briefly, so sweeping past does not open everything.</summary>
+        private void UpdateFocus(Chip? chip, float now)
+        {
+            if (chip != dwellChip)
+            {
+                dwellChip = chip;
+                dwellSince = now;
+                scene?.Focus(null);
+            }
+            else if (chip != null && now - dwellSince >= FocusDwellSeconds)
+            {
+                scene?.Focus(chip);
+                console?.Inspect(session?.Items.FirstOrDefault(item => item.Id == chip.ItemId));
+            }
+        }
+
+        private void Handle(PinchEvent pinch, HandInput hand)
+        {
+            if (pinch == PinchEvent.None) return;
+            // Only the hand that began a pinch continues it; a pinch begun while busy is ignored to its end.
+            if (pinch == PinchEvent.Began ? active != null : active != hand) return;
+            if (pendingDialogue && pinch != PinchEvent.Began)
+            {
+                if (pinch != PinchEvent.Holding) { pendingDialogue = false; active = null; dialogue?.SetInteractionLocked(false); }
+                return;
+            }
+            switch (pinch)
+            {
+                case PinchEvent.Began:
+                    StopSpeech();
+                    if (!buttonTalk.Recording && !busy && dialogue?.HitPage(hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward)) == true)
+                    {
+                        active = hand; pendingDialogue = true; dialogue.SetInteractionLocked(true); dialogue.NextPage(); return;
+                    }
+                    var control = ControlHit(hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward), out _);
+                    if (buttonTalk.Recording && control != ConsoleAction.FinishTalk && control != ConsoleAction.Cancel && control != ConsoleAction.PauseScene) return;
+                    if (busy && control != ConsoleAction.Cancel && control != ConsoleAction.PauseScene) return;
+                    if (control != ConsoleAction.None)
+                    {
+                        // Selection never captures; only an explicit Talk release below starts recording.
+                        active = hand;
+                        pendingControl = control;
+                        pendingUsesHandRay = hand.RayActive;
+                        console?.FocusAt(hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward));
+                        console?.SetPressed(true);
+                        dialogue?.PressFallbackAction(pendingControl == ConsoleAction.Cancel);
+                        feedback?.Play(AudioCue.Press);
+                        pendingTarget = (control == ConsoleAction.Confirm || control == ConsoleAction.ToggleIncluded) ? console?.SelectedItemId : null;
+                        return;
+                    }
+                    pendingControl = ConsoleAction.None;
+                    BeginTalk(hand);
+                    break;
+                case PinchEvent.Holding:
+                    if (pendingControl != ConsoleAction.None) return;
+                    if (!voice.Recording) SayStatus("Microphone unavailable. Allow microphone access in Settings.");
+                    break;
+                case PinchEvent.Tapped:
+                    if (ReleaseControl(hand)) return;
+                    DiscardRecording();
+                    dialogue?.Hide();
+                    active = null;
+                    marker?.Hide();
+                    // A stray tap leaves the task's line in place; the hint shows over it and gives it back.
+                    ShowTask();
+                    if (pendingTarget != null) _ = Act(pendingTarget);
+                    else SayStatus("Tap Talk to start speaking.", 4f);
+                    RestoreConsole();
+                    break;
+                case PinchEvent.Released:
+                    if (ReleaseControl(hand)) return;
+                    active = null;
+                    FinishRecording();
+                    break;
+                case PinchEvent.Cancelled:
+                    if (buttonTalk.Recording)
+                    {
+                        pendingControl = ConsoleAction.None; active = null;
+                        console?.SetPressed(false); console?.ClearFocus();
+                        return;
+                    }
+                    dialogue?.Show(DialogueStage.Error, "Pinch interrupted. Keep your hand in view and try again.");
+                    pendingControl = ConsoleAction.None;
+                    console?.SetPressed(false);
+                    RestoreConsole();
+                    DiscardRecording();
+                    active = null;
+                    marker?.Hide();
+                    SayStatus("Pinch interrupted. Keep your hand in view and try again.", 4f);
+                    break;
+            }
+        }
+
+        private void ExpireButtonRecording(float now)
+        {
+            if (!buttonTalk.Expired(now)) return;
+            var answer = answeringTask;
+            DiscardRecording(); active = null; pendingControl = ConsoleAction.None;
+            marker?.Hide(); RestoreConsole();
+            dialogue?.Show(DialogueStage.Error, answer ? "Recording stopped. Tap Answer aloud to try again." : "Recording stopped. Tap Talk to try again.");
+        }
+
+        private void FinishRecording()
+        {
+            buttonTalk.End(); console?.SetButtonRecording(false);
+            if (answeringTask) { FinishAnswer(); return; }
+            if (!captureReady)
+            {
+                DiscardRecording(); marker?.Hide(); RestoreConsole();
+                dialogue?.Show(DialogueStage.Error, "Recording wasn’t ready. Tap Talk to try again.");
+                return;
+            }
+            var wav = voice.End(); feedback?.SetRecording(false);
+            if (wav == null)
+            {
+                DiscardRecording(); marker?.Hide(); RestoreConsole();
+                dialogue?.Show(DialogueStage.Error, "No speech recorded. Tap Talk to try again.");
+                feedback?.Play(AudioCue.Failure); return;
+            }
+            feedback?.Play(AudioCue.CaptureOff);
+            _ = Send(wav);
+        }
+
+        /// <summary>
+        /// The task's one action: the same button recording Talk uses, with its listening caption
+        /// and Finish. It records an answer to this task only: no frame, no capture, no Talk turn.
+        /// </summary>
+        private void BeginAnswer()
+        {
+            if (PresentedTask?.AnswerLabel == null || !inputAllowed || busy || buttonTalk.Recording || voice.Recording || !MicrophoneAllowed()) return;
+            StopSpeech();
+            cancelledWaitNotice = null;
+            captureScan?.Hide();
+            answeringTask = true;
+            console?.ShowListening(false);
+            dialogue?.Show(DialogueStage.Listening, "Listening… Tap Finish when done.");
+            SayStatus(null);
+            feedback?.SetRecording(true); voice.Begin();
+            if (!voice.Recording)
+            {
+                answeringTask = false;
+                feedback?.SetRecording(false); feedback?.Play(AudioCue.Failure);
+                RestoreConsole();
+                dialogue?.Show(DialogueStage.Error, "Microphone unavailable. Allow microphone access in Settings.");
+                Debug.Log("Boopy: answer blocked reason=microphone-unavailable.");
+                return;
+            }
+            buttonTalk.Begin(Time.unscaledTime);
+            console?.SetButtonRecording(true);
+        }
+
+        private void FinishAnswer()
+        {
+            answeringTask = false;
+            var wav = voice.End(); feedback?.SetRecording(false);
+            var answered = PresentedTask;
+            if (wav == null || answered == null)
+            {
+                DiscardRecording(); RestoreConsole();
+                dialogue?.Show(DialogueStage.Error, "No speech recorded. Tap Answer aloud to try again.");
+                feedback?.Play(AudioCue.Failure); return;
+            }
+            feedback?.Play(AudioCue.CaptureOff);
+            _ = SendAnswer(answered, wav);
+        }
+
+        /// <summary>
+        /// The answer goes to the task with the revision the person answered. The audio stays in
+        /// memory for this request only. A stale revision shows the Mac's current task instead;
+        /// no words gets its own retry line; any other refusal shows the Mac's words.
+        /// </summary>
+        private async Task SendAnswer(InteractionPresentation answered, byte[] wav)
+        {
+            if (client == null || session == null || console == null) return;
+            var sessionId = session.Id;
+            busy = true;
+            SayStatus(null);
+            console.ShowProcessing(false);
+            dialogue?.Show(DialogueStage.Working, "Sending…");
+            using var request = new CancellationTokenSource();
+            captureRequest = request;
+            dialogue?.SetCancelableWait(true);
+            // A new event for each answer; a retry after a lost reply reuses it, so the Mac records the answer once.
+            var eventId = TaskIds.NewEventId();
+            string? reply = null, failure = null;
+            try
+            {
+                reply = await AnswerAsync(answered, eventId, wav, request.Token);
+                request.Token.ThrowIfCancellationRequested();
+            }
+            catch (OperationCanceledException) { failure = "Stopped waiting. The Mac may still record this answer."; }
+            catch (ServiceException refused) when (refused.Status == 422 && refused.Code == "no_words")
+            {
+                failure = "No speech recorded. Tap Answer aloud to try again.";
+            }
+            catch (ServiceException refused) when (refused.Status == 409 && refused.Code == "stale_revision")
+            {
+                // The task changed on the Mac: present what it has now, never this headset's guess.
+                try
+                {
+                    reply = await client.ReadTaskAsync(answered.TaskId, request.Token);
+                    request.Token.ThrowIfCancellationRequested();
+                    if (reply == null) failure = refused.Message;
+                }
+                catch (OperationCanceledException) { failure = "Stopped waiting. The Mac may still record this answer."; }
+                catch (ServiceException unread) { failure = unread.Message; }
+                catch (Exception) { failure = "Couldn't get the reply. The Mac may still finish this turn. Reconnect before trying again."; }
+            }
+            catch (ServiceException refused) { failure = refused.Message; }
+            catch (Exception) { failure = "Couldn't get the reply. The Mac may still finish this turn. Reconnect before trying again."; }
+            finally
+            {
+                if (ReferenceEquals(captureRequest, request)) captureRequest = null;
+                dialogue?.SetCancelableWait(false);
+                busy = false;
+                console.SetBusy(false);
+            }
+            if (session?.Id != sessionId) return;
+            if (failure != null || reply == null)
+            {
+                cancelledWaitNotice = failure ?? "Couldn't get the reply. The Mac may still finish this turn. Reconnect before trying again.";
+                ReportFailure(cancelledWaitNotice);
+                return;
+            }
+            RestoreConsole();
+            try { PresentTask(reply); }
+            catch (ArgumentException)
+            {
+                cancelledWaitNotice = "The Mac returned an invalid task. Nothing on the headset changed.";
+                ReportFailure(cancelledWaitNotice);
+                return;
+            }
+            Debug.Log("Boopy: task answer recorded on the Mac. Not sent.");
+        }
+
+        private async Task<string> AnswerAsync(InteractionPresentation answered, string eventId, byte[] wav, CancellationToken cancel)
+        {
+            try
+            {
+                return await client!.AnswerTaskAsync(answered.TaskId, answered.SessionId, answered.Revision, eventId, wav, cancel);
+            }
+            catch (ServiceException lost) when (lost.Code == "connection_lost" && !cancel.IsCancellationRequested)
+            {
+                // Lost, not refused: the retry is the same event, never a second answer.
+                return await client!.AnswerTaskAsync(answered.TaskId, answered.SessionId, answered.Revision, eventId, wav, cancel);
+            }
+        }
+
+        private bool MicrophoneAllowed()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (!Permission.HasUserAuthorizedPermission(Permission.Microphone))
+            {
+                Permission.RequestUserPermission(Permission.Microphone);
+                dialogue?.Show(DialogueStage.Error, "Allow microphone access, then tap Talk.");
+                return false;
+            }
+#endif
+            return true;
+        }
+
+        private void BeginTalk(HandInput hand) => BeginTalkInternal(hand, false);
+
+        private void BeginTalkInternal(HandInput hand, bool fromButton)
+        {
+            if (!inputAllowed || busy || buttonTalk.Recording || !MicrophoneAllowed()) return;
+            if (NeedsCaptureRecovery)
+            {
+                ReportFailure(recoveryStorageFailed ? "Could not read or update capture recovery. Choose Start new to clear the local record, then try again." : "Check the earlier capture, or choose Start new. It may still finish on the Mac.");
+                return;
+            }
+            console?.InputPolicy.SetInteractionState(inputAllowed, busy);
+            pendingEvidence = console?.InputPolicy.Begin();
+            if (pendingEvidence == null) return;
+            if (pendingEvidence.RequiresPicture && (room == null || !room.Ready))
+            {
+                SayStatus("Camera not ready. Allow camera access, then try again.", 6f);
+                dialogue?.Show(DialogueStage.Error, "Camera not ready. Allow camera access, then try again.");
+                feedback?.Play(AudioCue.Failure);
+                console?.InputPolicy.End(); pendingEvidence = null;
+                Debug.Log("Boopy: talk blocked reason=camera-not-ready.");
+                return;
+            }
+            cancelledWaitNotice = null;
+            captureScan?.Hide();
+            pending = null; pendingCues = null; pendingTarget = null;
+            active = hand;
+            if (session == null || session.State == "committed")
+            {
+                scene?.Clear();
+                if (console != null) scene?.PlaceConsole(console);
+            }
+            // Resolve the correction target before the listening stage hides review hit areas.
+            var ray = hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward);
+            var targetId = fromButton ? null : pendingEvidence.SpokenOnly
+                ? (console?.ReaderOpen == true ? console.HitTarget(ray, out _) : null)
+                : scene?.ChipHitBy(ray, 5f, out _)?.ItemId ?? console?.HitTarget(ray, out _);
+            console?.ShowListening(targetId != null);
+            dialogue?.Show(DialogueStage.Listening, fromButton ? "Listening… Tap Finish when done." : "Listening… Release to finish.");
+            SayStatus(null);
+            try
+            {
+                feedback?.SetRecording(true); voice.Begin();
+                if (!voice.Recording)
+                {
+                    active = null;
+                    console?.InputPolicy.End(); pendingEvidence = null;
+                    feedback?.SetRecording(false);
+                    feedback?.Play(AudioCue.Failure);
+                    SayStatus("Microphone unavailable. Allow microphone access in Settings.", 6f);
+                    dialogue?.Show(DialogueStage.Error, "Microphone unavailable. Allow microphone access in Settings.");
+                    RestoreConsole();
+                    Debug.Log("Boopy: talk blocked reason=microphone-unavailable.");
+                    return;
+                }
+                if (fromButton)
+                {
+                    buttonTalk.Begin(Time.unscaledTime); active = null;
+                    console?.SetButtonRecording(true);
+                }
+                var evidenceTurn = pendingEvidence!;
+                pendingTarget = targetId;
+                captureReady = false;
+                _ = CaptureAfterAcknowledgement(hand, targetId, evidenceTurn, ++captureGeneration, fromButton);
+
+            }
+            catch (Exception failure)
+            {
+                DiscardRecording();
+                active = null;
+                pending = null;
+                pendingCues = null;
+                pendingTarget = null;
+                console?.InputPolicy.End(); pendingEvidence = null;
+                marker?.Hide();
+                feedback?.Play(AudioCue.Failure);
+                SayStatus("I couldn’t start recording. Let go and try again.", 6f);
+                dialogue?.Show(DialogueStage.Error, "I couldn’t start recording. Let go and try again.");
+                RestoreConsole();
+                Debug.LogWarning($"Boopy: capture failed: {failure.GetType().Name}.");
+            }
+        }
     }
 }
