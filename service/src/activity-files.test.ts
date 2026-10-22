@@ -381,4 +381,341 @@ describe('activity request file', () => {
       await test.close();
     }
   });
+
+  it("bounds the person's words and refuses unknown fields before reading anything", async () => {
+    const test = await setup();
+    try {
+      await test.prepare();
+      for (const input of [
+        { packageId: test.packageId, goal: '' },
+        { packageId: test.packageId, goal: 'x'.repeat(301) },
+        { packageId: test.packageId, goal: 'two\nlines' },
+        { packageId: test.packageId, goal: 'Practice.', background: 'b'.repeat(201) },
+        { packageId: test.packageId, goal: 'Practice.', personLanguage: 'English' },
+        { packageId: test.packageId, goal: 'Practice.', outputPath: '/tmp/x' },
+        { packageId: 'ctx_../x', goal: 'Practice.' },
+      ]) {
+        const before = test.journal.all().length;
+        await assert.rejects(test.store.prepareRequest(input), { name: 'ZodError' });
+        assert.equal(test.journal.all().length, before);
+      }
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('gives each concurrent request its own packet read and request ID', async () => {
+    const test = await setup();
+    try {
+      await test.prepare();
+      const reads = count(test, 'handoff.packet-read');
+      const input = { packageId: test.packageId, goal: 'Practice.' };
+      const [a, b] = await Promise.all([
+        test.store.prepareRequest(input),
+        test.store.prepareRequest(input),
+      ]);
+      assert.notEqual(a.requestId, b.requestId);
+      assert.equal(count(test, 'handoff.packet-read'), reads + 2);
+      assert.equal(count(test, 'activity.request-prepared'), 2);
+    } finally {
+      await test.close();
+    }
+  });
+});
+
+describe('activity submission file', () => {
+  it('freezes the exact validated activity, the submission, what Boopy checked and the digest', async () => {
+    const test = await setup();
+    try {
+      const { view, submissionId } = await submitted(test);
+      const exported = test.store.exportSubmission(submissionId);
+      assert.equal(exported.fileName, `boopy-activity-submission-${submissionId}.json`);
+      assert.equal(exported.fileSha256, sha256(exported.file));
+      const file = ActivitySubmissionFile.parse(JSON.parse(exported.file));
+      const imported = test.journal.all().find((event) => event.type === 'activity.imported');
+      assert.ok(imported?.type === 'activity.imported');
+      assert.deepEqual(file.activity, {
+        claimedAuthor: 'Grok Bot',
+        authorship: 'claimed-by-file',
+        artifactSha256: imported.data.artifactSha256,
+        body: imported.data.activity,
+      });
+      const submission = view.submissions[0];
+      assert.ok(submission);
+      assert.equal(file.digest, submission.digest);
+      assert.deepEqual(file.submission, {
+        number: 1,
+        submittedAt: submission.submittedAt,
+        revision: 4,
+        arrange: submission.arrange,
+        sequence: submission.sequence,
+        hintsRevealed: [
+          {
+            index: 0,
+            text: 'Start with the camel, then say where it is.',
+            language: 'en',
+            gloss: null,
+          },
+        ],
+        hintsRevealedSincePrevious: [0],
+      });
+      assert.deepEqual(file.boopyChecked, {
+        arrangementRelation: {
+          subject: 'a',
+          object: 'b',
+          requested: 'left-of',
+          arranged: 'left-of',
+          matches: true,
+        },
+      });
+      assert.deepEqual(file.respondWith, {
+        type: 'boopy.activity-reply',
+        version: 1,
+        binding: { submissionId, activityId: view.activityId },
+        echo: submission.digest,
+      });
+      assert.equal(file.delivery, 'not-sent-by-boopy');
+      assert.equal(file.requestId, 'arq_k1');
+      assert.equal(exported.file.includes(test.directory), false);
+      assert.equal(exported.file.includes(TOKEN), false);
+      const text = file.instructions.join('\n');
+      for (const rule of [
+        /exactly one downloadable \.json file/,
+        /Copy respondWith\.binding and respondWith\.echo exactly/,
+        /did not judge whether any answer is correct/,
+        /practice construction/,
+        /next is null/,
+        /hintsRevealed is cumulative/,
+        /hintsRevealedSincePrevious lists only the hints opened since the previous submission/,
+        /must differ from this activity and target one specific thing this submission shows/,
+        /Never repeat the same activity unchanged/,
+        /write token labels and tile texts in that language/,
+        /include a sequence component in which the person builds the sentence they should say/,
+        /only Latin letters or Hangul/,
+      ])
+        assert.match(text, rule);
+      const body = validateActivityBody(file.activity.body, new Set(['ctx_x:y']));
+      assert.ok(body.activity || body.issues.every((issue) => issue.includes('sourceId')));
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('renders the same bytes on every export, journaled once with the first exportedAt', async () => {
+    const test = await setup();
+    try {
+      const { submissionId } = await submitted(test);
+      const [first, second] = await Promise.all([
+        Promise.resolve().then(() => test.store.exportSubmission(submissionId)),
+        Promise.resolve().then(() => test.store.exportSubmission(submissionId)),
+      ]);
+      assert.equal(first?.file, second?.file);
+      const third = test.store.exportSubmission(submissionId);
+      assert.equal(third.file, first?.file);
+      const restarted = test.restart().exportSubmission(submissionId);
+      assert.equal(restarted.file, first?.file);
+      assert.equal(restarted.fileSha256, first?.fileSha256);
+      assert.equal(count(test, 'activity.submission-exported'), 1);
+      const event = test.journal
+        .all()
+        .find((entry) => entry.type === 'activity.submission-exported');
+      const file = ActivitySubmissionFile.parse(JSON.parse(restarted.file));
+      assert.equal(event?.at, file.exportedAt);
+      assert.deepEqual(test.restart().view(file.activityId).submissions[0]?.export, {
+        state: 'exported-not-sent',
+        fileSha256: first?.fileSha256,
+        exportedAt: file.exportedAt,
+      });
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('re-renders a submission an older Boopy exported and records the new bytes once', async () => {
+    const test = await setup();
+    try {
+      const { view, submissionId } = await submitted(test);
+      // As if an earlier Boopy had exported it with other instructions.
+      test.journal.append(
+        {
+          type: 'activity.submission-exported',
+          session: test.sessionId,
+          actor: 'person',
+          data: {
+            submissionId,
+            activityId: view.activityId,
+            fileSha256: '0'.repeat(64),
+            delivery: 'not-sent',
+          },
+        },
+        'evt_older_export',
+        '1970-01-01T09:30:00.000Z',
+      );
+      const store = test.restart();
+      assert.equal(store.view(view.activityId).submissions[0]?.export?.fileSha256, '0'.repeat(64));
+      const before = count(test, 'activity.submission-exported');
+      const again = store.exportSubmission(submissionId);
+      assert.equal(sha256(again.file), again.fileSha256);
+      assert.equal(count(test, 'activity.submission-exported'), before + 1);
+      const latest = store.view(view.activityId).submissions[0]?.export;
+      assert.deepEqual(latest, {
+        state: 'exported-not-sent',
+        fileSha256: again.fileSha256,
+        exportedAt: JSON.parse(again.file).exportedAt,
+      });
+      assert.equal(store.exportSubmission(submissionId).file, again.file);
+      assert.equal(count(test, 'activity.submission-exported'), before + 1);
+      assert.deepEqual(test.restart().view(view.activityId).submissions[0]?.export, latest);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('refuses an unknown submission with nothing journaled', async () => {
+    const test = await setup();
+    try {
+      for (const id of ['sub_unknown', ' sub_k1', 'sub_k1/../x'])
+        await refuses(test, async () => test.store.exportSubmission(id), 404, 'submission_unknown');
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('accepts a reply that echoes the exported digest and opens the next activity', async () => {
+    const test = await setup();
+    try {
+      const { submissionId, file: request } = await submitted(test);
+      const exported = ActivitySubmissionFile.parse(
+        JSON.parse(test.store.exportSubmission(submissionId).file),
+      );
+      const reply = test.store.importReply(
+        JSON.stringify({
+          ...exported.respondWith,
+          author: 'Grok Bot',
+          reply: {
+            summary: { text: 'Synthetic example reply for rendering tests.', language: 'en' },
+            points: [
+              { about: 'sequence', text: 'Synthetic point about the sentence.', language: 'en' },
+            ],
+          },
+          next: {
+            fallbackText: 'Now put the tent to the left of the camel.',
+            activity: korean(request.sources[0]?.sourceId ?? null),
+          },
+        }),
+      );
+      assert.equal(reply.nextStatus, 'active');
+      const next = test.store.view(reply.nextActivityId ?? '');
+      assert.equal(next.provenance.requestId, 'arq_k1');
+      assert.deepEqual(next.provenance.parent, {
+        activityId: exported.activityId,
+        submissionId,
+        replyId: reply.replyId,
+      });
+    } finally {
+      await test.close();
+    }
+  });
+});
+
+describe('renderers', () => {
+  it('render fixed key order, pretty JSON and a trailing newline', async () => {
+    const input = {
+      requestId: 'arq_k1',
+      exportedAt: '1970-01-01T09:00:00.000Z',
+      goal: 'Practice.',
+      personLanguage: 'en',
+      background: null,
+      sources: [],
+      packageId: 'ctx_synthetic1',
+      packetSha256: '1'.repeat(64),
+      packet: 'Synthetic packet.\n',
+    };
+    const rendered = renderRequestFile(input);
+    assert.equal(rendered.file, renderRequestFile({ ...input }).file);
+    assert.ok(rendered.file.endsWith('}\n'));
+    assert.deepEqual(Object.keys(JSON.parse(rendered.file)), [
+      'type',
+      'version',
+      'requestId',
+      'exportedAt',
+      'delivery',
+      'note',
+      'goal',
+      'personLanguage',
+      'background',
+      'instructions',
+      'respondWith',
+      'sources',
+      'context',
+    ]);
+    assert.match(rendered.file, /^\{\n {2}"type": "boopy\.activity-request",\n/);
+    const instructions = JSON.parse(rendered.file).instructions.join('\n');
+    assert.match(instructions, /label tokens|write token labels and tile texts in that language/);
+    assert.match(instructions, /builds the sentence they should say from one-word tiles/);
+    const written = join(await mkdtemp(join(tmpdir(), 'boopy-render-')), rendered.fileName);
+    await writeFile(written, rendered.file);
+    assert.equal(sha256(await readFile(written)), rendered.fileSha256);
+  });
+
+  it('says Boopy sent a file only when delivery is sent-by-boopy-to-local-model', () => {
+    const request = {
+      requestId: 'arq_k1',
+      exportedAt: '1970-01-01T09:00:00.000Z',
+      goal: 'Practice.',
+      personLanguage: 'en',
+      background: null,
+      sources: [],
+      packageId: 'ctx_synthetic1',
+      packetSha256: '1'.repeat(64),
+      packet: 'Synthetic packet.\n',
+    };
+    const requestNote =
+      'The person exported this file from Boopy and chose to share it. Boopy did not send it.';
+    const submissionNote =
+      'The person exported this submission from Boopy and chose to share it. Boopy did not send it.';
+    const submission = {
+      submissionId: 'sub_k1',
+      activityId: 'act_k1',
+      requestId: 'arq_k1',
+      exportedAt: '1970-01-01T09:06:00.000Z',
+      claimedAuthor: null,
+      artifactSha256: '2'.repeat(64),
+      activity: korean(null) as ActivityBody,
+      submission: {
+        number: 1,
+        submittedAt: '1970-01-01T09:04:00.000Z',
+        revision: 4,
+        positions: null,
+        derived: null,
+        chosen: null,
+        text: null,
+        hintsRevealed: [],
+        hintsRevealedSincePrevious: [],
+        digest: 'synthetic',
+      },
+    };
+    for (const delivery of [undefined, 'not-sent', 'not-sent-by-boopy'] as const) {
+      const requested = JSON.parse(
+        renderRequestFile({ ...request, ...(delivery ? { delivery } : {}) }).file,
+      );
+      const submitted = JSON.parse(
+        renderSubmissionFile({ ...submission, ...(delivery ? { delivery } : {}) }).file,
+      );
+      assert.equal(requested.delivery, 'not-sent-by-boopy');
+      assert.equal(requested.note, requestNote);
+      assert.equal(submitted.delivery, 'not-sent-by-boopy');
+      assert.equal(submitted.note, submissionNote);
+    }
+    const sentRequest = JSON.parse(
+      renderRequestFile({ ...request, delivery: 'sent-by-boopy-to-local-model' }).file,
+    );
+    const sentSubmission = JSON.parse(
+      renderSubmissionFile({ ...submission, delivery: 'sent-by-boopy-to-local-model' }).file,
+    );
+    assert.equal(sentRequest.delivery, 'sent-by-boopy-to-local-model');
+    assert.equal(sentRequest.note, 'Boopy sent this request to the local model on this Mac.');
+    assert.equal(sentSubmission.delivery, 'sent-by-boopy-to-local-model');
+    assert.equal(sentSubmission.note, 'Boopy sent this submission to the local model on this Mac.');
+  });
 });
