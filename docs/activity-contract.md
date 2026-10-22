@@ -246,3 +246,318 @@ must equal the digest after whitespace normalization, otherwise 409 `reply_not_m
 proves the reply was made from that exact submission file, not that it teaches well. A `next`
 `{ fallbackText, activity }` becomes a new activity bound to the original request (same source
 limits) with parent `{ activityId, submissionId, replyId }`: active if valid, fallback-only if not.
+
+## 8. Journal events
+
+Each event's session is the originating package's session; the actor is the person.
+
+- `activity.request-prepared` `{ requestId, packageId, preparation: { requestId, receiptId,
+  packetSha256 }, goal, personLanguage, background, sources, fileSha256, delivery: "not-sent" }`
+- `activity.imported` `{ activityId, requestId, artifactSha256, container, claimedAuthor,
+  fallbackText, activity | null, issues, parent | null }`
+- `activity.arranged` `{ activityId, revision, positions }`, `activity.sequenced` `{ activityId,
+  revision, chosen }`, `activity.hint-revealed` `{ activityId, revision, index }`
+- `activity.submitted` `{ activityId, revision, submissionId, positions, derived, chosen, text,
+  hintsRevealed, digest }`
+- `activity.submission-exported` `{ submissionId, activityId, fileSha256, delivery: "not-sent" }`
+- `activity.reply-imported` `{ replyId, submissionId, activityId, artifactSha256, container,
+  claimedAuthor, reply, nextActivityId }`
+
+The session projection ignores these types. The activity store rebuilds from them at startup.
+Events for calls Boopy makes itself are in section 11.
+
+## 9. Headset presentation rules
+
+The headset reads ActivityView and never treats its own drag preview as the saved value. Text
+is plain, with rich text off. Each kind of change reads differently: a saved edit
+("Saved in Boopy"), a submission ("Submitted in Boopy. Not sent."), an export ("Exported on your
+Mac. Boopy cannot see whether it was sent.") and a reply ("Reply from a file claiming Grok Bot.
+Not verified.").
+
+## 10a. Extra constraints
+
+These settle points the audit lane found open; they supersede anything above that conflicts.
+
+- `fallbackText` and `author` are part of the envelope: invalid values are 400 with nothing
+  journaled, because fallback-only activities display them.
+- One reply per submission. A second, different reply is 409 `reply_exists` with nothing
+  journaled; identical bytes stay idempotent. For a new reply, submit again.
+- Separation: round `|dx|` to 9 decimals (`Math.round(|dx| * 1e9) / 1e9`); unclear only below
+  0.10, so exactly 0.10 is apart. The service and the headset preview use this same rounding, not
+  a tolerance.
+- Number axis: `|min|` and `|max|` at most 1e9, `step` at least 0.000001 and at most 6 decimals in
+  each of `min`, `max` and `step`. All arithmetic is exact in integer micro-units
+  (`u = Math.round(v * 1e6)`, safe below 2^53): `(maxU - minU)` must be a positive whole multiple
+  of `stepU` of at most 1000 steps, so decimal prices such as 999999.99 to 1000000.06 in 0.01
+  steps are accepted. A value is `minU + k * stepU` micro-units with
+  `k = Math.round(x * (maxU - minU) / stepU)`, printed as an exact decimal without exponent or
+  trailing zeros. The service and the headset preview use the same integer method.
+- Identifiers are compared exactly after their strict ASCII patterns; nothing is trimmed,
+  normalized or case-folded.
+- Issue strings repeat a key name only when it matches `^[A-Za-z0-9_-]{1,40}$`; any other
+  unknown key is reported as `(unprintable key)`, so issues never carry links or hidden characters
+  into a terminal or the headset. The reply `echo` is compared as a plain bounded string and is not
+  subject to the text rules.
+- A submission's `export` is null until it is exported, then the `exported-not-sent` object in
+  section 10. `issues` are plain `path: message` strings. `/v1/health` carries
+  `"activities": true`, and the headset hides its activity entry when the flag is absent.
+- A fallback-only view has null `title`, `purpose` and `instruction`, no components, hints
+  `{ "total": 0, "revealed": [] }` and `canSubmit: false`; its summary title is null and the
+  headset supplies its own label. Absent optional strings are null in views. A token's `value`
+  is set only on a number axis; `derived.values` only for number and `derived.relation` only for
+  left/right. Number tokens in a digest are joined by `; `; when a digest would exceed 400
+  characters, only the sequence quote is shortened, ending in an ellipsis inside the quotes.
+- Allowed sources also exclude records that have a recorded supersession.
+- The submission's attempt data is frozen; the instructions around it are guidance that may
+  improve between versions. A re-export renders with the current instructions: identical bytes
+  journal nothing new, and different bytes after an upgrade journal a new
+  `activity.submission-exported` event with the new `fileSha256`, keeping earlier exports in the
+  journal. The view shows the latest export. Replies still bind, because the echo does not depend
+  on the instructions. Never answer a re-export with a 500.
+- Hints belong to the activity. A frozen submission and its file also carry
+  `hintsRevealedSincePrevious` (indexes opened after the previous submission of the same activity,
+  or all of them for the first), and the submission instructions say that `hintsRevealed` is
+  cumulative, so an assistant does not read carried-over hints as opened again.
+- Boopy, not the assistant, decides tile display order: `ActivityView.tiles` (and the bank shown
+  on the headset) are ordered by the SHA-256 of `<activityId>:<tileKey>`, ascending, so the order
+  is stable across views and restarts and never reveals an answer order the assistant happened to
+  write. Keys, `chosen` and the submission file keep the assistant's tile keys. The headset renders
+  tiles in view order and never re-sorts them.
+- Multi-line fields turn CRLF, CR, U+2028 and U+2029 into line feeds; single-line fields reject
+  them. Lengths count code points after NFC and trimming. Code points above U+FFFF are rejected
+  as not displayable, so service code-point counts and the headset's UTF-16 counts always agree.
+- Other errors: no single completed preparation is 404 `prepared_unavailable`; changed sources are
+  409 `sources_changed`; an unknown submission on export is 404 `submission_unknown`; a change to a
+  component the activity does not have is 400 `invalid_request`.
+- File content must be well-formed Unicode and at most 64 KiB in UTF-8 bytes. Exactly one leading
+  byte order mark is removed before parsing; the artifact SHA-256 covers the UTF-8 bytes received.
+  The command-line tool decodes files with a fatal UTF-8 decoder. Nesting deeper than 32, a
+  duplicate key at any level, or a key named `__proto__`, `constructor` or `prototype` anywhere is
+  400 `activity_unreadable` (the same applies to replies).
+- Container: after removing the byte order mark and surrounding whitespace, the whole content is
+  one JSON object; otherwise the content must contain exactly one fenced block of any kind, and it
+  must be labelled exactly `json` (not `jsonc`, `json5` or `json` plus a title). A second fenced
+  block of any label makes the content unreadable.
+- Text also rejects fullwidth angle brackets; the schemes `javascript:`, `data:`, `mailto:`,
+  `file:`, `tel:`, `sms:` and `vbscript:` in any case when they start a word and a non-space
+  character follows the colon (so "Mobile data: 5 GB" and "Hotel:" stay valid); the Hangul filler
+  characters U+115F, U+1160, U+3164 and U+FFA0, which render blank; any field with no visible
+  character; every format character (general category
+  Cf, which covers zero-width characters, an inner byte order mark and bidirectional controls);
+  U+2028 and U+2029; private use, unassigned and lone surrogate code points; regional indicators,
+  variation selectors U+FE0E and U+FE0F, the keycap mark U+20E3, tag characters and
+  Extended_Pictographic; and any combining mark left after NFC. Digits stay allowed, so the Emoji
+  property is not used. Other scripts, including Cyrillic look-alikes, get the display message.
+
+## 10. Canonical example views (synthetic)
+
+Sample data, after one submission was exported and a reply imported:
+
+```json
+{
+  "activityId": "act_k1", "revision": 4, "status": "active", "title": "Camel and tent",
+  "purpose": "Sample data. Practice saying where things are in Korean, using your desert camp.",
+  "instruction": { "text": "낙타를 텐트 왼쪽에 놓고 한국어로 말해 보세요.", "language": "ko",
+    "gloss": "Put the camel to the left of the tent, then say it in Korean." },
+  "fallbackText": "Picture the camel to the left of the tent and say it in Korean.",
+  "issues": [],
+  "provenance": { "requestId": "arq_k1", "packageId": "ctx_synthetic1",
+    "packetSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "artifactSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "claimedAuthor": "Grok Bot", "authorship": "claimed-by-file",
+    "importedAt": "1970-01-01T00:00:00.000Z", "parent": null },
+  "components": [
+    { "type": "arrange", "axis": { "kind": "viewer-left-right" },
+      "tokens": [
+        { "key": "a", "label": { "text": "낙타", "language": "ko", "gloss": "camel" },
+          "source": { "sourceId": "ctx_synthetic1:itm_2", "label": "camel" }, "position": 0.22, "value": null },
+        { "key": "b", "label": { "text": "텐트", "language": "ko", "gloss": "tent" },
+          "source": null, "position": 0.71, "value": null }],
+      "target": { "subject": "a", "relation": "left-of", "object": "b" },
+      "derived": { "relation": "left-of", "matchesTarget": true, "order": ["a", "b"], "ties": false, "values": null } },
+    { "type": "sequence", "joiner": "space", "language": "ko",
+      "tiles": [
+        { "key": "t1", "text": "있어요", "used": true }, { "key": "t2", "text": "낙타가", "used": true },
+        { "key": "t3", "text": "왼쪽에", "used": true }, { "key": "t4", "text": "텐트", "used": true },
+        { "key": "t5", "text": "오른쪽에", "used": false }],
+      "chosen": ["t2", "t4", "t3", "t1"], "text": "낙타가 텐트 왼쪽에 있어요" }],
+  "hints": { "total": 2, "revealed": [{ "index": 0, "text": "Start with the camel, then say where it is.",
+    "language": "en", "gloss": null }] },
+  "canSubmit": true,
+  "submissions": [{
+    "submissionId": "sub_k1", "number": 1, "submittedAt": "1970-01-01T00:00:00.000Z", "revision": 4,
+    "digest": "arrange: 낙타 left of 텐트 (your view); requested 낙타 left of 텐트; arrangement matches | sequence: \"낙타가 텐트 왼쪽에 있어요\" | hints: 1 of 2",
+    "arrange": { "positions": { "a": 0.22, "b": 0.71 }, "relation": "left-of", "matchesTarget": true,
+      "order": ["a", "b"], "ties": false, "values": null },
+    "sequence": { "chosen": ["t2", "t4", "t3", "t1"], "text": "낙타가 텐트 왼쪽에 있어요" },
+    "hintsRevealed": [0],
+    "hintsRevealedSincePrevious": [0],
+    "export": { "state": "exported-not-sent",
+      "fileSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "exportedAt": "1970-01-01T00:00:00.000Z" },
+    "reply": { "replyId": "rep_k1", "importedAt": "1970-01-01T00:00:00.000Z", "claimedAuthor": "Grok Bot",
+      "artifactSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "summary": { "text": "Synthetic example reply for rendering tests.", "language": "en", "gloss": null },
+      "points": [{ "about": "sequence", "text": "Synthetic point about the sentence.", "language": "en", "gloss": null }],
+      "nextActivityId": "act_k2" } }]
+}
+```
+
+Sample data, one estimate placed and not yet submitted:
+
+```json
+{
+  "activityId": "act_m1", "revision": 1, "status": "active", "title": "Petit taxi fare",
+  "purpose": "Sample data. Check your sense of a fair petit taxi fare before you ride.",
+  "instruction": { "text": "What would you expect to pay for a daytime petit taxi from the medina to Gueliz?",
+    "language": "en", "gloss": null },
+  "fallbackText": "Think of a fair daytime petit taxi fare from the medina to Gueliz in dirhams.",
+  "issues": [],
+  "provenance": { "requestId": "arq_m1", "packageId": "ctx_synthetic2",
+    "packetSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "artifactSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "claimedAuthor": "Grok Bot", "authorship": "claimed-by-file",
+    "importedAt": "1970-01-01T00:00:00.000Z", "parent": null },
+  "components": [
+    { "type": "arrange", "axis": { "kind": "number", "min": 0, "max": 200, "step": 5, "unit": "MAD" },
+      "tokens": [{ "key": "a", "label": { "text": "My estimate", "language": "en", "gloss": null },
+        "source": null, "position": 0.25, "value": 50 }],
+      "target": null,
+      "derived": { "relation": null, "matchesTarget": null, "order": ["a"], "ties": false, "values": { "a": 50 } } }],
+  "hints": { "total": 1, "revealed": [] },
+  "canSubmit": true,
+  "submissions": []
+}
+```
+
+## 11. Local model calls
+
+Asking for practice on a saved package, and getting a reply to an attempt, need no file moves:
+Boopy sends the request or submission to the local model on this Mac and imports the answer.
+Nothing leaves the Mac. Sections 1 to 7 stay as they are for files the person moves themselves,
+and an activity imported from a file never triggers a call.
+Manual file imports deduplicate only against earlier manual file imports. An identical artifact
+received by a call and imported as a file retains separate provenance in each path.
+
+**Provider.** Ollama on this Mac only. `BOOPY_OLLAMA_URL` must be `http` on `127.0.0.1`,
+`localhost` or `[::1]`, with no credentials, path, query or fragment. The model is
+`qwen3.6:35b-a3b-nvfp4` only; `BOOPY_ACTIVITY_MODEL` may name only that verified local artifact.
+Before each prompt, bounded `/api/tags` and `/api/show` requests must match its verified digest
+`e92a3e94bbca90a85491dc34e9257bfee2318cedaa16360828c4d8edf14295b9`, size 23598465691,
+format `safetensors`, architecture `qwen3_5_moe` and parameter count 35951479808, with no remote
+or cloud metadata markers. Missing, changed or remote metadata fails the call without sending
+prompt content. A loopback Ollama can otherwise route cloud models. This trusts the installed
+local process and does not attest its behavior or prevent external model replacement between
+metadata and chat. Both metadata requests share the call's total timeout and stop cancellation.
+Calls are on by default
+(`BOOPY_ACTIVITY_ASSISTANT=ollama`); `none` switches them off. When on, `/v1/health` carries
+`"activityAssistant": { "provider": "ollama", "model": "…" }`, and the headset offers practice only
+then. This path does not call a cloud model. The call lives in
+`service/src/activity-ollama.ts`.
+
+**One call at a time.** At most one call runs in the whole service, with no queue and no retry.
+A call is one `POST /api/chat` with `stream: false`, `think: false`, `keep_alive: "30m"` (what the
+interpreter sends, so a call does not shorten the shared model's stay),
+`options: { "temperature": 0.2, "num_predict": 8192 }` and no `format`, because this model's
+engine answers 501 to it. A call is stopped after 120 s. Warm calls have taken about 11 to 14 s, and at
+the measured 115 tokens per second the 8192-token cap is about 71 s, plus about 9 s for the prompt
+and 12 s to load the model, so about 92 s; the rest is room for a turn sharing the model. A
+response is not read past 1 MiB. On a stop, a running call gets the same 10 s grace as a request in
+progress and is then aborted; the next start journals it interrupted and never sends it again.
+
+**Prompt, from the same renderer.** The system message is one fixed line, then "Answer with one JSON
+object, and nothing else, that matches this JSON Schema:" and the schema of the answer. The user
+message is the file's `instructions` joined by line feeds, a blank line, and the exact text the
+section 1 or section 6 renderer writes for this request or submission. In that text `delivery` is
+`"sent-by-boopy-to-local-model"`, the note says "Boopy sent this request (or submission) to the
+local model on this Mac.", and `exportedAt` is when Boopy wrote it.
+
+**Answer.** The model returns only `{ "activity", "fallbackText" }` for an activity call or
+`{ "reply", "next" }` for a reply call; anything else it returns, such as a binding, an echo or
+an author, is ignored. Its message content is read with the section 2 container rules (one JSON
+object, or exactly one fenced json block, at most 64 KiB, strict JSON). Boopy then writes the
+envelope itself: type, version, the binding (and for a reply the echo) of the file it sent, and no
+author. That file goes through the same reader, binding check and validators as an imported file.
+Only a fully valid answer is imported, as `active`. A body that does not validate, or a reply
+whose `next` does not, imports nothing and fails the call: nothing invalid is stored or shown,
+there is no fallback-only activity from a call, and Boopy never makes up an activity of its own.
+
+**Triggers.**
+
+- Headset: `POST /v1/activities/practice-requests` with the section 5 request body
+  (`packageId`, `preparationRequestId?`, `goal`, `personLanguage?`, `background?`), bound to
+  exactly one completed preparation as in section 1. It answers 202 with the ActivityCall in state
+  `running`. `GET /v1/activity-calls` lists calls, newest first, at most 20, and
+  `GET /v1/activity-calls/:callId` reads one.
+- Local operator: `POST /v1/local-activities/practice-requests` with the same body and answer, and
+  `GET /v1/local-activities/calls/:callId`. `pnpm activity ask --package <id> --goal "<words>"`
+  starts one, waits for it and prints the outcome.
+- Automatic: a submission on a Boopy-called activity, including a next activity from a
+  Boopy-called reply, asks for its reply at once. The submission is recorded first and does not
+  depend on the call. One reply per submission still holds; after a failed reply call, submit
+  again.
+- Errors: 409 `assistant_busy` (a call is running; nothing is journaled), 503
+  `assistant_unavailable` (calls are off, or Boopy is stopping), 404 `call_unknown`, and the
+  section 1 and 10a refusals (`prepared_unavailable`, `sources_changed`, `invalid_request`).
+  An automatic reply asked while another call runs is not refused: it is journaled as a failed
+  call with `assistant_busy`, so the submission shows why no reply came.
+
+```text
+{
+  "callId": "cal_k1", "kind": "activity", "state": "running", "provider": "ollama",
+  "model": "qwen3.6:35b-a3b-nvfp4", "askedAt": "1970-01-01T00:00:00.000Z", "finishedAt": null,
+  "durationMs": null, "packageId": "ctx_synthetic1", "requestId": "arq_k1", "submissionId": null,
+  "activityId": null, "replyId": null, "nextActivityId": null, "failure": null, "issues": []
+}
+```
+
+Call identifiers match `^cal_[A-Za-z0-9_-]{1,64}$`. `kind` is `activity` or `reply`; `state` is
+`running`, `imported`, `failed` or `interrupted`. For a reply call, `activityId` names the
+submitted activity and `submissionId` the submission; for an activity call, `activityId` is set
+once the activity is imported. `failure` is null or `{ "code", "message" }`; `issues` lists up to
+eight section 10a issue strings, only for `answer_invalid`.
+
+**Failures.** The message is fixed words, never model text: "Boopy couldn't make practice from
+this: " for an activity call or "Boopy couldn't make a reply from this: " for a reply call, then
+the reason for the code.
+
+| Code | Reason |
+| --- | --- |
+| `assistant_unreachable` | the local model isn't answering on this Mac. |
+| `assistant_timeout` | the local model didn't answer in time. |
+| `assistant_error` | the local model reported an error. |
+| `answer_unreadable` | its answer wasn't one JSON object. |
+| `answer_invalid` | its answer didn't fit Boopy's format. |
+| `assistant_busy` | Boopy was already waiting for the local model. Submit again in a moment. |
+| `interrupted` | Boopy stopped before the local model answered. |
+
+**Provenance and views.** Boopy made the call, so provenance is known rather than claimed. A
+called activity's `provenance` has `authorship: "called-by-boopy"`, `claimedAuthor: null` and
+`call: { callId, provider, model, durationMs }`. A reply from a call has `claimedAuthor: null` and
+the same `call` object. A submission of a called activity has `replyCall: { callId, state,
+failure }`, or null when no call was asked (calls were off). Files keep their views exactly as
+before: no `call` or `replyCall` key. In summaries, a called activity has `call: { provider,
+model }` and `awaitingReply` is true while its reply call runs. The headset shows "Made by the
+local model on this Mac." for a called activity, "Reply from the local model on this Mac." for a
+called reply, "Boopy is asking the local model…" while a call runs, and a failure's message as it
+is. A call changes nothing else: Boopy still checks only the mechanics, the content stays
+proposed, and no activity event enters a package or a confirmation.
+
+**Events.** Each event's session is the package's session, as in section 8.
+
+- A practice request's `activity.request-prepared` has `delivery: "sent-to-local-model"`.
+- `activity.call-asked` `{ callId, kind, provider, model, requestId, submissionId | null,
+  fileSha256 }`, where `fileSha256` is the rendered text the model was sent. The actor is the
+  person for a practice request and `system` for an automatic reply.
+- `activity.imported` and `activity.reply-imported` from a call carry `call: { callId, provider,
+  model, durationMs }` and the actor `system`; file imports carry no `call`.
+- `activity.call-finished` `{ callId, outcome: "imported" | "failed" | "interrupted",
+  durationMs | null, failure | null, issues, activityId | null, replyId | null,
+  nextActivityId | null, metrics | null }`, actor `system`, journaled after the import it reports.
+  `metrics` holds only Ollama's numbers: prompt and output token counts and durations in
+  milliseconds.
+- At startup, a call asked but not finished gets `activity.call-finished` with outcome
+  `interrupted` and no model request.
+
+Call events never carry prompt or answer text. The imported activity or reply carries the model's
+content exactly as a file import does.
