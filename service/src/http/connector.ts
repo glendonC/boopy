@@ -378,3 +378,128 @@ const RecallRequest = z.object({
   query: z.string().min(1).max(500),
   limit: z.number().int().min(1).max(20).default(5),
 });
+
+async function recall(
+  boopy: Boopy,
+  request: z.infer<typeof RecallRequest>,
+  agent: string,
+  via: 'rest' | 'mcp',
+  semanticRanker?: Pick<NvidiaEmbeddingWorker, 'rank'>,
+) {
+  const packages = [...new Set(request.packageIds)].map((id) => {
+    const pkg = boopy.package(id);
+    if (pkg === undefined) throw new BoopyError(404, 'no_package', 'No such committed package.');
+    if (pkg.version !== 2)
+      throw new BoopyError(409, 'legacy_evidence', 'Selected package lacks versioned evidence.');
+    return pkg;
+  });
+  const records = packages.flatMap(evidenceRecords);
+  if (records.length > 500)
+    throw new BoopyError(413, 'recall_scope', 'Select at most 500 evidence records.');
+  const superseded = new Set(boopy.supersessions.map((link) => evidenceSourceId(link.predecessor)));
+  let current = records.filter((record) => !superseded.has(record.sourceId));
+  let eligible = current.filter(
+    (record) => record.disposition === 'context' || record.disposition === 'intent',
+  );
+  let semantic: {
+    status: 'disabled' | 'available' | 'unavailable';
+    provider: 'nvidia';
+    model?: string;
+    revision?: string;
+  } = { status: semanticRanker ? 'unavailable' : 'disabled', provider: 'nvidia' };
+  let semanticScores: Map<string, number> | undefined;
+  if (semanticRanker && eligible.length > 0 && eligible.length <= 20) {
+    try {
+      const ranked = await semanticRanker.rank({
+        query: request.query,
+        candidates: eligible.map((record) => ({
+          sourceId: record.sourceId,
+          text: [
+            record.label,
+            record.statement,
+            record.gloss ?? '',
+            record.note ?? '',
+            ...record.text,
+          ].join('\n'),
+        })),
+      });
+      const parsed = z
+        .object({
+          model: z.literal('nvidia/nemotron-3-embed-1b'),
+          revision: z.literal('c0c9fea93ea424587517f2c59e20db9f1d6bf615'),
+          candidates: z
+            .array(
+              z
+                .object({ sourceId: z.string(), score: z.number().finite().min(-1).max(1) })
+                .strict(),
+            )
+            .max(20),
+        })
+        .strict()
+        .parse(ranked);
+      const scores = new Map(
+        parsed.candidates.map((candidate) => [candidate.sourceId, candidate.score]),
+      );
+      if (
+        scores.size !== eligible.length ||
+        parsed.candidates.length !== eligible.length ||
+        eligible.some((record) => !scores.has(record.sourceId))
+      )
+        throw new Error('Invalid ranking identity');
+      semanticScores = scores;
+      semantic = {
+        status: 'available',
+        provider: 'nvidia',
+        model: parsed.model,
+        revision: parsed.revision,
+      };
+    } catch {
+      /* Preserve lexical results without claiming semantic availability. */
+    }
+  }
+  // An asynchronous rank must not resurrect a source corrected while inference was running.
+  const latestSuperseded = new Set(
+    boopy.supersessions.map((link) => evidenceSourceId(link.predecessor)),
+  );
+  current = records.filter((record) => !latestSuperseded.has(record.sourceId));
+  eligible = current.filter(
+    (record) => record.disposition === 'context' || record.disposition === 'intent',
+  );
+  if (semanticScores)
+    semanticScores = new Map(
+      [...semanticScores].filter(([sourceId]) => !latestSuperseded.has(sourceId)),
+    );
+  const results = new MemoryRecall(eligible).query(request.query, {
+    topN: request.limit,
+    semanticScores,
+  });
+  for (const pkg of packages) boopy.disclose(pkg, agent, via, 'recall');
+  return {
+    type: 'boopy.recall',
+    version: 1,
+    engine: 'hmem-subset',
+    semantic,
+    results,
+    constraints: current.filter(
+      (record) => record.disposition === 'known' || record.disposition === 'rejected',
+    ),
+    openQuestions: current.filter((record) => record.disposition === 'question'),
+    supersededCount: records.length - current.length,
+  };
+}
+
+/** Overlay later human actions on reads; never rewrite the committed journal snapshot. */
+function deliveredPackage(boopy: Boopy, pkg: ContextPackage) {
+  const links = boopy.supersessions.filter((link) => link.predecessor.packageId === pkg.id);
+  if (links.length === 0) return pkg;
+  const records = evidenceRecords(pkg);
+  const notices = links.map((link) => {
+    const record = records.find((entry) => entry.itemId === link.predecessor.itemId);
+    return `- Superseded item ${link.predecessor.itemId} (${record?.label ?? 'unknown'}). Do not use this old claim for a current answer. Fetch successor package ${link.successor.packageId}, item ${link.successor.itemId}. Linking does not confirm the successor.`;
+  });
+  return {
+    ...pkg,
+    correctionOverlay: { version: 1, supersessions: links },
+    text: `${pkg.text}\n\nLater human corrections (read-time overlay; the saved snapshot above is historical):\n${notices.join('\n')}`,
+  };
+}
