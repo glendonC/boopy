@@ -751,4 +751,388 @@ export class Boopy {
       throw new BoopyError(409, 'stale_response', 'That Boopy response is no longer current.');
     return response;
   }
+
+  /** Committed packages, newest first. */
+  packages(): ContextPackage[] {
+    return [...this.#projection.packages.values()].sort((a, b) =>
+      b.committedAt.localeCompare(a.committedAt),
+    );
+  }
+
+  package(id: string): ContextPackage | undefined {
+    return this.#projection.packages.get(id);
+  }
+
+  /** An explicit person action links immutable records; matching labels never imply identity. */
+  supersede(input: SupersedeRequest): Supersession {
+    const request = SupersedeRequest.parse(input);
+    const predecessor = this.#committedEvidence(request.predecessor);
+    const successor = this.#committedEvidence(request.successor);
+    if (predecessor.sourceId === successor.sourceId)
+      throw new BoopyError(409, 'invalid_supersession', 'An item cannot replace itself.');
+    const prior = this.#projection.supersessions.find(
+      (link) => evidenceSourceId(link.predecessor) === predecessor.sourceId,
+    );
+    if (prior !== undefined) {
+      if (evidenceSourceId(prior.successor) === successor.sourceId) return prior;
+      throw new BoopyError(409, 'correction_conflict', 'That source already has a successor.');
+    }
+    if (
+      this.#projection.supersessions.some(
+        (link) => evidenceSourceId(link.predecessor) === successor.sourceId,
+      )
+    )
+      throw new BoopyError(409, 'stale_successor', 'Choose a current successor.');
+    const successorPackage = this.package(successor.packageId);
+    if (successorPackage === undefined) throw new BoopyError(404, 'no_package', 'No such package.');
+    const event = this.#record({
+      type: 'evidence.superseded',
+      session: successorPackage.sessionId,
+      actor: 'person',
+      data: request,
+    });
+    return { ...request, eventId: event.id, at: event.at };
+  }
+
+  get supersessions(): readonly Supersession[] {
+    return this.#projection.supersessions;
+  }
+
+  #committedEvidence(ref: EvidenceRef) {
+    const pkg = this.package(ref.packageId);
+    if (pkg === undefined) throw new BoopyError(404, 'no_package', 'No such committed package.');
+    if (pkg.version !== 2)
+      throw new BoopyError(409, 'legacy_evidence', 'This package lacks versioned evidence.');
+    const record = evidenceRecords(pkg).find((item) => item.itemId === ref.itemId);
+    if (record === undefined)
+      throw new BoopyError(404, 'no_evidence', 'No such exported evidence.');
+    return record;
+  }
+
+  /** Records that an agent read a package. */
+  disclose(pkg: ContextPackage, agent: string, via: 'mcp' | 'rest', tool: string): void {
+    this.#record({
+      type: 'context.disclosed',
+      session: pkg.sessionId,
+      actor: `agent:${agent}`,
+      data: { packageId: pkg.id, agent, via, tool },
+    });
+  }
+
+  get disclosures() {
+    return this.#projection.disclosures;
+  }
+
+  #record(event: BoopyEvent): Recorded {
+    const recorded = this.#deps.journal.append(
+      event,
+      this.#newId('evt'),
+      this.#now().toISOString(),
+    );
+    this.#projection.apply(recorded);
+    return recorded;
+  }
+
+  #open(sessionId: string): SessionState {
+    const session = this.#projection.session(sessionId);
+    if (session === undefined) throw new BoopyError(404, 'no_session', 'No such session.');
+    if (session.state === 'committed') {
+      throw new BoopyError(409, 'committed', 'This session is saved. Start a new one.');
+    }
+    return session;
+  }
+
+  async #exclusive(sessionId: string, work: () => Promise<void>): Promise<SessionView> {
+    if (this.#busy.has(sessionId))
+      throw new BoopyError(409, 'busy', 'Still working on the last request.');
+    this.#busy.add(sessionId);
+    try {
+      await work();
+    } finally {
+      this.#busy.delete(sessionId);
+    }
+    return this.view(sessionId);
+  }
+
+  async #observe(session: string, frame: Frame, cues: Cues): Promise<string> {
+    const jpeg = Buffer.from(frame.jpeg, 'base64');
+    if (jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
+      throw new BoopyError(400, 'invalid_frame', 'The frame is not a JPEG.');
+    }
+    const observationId = this.#newId('obs');
+    this.#record({
+      type: 'observation.recorded',
+      session,
+      actor: 'person',
+      data: {
+        observationId,
+        frameSha256: this.#deps.media.put(jpeg, 'jpg'),
+        width: frame.width,
+        height: frame.height,
+        capturedAt: frame.capturedAt,
+        source: frame.source ?? 'unknown',
+        timestampTrusted: frame.timestampTrusted ?? false,
+        camera: frame.camera ?? null,
+        depth: frame.depth ?? null,
+        cues,
+      },
+    });
+    return observationId;
+  }
+
+  async #hear(
+    session: string,
+    speech: Speech,
+    observationId: string | null,
+    targetItemId: string | null,
+    evidenceSource: AttentionInput['source'] = 'unknown',
+    selection?: ContextualActionSelection,
+    choiceSelection?: ChoiceSelection,
+  ): Promise<Heard> {
+    let text: string;
+    let language: string;
+    let audioSha256: string | null = null;
+    let transcriber: string | null = null;
+    if ('wav' in speech) {
+      const engine = this.#deps.speech;
+      if (engine === null) {
+        throw new BoopyError(503, 'no_speech', 'Speech is not set up on this Mac.');
+      }
+      const wav = Buffer.from(speech.wav, 'base64');
+      audioSha256 = this.#deps.media.put(wav, 'wav');
+      this.#processing(session, 'transcribing', null, observationId);
+      const heard = await engine.transcribe(wav).catch(() => {
+        throw new BoopyError(
+          502,
+          'speech_failed',
+          'Could not transcribe this recording. Please try again.',
+        );
+      });
+      text = heard.text;
+      language = heard.language;
+      transcriber = engine.name;
+    } else {
+      text = speech.text;
+      language = speech.language ?? (/[가-힣]/.test(speech.text) ? 'ko' : 'en');
+    }
+    if (text.trim() === '')
+      throw new BoopyError(422, 'no_words', 'I did not hear clear words. Please try again.');
+    const utteranceId = this.#newId('utt');
+    const reading: Reading =
+      selection === undefined && choiceSelection === undefined
+        ? readUtterance(text, targetItemId !== null)
+        : { kind: 'ask' };
+    this.#record({
+      type: 'utterance.heard',
+      session,
+      actor: 'person',
+      data: {
+        utteranceId,
+        observationId,
+        text,
+        language,
+        source:
+          choiceSelection !== undefined
+            ? 'choice'
+            : selection !== undefined
+              ? 'suggestion'
+              : 'wav' in speech
+                ? 'speech'
+                : 'typed',
+        ...(choiceSelection === undefined ? {} : { choiceSelection }),
+        ...(selection === undefined ? {} : { selection }),
+        evidenceSource,
+        audioSha256,
+        transcriber,
+        targetItemId,
+        reading,
+      },
+    });
+    return { utteranceId, text, language, reading };
+  }
+
+  #attentionObservation(
+    session: SessionState,
+    input: AttentionInput,
+    suppliedId: string | null,
+  ): string | null {
+    if (input.observationId !== undefined)
+      return (
+        session.observations.find((observation) => observation.id === input.observationId)?.id ??
+        null
+      );
+    if (suppliedId !== null) return suppliedId;
+    return (
+      [...session.observations].reverse().find((observation) => observation.source === input.source)
+        ?.id ?? null
+    );
+  }
+
+  #respond(session: string, utteranceId: string): void {
+    const text = this.#notices.get(session);
+    if (text === undefined) return;
+    const latest = this.#projection.session(session)?.interpretations.at(-1);
+    const actions = latest?.utteranceId === utteranceId ? [...(latest.actions ?? [])] : [];
+    this.#record({
+      type: 'interaction.responded',
+      session,
+      actor: 'system',
+      data: {
+        speaker: 'boopy',
+        text,
+        utteranceId,
+        ...(actions.length ? { actions } : {}),
+        ...(latest?.utteranceId === utteranceId && latest.choice ? { choice: latest.choice } : {}),
+      },
+    });
+  }
+
+  async #attend(
+    sessionId: string,
+    observationId: string | null,
+    heard: Heard,
+    legacyScope: 'auto' | 'scene',
+    input: AttentionInput | undefined,
+    suppliedId: string | null,
+  ): Promise<void> {
+    if (input === undefined) {
+      if (observationId === null) throw new BoopyError(409, 'no_frame', 'No frame to look at.');
+      return this.#interpret(sessionId, observationId, heard, legacyScope);
+    }
+    const session = this.#open(sessionId);
+    const selectedId = this.#attentionObservation(session, input, suppliedId);
+    const observation = session.observations.find((candidate) => candidate.id === selectedId);
+    const decision: AttentionDecision =
+      input.observationId !== undefined && observation === undefined
+        ? {
+            action: 'clarify',
+            reason:
+              'That selected view is not in this session. Select a recorded view or capture another.',
+            utterance: heard.text,
+            observationId: null,
+            work: { ocr: false, segmentation: false },
+          }
+        : decideAttention({
+            ...input,
+            utterance: heard.text,
+            nowMs: this.#now().getTime(),
+            ...(observation === undefined
+              ? {}
+              : {
+                  observation: {
+                    id: observation.id,
+                    source: observation.source,
+                    capturedAtMs: Date.parse(observation.capturedAt),
+                    timestampTrusted: observation.timestampTrusted,
+                    suppliedForTurn: observation.id === suppliedId,
+                  },
+                }),
+          });
+    this.#record({
+      type: 'attention.decided',
+      session: sessionId,
+      actor: 'system',
+      data: {
+        utteranceId: heard.utteranceId,
+        source: input.source,
+        action: decision.action,
+        reason: decision.reason,
+        observationId: decision.observationId,
+        work: decision.work,
+      },
+    });
+    if (decision.action === 'reuse' && decision.observationId !== null) {
+      await this.#interpret(
+        sessionId,
+        decision.observationId,
+        heard,
+        input.scope === 'scene' || legacyScope === 'scene' ? 'scene' : 'auto',
+        { ...decision.work, reason: decision.reason },
+      );
+    } else {
+      if (decision.action === 'no-visual-work') {
+        this.#correct(sessionId, {
+          op: 'add',
+          via: 'voice',
+          utteranceId: heard.utteranceId,
+          item: {
+            id: this.#newId('itm'),
+            kind: 'utterance',
+            label: heard.text.split(/\s+/).slice(0, 5).join(' '),
+            statement: heard.text,
+            grounding: { kind: 'scene' },
+            confidence: null,
+            origin: 'person',
+            status: 'confirmed',
+            emphasis: false,
+          },
+        });
+      }
+      const message =
+        decision.action === 'no-visual-work'
+          ? 'I kept your words without inspecting a view.'
+          : decision.action === 'fresh-view'
+            ? `Please capture another view. ${decision.reason}`
+            : decision.reason;
+      this.#notices.set(sessionId, message);
+    }
+    this.#respond(sessionId, heard.utteranceId);
+  }
+
+  /** A question at an existing annotation refers to its recorded evidence, not new pixels. */
+  async #askTarget(
+    sessionId: string,
+    target: Item,
+    observationId: string | null,
+    heard: Heard,
+    input: AttentionInput | undefined,
+  ): Promise<void> {
+    const session = this.#open(sessionId);
+    const observation = session.observations.find((entry) => entry.id === observationId);
+    const useVisual = input?.evidence !== 'none' && observation !== undefined;
+    const reason = useVisual
+      ? 'Inspect the explicitly selected recorded item. This does not establish its current physical state.'
+      : input?.evidence === 'none'
+        ? 'Keep the question without visual inspection, as requested.'
+        : 'The selected item has no recorded view to inspect.';
+    const work = {
+      ocr: useVisual && (input?.ocrRequested ?? true),
+      segmentation: useVisual && (input?.segmentationRequested ?? false),
+    };
+    this.#record({
+      type: 'attention.decided',
+      session: sessionId,
+      actor: 'system',
+      data: {
+        utteranceId: heard.utteranceId,
+        source: observation?.source ?? 'unknown',
+        action: useVisual ? 'reuse' : input?.evidence === 'none' ? 'no-visual-work' : 'clarify',
+        reason,
+        observationId: useVisual ? observation.id : null,
+        work,
+      },
+    });
+    if (useVisual) {
+      await this.#interpret(sessionId, observation.id, heard, 'auto', { ...work, reason }, target);
+    } else {
+      this.#correct(sessionId, {
+        op: 'add',
+        via: 'voice',
+        utteranceId: heard.utteranceId,
+        item: {
+          id: this.#newId('itm'),
+          kind: 'question',
+          label: heard.text,
+          statement: heard.text,
+          grounding: { kind: 'scene' },
+          confidence: null,
+          origin: 'person',
+          status: 'confirmed',
+          emphasis: false,
+        },
+      });
+      this.#notices.set(sessionId, `Kept your question about "${target.label}". ${reason}`);
+    }
+    this.#respond(sessionId, heard.utteranceId);
+  }
 }
