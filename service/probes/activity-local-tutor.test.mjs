@@ -382,4 +382,302 @@ test('refusals, errors and unusable answers from the model are never retried', a
     if (outcome === 'structured-output-unavailable')
       assert.match(result.stderr, /--schema-in-prompt/);
   }
+  const closed = createServer();
+  await new Promise((resolve) => closed.listen(0, '127.0.0.1', resolve));
+  const port = closed.address().port;
+  await new Promise((resolve) => closed.close(resolve));
+  const directory = await scratch(t);
+  const result = await runProbe([
+    'activity',
+    '--request',
+    REQUEST,
+    '--out',
+    join(directory, 'activity.json'),
+    '--url',
+    `http://127.0.0.1:${port}`,
+  ]);
+  assert.equal(result.code, 1);
+  assert.equal(summaryOf(result).outcome, 'ollama-unreachable');
+});
+
+test('an Ollama response body over 32 MiB is refused without retry, with or without a declared length', async (t) => {
+  const limit = 32 * 1024 * 1024;
+  const answer = JSON.stringify({
+    model: MODEL,
+    message: {
+      role: 'assistant',
+      content: JSON.stringify({ ...activityAnswer, fallbackText: 'OUTPUT-MARKER-4e2a' }),
+    },
+    done: true,
+    done_reason: 'stop',
+  });
+  // Trailing whitespace keeps the body valid JSON at any size.
+  const declared = (size) => (outgoing) => {
+    const body = answer + ' '.repeat(size - Buffer.byteLength(answer));
+    outgoing.writeHead(200, { 'content-type': 'application/json', 'content-length': size });
+    outgoing.end(body);
+  };
+  // No length at all: 1 MiB chunks until the probe hangs up, at most 64 MiB.
+  const endless = async (outgoing) => {
+    outgoing.writeHead(200, { 'content-type': 'application/json' });
+    const chunk = Buffer.alloc(1024 * 1024, 0x20);
+    for (let sent = 0; sent < 64 && !outgoing.destroyed; sent++)
+      if (!outgoing.write(chunk) && !outgoing.destroyed)
+        await new Promise((resolve) => {
+          outgoing.once('drain', resolve);
+          outgoing.once('close', resolve);
+        });
+    if (!outgoing.destroyed) outgoing.end();
+  };
+  const cases = [
+    { name: 'declared, one byte over', respond: declared(limit + 1), code: 1 },
+    { name: 'chunked without a length', respond: endless, code: 1 },
+    { name: 'exactly 32 MiB', respond: declared(limit), code: 0 },
+  ];
+  for (const { name, respond, code } of cases) {
+    const directory = await scratch(t);
+    const ollama = await fakeOllama(t, respond);
+    const out = join(directory, 'activity.json');
+    const result = await runProbe(
+      [
+        'activity',
+        '--request',
+        REQUEST,
+        '--out',
+        out,
+        '--url',
+        ollama.url,
+        '--deadline-ms',
+        '30000',
+      ],
+      60_000,
+    );
+    assert.equal(result.code, code, `${name}: ${result.stderr}`);
+    const summary = summaryOf(result);
+    assert.equal(ollama.requests.length, 1, name);
+    assert.equal(summary.modelCalls, 1, name);
+    assert.ok(!`${result.stdout}${result.stderr}`.includes('OUTPUT-MARKER'), name);
+    if (code === 0) {
+      assert.equal(summary.outcome, 'written', name);
+      assert.equal(summary.responseBytes, limit, name);
+      assert.equal(await exists(out), true, name);
+    } else {
+      assert.equal(summary.outcome, 'response-too-large', name);
+      assert.ok(summary.responseBytes > limit, name);
+      assert.ok(summary.responseBytes < limit + 4 * 1024 * 1024, `${name}: stops near the cap`);
+      assert.match(result.stderr, /32 MiB/, name);
+      assert.equal(await exists(out), false, name);
+    }
+  }
+});
+
+test('the output is a new file with mode 0600, created exclusively', async (t) => {
+  const directory = await scratch(t);
+  const ollama = await fakeOllama(t, answering(activityAnswer));
+  const run = (out) =>
+    runProbe(['activity', '--request', REQUEST, '--out', out, '--url', ollama.url]);
+  const previous = process.umask(0);
+  let written;
+  try {
+    written = await run(join(directory, 'open-umask.json'));
+  } finally {
+    process.umask(previous);
+  }
+  assert.equal(written.code, 0, written.stderr);
+  assert.equal((await stat(join(directory, 'open-umask.json'))).mode & 0o777, 0o600);
+  assert.equal(ollama.requests.length, 1);
+
+  const taken = join(directory, 'taken.json');
+  await writeFile(taken, 'existing');
+  const dangling = join(directory, 'dangling.json');
+  await symlink(join(directory, 'missing-target.json'), dangling);
+  for (const [out, reason] of [
+    [taken, 'output-exists'],
+    [dangling, 'output-exists'],
+    [join(directory, 'missing-folder', 'activity.json'), 'output-directory-missing'],
+  ]) {
+    const result = await run(out);
+    assert.equal(result.code, 2, out);
+    assert.equal(summaryOf(result).reason, reason);
+    assert.equal(summaryOf(result).modelCalls, 0);
+  }
+  assert.equal(ollama.requests.length, 1, 'No model call for an output that cannot be written.');
+  assert.equal(await readFile(taken, 'utf8'), 'existing');
+  assert.ok((await lstat(dangling)).isSymbolicLink());
+  assert.equal(await exists(join(directory, 'missing-target.json')), false);
+});
+
+test('an output that appears during the model call is left untouched', async (t) => {
+  const directory = await scratch(t);
+  const out = join(directory, 'activity.json');
+  const answer = answering(activityAnswer);
+  const ollama = await fakeOllama(t, async (outgoing) => {
+    await writeFile(out, 'raced');
+    answer(outgoing);
+  });
+  const result = await runProbe([
+    'activity',
+    '--request',
+    REQUEST,
+    '--out',
+    out,
+    '--url',
+    ollama.url,
+  ]);
+  assert.equal(result.code, 1);
+  assert.equal(summaryOf(result).outcome, 'output-exists');
+  assert.equal(ollama.requests.length, 1);
+  assert.equal(await readFile(out, 'utf8'), 'raced');
+});
+
+test('oversized, linked, irregular, non-UTF-8, non-JSON and mismatched inputs are refused before any call', async (t) => {
+  const directory = await scratch(t);
+  const ollama = await fakeOllama(t, answering(activityAnswer));
+  const file = async (name, content) => {
+    const path = join(directory, name);
+    await writeFile(path, content);
+    return path;
+  };
+  const padded = (bytes) =>
+    requestText.trimEnd() + ' '.repeat(bytes - Buffer.byteLength(requestText.trimEnd()));
+  const changed = (text, change) => {
+    const value = JSON.parse(text);
+    change(value);
+    return JSON.stringify(value);
+  };
+  const linked = join(directory, 'linked.json');
+  await symlink(REQUEST, linked);
+  const folder = join(directory, 'folder.json');
+  await mkdir(folder);
+  const fifo = join(directory, 'fifo.json');
+  execFileSync('mkfifo', [fifo]);
+  const cases = [
+    ['activity', await file('large.json', padded(64 * 1024 + 1)), 'input-too-large'],
+    ['activity', linked, 'input-symlink'],
+    ['activity', folder, 'input-not-regular'],
+    ['activity', fifo, 'input-not-regular'],
+    ['activity', join(directory, 'absent.json'), 'input-unreadable'],
+    ['activity', await file('latin1.json', Buffer.from([0x7b, 0xff, 0x7d])), 'input-not-utf8'],
+    ['activity', await file('prose.json', 'Please make me an activity.'), 'input-not-json'],
+    ['activity', await file('array.json', '[1, 2, 3]'), 'input-not-json'],
+    ['reply', REQUEST, 'input-wrong-type'],
+    ['activity', SUBMISSION, 'input-wrong-type'],
+    [
+      'activity',
+      await file(
+        'other-binding.json',
+        changed(requestText, (value) => {
+          value.respondWith.binding.requestId = 'arq_other';
+        }),
+      ),
+      'binding-mismatch',
+    ],
+    [
+      'activity',
+      await file(
+        'extra-binding.json',
+        changed(requestText, (value) => {
+          value.respondWith.binding.extra = 'x';
+        }),
+      ),
+      'input-malformed',
+    ],
+    [
+      'activity',
+      await file(
+        'no-instructions.json',
+        changed(requestText, (value) => {
+          delete value.instructions;
+        }),
+      ),
+      'input-malformed',
+    ],
+    [
+      'reply',
+      await file(
+        'other-echo.json',
+        changed(submissionText, (value) => {
+          value.respondWith.echo = 'hints: 0 of 2';
+        }),
+      ),
+      'binding-mismatch',
+    ],
+    [
+      'reply',
+      await file(
+        'other-submission.json',
+        changed(submissionText, (value) => {
+          value.respondWith.binding.submissionId = 'sub_other';
+        }),
+      ),
+      'binding-mismatch',
+    ],
+  ];
+  for (const [index, [mode, input, reason]] of cases.entries()) {
+    const out = join(directory, `out-${index}.json`);
+    const flag = mode === 'activity' ? '--request' : '--submission';
+    const result = await runProbe([mode, flag, input, '--out', out, '--url', ollama.url], 10_000);
+    assert.equal(result.code, 2, reason);
+    assert.equal(summaryOf(result).reason, reason, `${index} ${reason}`);
+    assert.equal(await exists(out), false, reason);
+  }
+  assert.equal(ollama.requests.length, 0);
+
+  const limit = join(directory, 'limit-out.json');
+  const exact = await file('exact.json', padded(64 * 1024));
+  const accepted = await runProbe([
+    'activity',
+    '--request',
+    exact,
+    '--out',
+    limit,
+    '--url',
+    ollama.url,
+  ]);
+  assert.equal(accepted.code, 0, accepted.stderr);
+  assert.equal(summaryOf(accepted).inputBytes, 64 * 1024);
+  assert.equal(ollama.requests.length, 1);
+});
+
+test('usage errors and non-loopback Ollama addresses are refused without a call', async (t) => {
+  const directory = await scratch(t);
+  const ollama = await fakeOllama(t, answering(activityAnswer));
+  const out = join(directory, 'activity.json');
+  const cases = [
+    [[], 'usage'],
+    [['lesson', '--request', REQUEST, '--out', out], 'usage'],
+    [['activity', '--request', REQUEST], 'usage'],
+    [['activity', '--submission', SUBMISSION, '--out', out], 'usage'],
+    [['reply', '--submission', SUBMISSION, '--request', REQUEST, '--out', out], 'usage'],
+    [['activity', '--request', REQUEST, '--out', out, '--retries', '2'], 'usage'],
+    [['activity', '--request', REQUEST, '--out', out, '--deadline-ms', '0'], 'usage'],
+    [['activity', '--request', REQUEST, '--out', out, '--deadline-ms', '1.5'], 'usage'],
+    [['activity', '--request', REQUEST, '--out', out, '--deadline-ms', '600001'], 'usage'],
+    [
+      ['activity', '--request', REQUEST, '--out', out, '--url', 'http://192.0.2.1:11434'],
+      'url-not-loopback',
+    ],
+    [
+      ['activity', '--request', REQUEST, '--out', out, '--url', 'https://127.0.0.1:11434'],
+      'url-not-loopback',
+    ],
+    [
+      ['activity', '--request', REQUEST, '--out', out, '--url', `${ollama.url}/api`],
+      'url-not-loopback',
+    ],
+    [
+      ['activity', '--request', REQUEST, '--out', out, '--url', 'http://user:pw@127.0.0.1:1'],
+      'url-not-loopback',
+    ],
+  ];
+  for (const [args, reason] of cases) {
+    const result = await runProbe(args);
+    assert.equal(result.code, 2, args.join(' '));
+    const summary = summaryOf(result);
+    assert.equal(summary.outcome, 'refused');
+    assert.equal(summary.reason, reason, args.join(' '));
+    assert.equal(summary.modelCalls, 0);
+  }
+  assert.equal(ollama.requests.length, 0);
+  assert.equal(await exists(out), false);
 });
