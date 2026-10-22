@@ -1,0 +1,317 @@
+import { createHash } from 'node:crypto';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { z } from 'zod';
+import { type Boopy, BoopyError } from '../boopy.ts';
+import {
+  EventId,
+  personLine,
+  Revision,
+  SessionId,
+  TaskId,
+  type TaskOutcome,
+  type TaskView,
+} from '../interaction/contract.ts';
+import { standIn } from '../interaction/stand-in.ts';
+import type { TaskStore } from '../interaction/tasks.ts';
+
+/**
+ * A GET body larger than this is refused unread, and so is a larger open or action body. Task
+ * claims are small JSON objects. An answer carries audio, so it keeps the headset's limit.
+ */
+const BODY_CAP = 16 * 1024;
+
+const OpenRequest = z.strictObject({ eventId: EventId, taskId: TaskId });
+
+/** An answer is audio only: the headset does not type. */
+const AnswerRequest = z.strictObject({
+  eventId: EventId,
+  sessionId: SessionId,
+  expectedRevision: Revision,
+  speech: z.strictObject({ wav: z.string().min(1) }),
+});
+
+/** A spoken answer goes to the answers route, so voice_reply is not an action here. */
+const ActionRequest = z.strictObject({
+  eventId: EventId,
+  sessionId: SessionId,
+  expectedRevision: Revision,
+  action: z.discriminatedUnion('type', [
+    z.strictObject({ type: z.literal('wrong_subject') }),
+    z.strictObject({ type: z.literal('save_for_later') }),
+    z.strictObject({ type: z.literal('retry') }),
+    z.strictObject({ type: z.literal('cancel') }),
+  ]),
+});
+
+const REFUSALS = {
+  unknown_task: [404, 'No such task.'],
+  session_mismatch: [409, 'This task belongs to another session.'],
+  task_exists: [409, 'This task id belongs to another task.'],
+  duplicate_conflict: [409, 'This event id was already used for something else.'],
+  stale_revision: [409, 'This task has changed. Read it again before acting.'],
+  cancelled: [409, 'This task is closed.'],
+  source_mismatch: [409, 'This result names another source.'],
+} as const;
+
+const UNKNOWN: TaskOutcome = { status: 'rejected', code: 'unknown_task', task: null };
+const CONFLICT: TaskOutcome = { status: 'rejected', code: 'duplicate_conflict', task: null };
+
+/** A spoken answer as the store checks and records it: the change and its audio digest. */
+type Answer = {
+  readonly eventId: string;
+  readonly taskId: string;
+  readonly sessionId: string;
+  readonly expectedRevision: number;
+  readonly audioSha256: string;
+};
+
+/**
+ * The headset's task routes. Every view says local-only and not-sent: nothing here reaches the
+ * person's own assistant. The one result a capture gets is a labeled local stand-in projected from
+ * Boopy's own turn. Reading a task only reads the journal.
+ */
+export function registerTaskRoutes(app: FastifyInstance, tasks: TaskStore, boopy: Boopy) {
+  const native = {
+    onRequest: async (request: FastifyRequest, reply: FastifyReply) => {
+      reply.header('Cache-Control', 'no-store');
+      if (request.headers.origin !== undefined)
+        throw new BoopyError(403, 'browser_not_allowed', 'Use Boopy for tasks.');
+    },
+  };
+  const small = { ...native, bodyLimit: BODY_CAP };
+
+  app.get('/v1/tasks/:taskId', native, async (request, reply) => {
+    const claim = await overrideClaim(request);
+    if (claim === 'continuity')
+      throw new BoopyError(400, 'continuity_refused', 'Continuity stays local-only.');
+    if (claim === 'delivery')
+      throw new BoopyError(400, 'delivery_refused', 'Delivery stays not-sent.');
+    const taskId = literalTaskId(request);
+    return reply.send(taskId === undefined ? null : (tasks.get(taskId) ?? null));
+  });
+
+  // One task per session in this version: an existing one is returned and the body's ids unused.
+  // A task still waiting for its first result is never served without it.
+  app.post('/v1/sessions/:sessionId/task', small, async (request) => {
+    const body = OpenRequest.parse(request.body);
+    const sessionId = (request.params as { sessionId: string }).sessionId;
+    const facts = boopy.taskTurn(sessionId);
+    const existing = tasks.forSession(sessionId);
+    if (existing !== undefined && existing.revision > 0) return existing;
+    const ids = { eventId: body.eventId, taskId: existing?.taskId ?? body.taskId };
+    const plan = standIn(sessionId, ids, facts);
+    const outcome =
+      plan === null
+        ? undefined
+        : tasks.openWithResult(plan.open, plan.result, new Date().toISOString());
+    if (outcome?.status === 'accepted') return outcome.task;
+    if (outcome === undefined || existing !== undefined)
+      throw new BoopyError(
+        409,
+        'task_unavailable',
+        'This session has no completed turn to open a task from.',
+      );
+    return settle(outcome);
+  });
+
+  // A retry names the same event id. It must never transcribe or record a second time, so a
+  // recorded answer replays and one still being transcribed is awaited, not repeated.
+  const answering = new Map<
+    string,
+    { readonly key: string; readonly outcome: Promise<TaskOutcome> }
+  >();
+
+  const answer = async (input: Answer, wav: Buffer): Promise<TaskOutcome> => {
+    const recognizer = boopy.speechRecognizer;
+    if (recognizer === null)
+      throw new BoopyError(503, 'recognizer_unavailable', 'Speech is not set up on this Mac.');
+    const heard = await recognizer.transcribe(wav).catch(() => {
+      throw new BoopyError(502, 'speech_failed', 'Could not transcribe this answer. Try again.');
+    });
+    if (heard.text.trim() === '')
+      throw new BoopyError(422, 'no_words', 'No words were heard. Answer again.');
+    const text = personLine.safeParse(heard.text);
+    if (!text.success)
+      throw new BoopyError(
+        422,
+        'answer_unusable',
+        'That answer does not fit one line of 400 characters. Answer again, more briefly.',
+      );
+    const { audioSha256, ...change } = input;
+    return tasks.act(
+      {
+        ...change,
+        action: {
+          type: 'voice_reply',
+          text: text.data,
+          // The recognizer gives no confidence for its words, and unknown is not certain.
+          recognitionUncertain: true,
+          audioSha256,
+          recognizer: recognizer.name,
+        },
+      },
+      new Date().toISOString(),
+    );
+  };
+
+  app.post('/v1/tasks/:taskId/answers', native, async (request) => {
+    const body = AnswerRequest.parse(request.body);
+    const taskId = literalTaskId(request);
+    if (taskId === undefined) return settle(UNKNOWN);
+    const wav = Buffer.from(body.speech.wav, 'base64');
+    const input: Answer = {
+      eventId: body.eventId,
+      taskId,
+      sessionId: body.sessionId,
+      expectedRevision: body.expectedRevision,
+      audioSha256: createHash('sha256').update(wav).digest('hex'),
+    };
+    const key = JSON.stringify([
+      taskId,
+      input.sessionId,
+      input.expectedRevision,
+      input.audioSha256,
+    ]);
+    const running = answering.get(body.eventId);
+    if (running !== undefined)
+      return settle(running.key === key ? await running.outcome : CONFLICT);
+    const known = tasks.checkAnswer(input);
+    if (known !== undefined) return settle(known);
+    const outcome = answer(input, wav);
+    answering.set(body.eventId, { key, outcome });
+    try {
+      return settle(await outcome);
+    } finally {
+      answering.delete(body.eventId);
+    }
+  });
+
+  app.post('/v1/tasks/:taskId/actions', small, async (request) => {
+    const body = ActionRequest.parse(request.body);
+    const taskId = literalTaskId(request);
+    if (taskId === undefined) return settle(UNKNOWN);
+    if (answering.has(body.eventId)) return settle(CONFLICT);
+    return settle(tasks.act({ ...body, taskId }, new Date().toISOString()));
+  });
+}
+
+/** An accepted outcome is the view; a refusal keeps the store's code. */
+function settle(outcome: TaskOutcome): TaskView {
+  if (outcome.status === 'accepted') return outcome.task;
+  const [status, message] = REFUSALS[outcome.code];
+  throw new BoopyError(status, outcome.code, message);
+}
+
+/** Fastify decodes parameters, so the raw path segment must be the task id itself. */
+function literalTaskId(request: FastifyRequest): string | undefined {
+  const value = (request.params as { taskId?: string }).taskId;
+  const raw = request.raw.url?.split('?')[0]?.split('/')[3];
+  if (value === undefined || raw !== value || !TaskId.safeParse(value).success) return undefined;
+  return value;
+}
+
+async function overrideClaim(request: FastifyRequest): Promise<'continuity' | 'delivery' | null> {
+  const fromQuery = claimInQuery(request.raw.url) ?? claimInValue(request.query);
+  if (fromQuery === 'continuity') return 'continuity';
+  const fromBody = await rawBodyClaim(request);
+  if (fromBody === 'continuity') return 'continuity';
+  if (fromQuery === 'delivery' || fromBody === 'delivery') return 'delivery';
+  return null;
+}
+
+/**
+ * Fastify does not parse a GET body. Read a small one, look for a forbidden claim, and drop it.
+ * The bytes are not logged.
+ */
+async function rawBodyClaim(request: FastifyRequest): Promise<'continuity' | 'delivery' | null> {
+  if (request.body !== undefined && request.body !== null) return claimInBody(request.body);
+  const text = await rawBodyText(request);
+  if (text === undefined) return null;
+  const type = request.headers['content-type'] ?? '';
+  if (type.includes('application/x-www-form-urlencoded')) return claimInQuery(`?${text}`);
+  try {
+    return claimInValue(JSON.parse(text) as unknown);
+  } catch {
+    return claimInQuery(`?${text}`);
+  }
+}
+
+async function rawBodyText(request: FastifyRequest): Promise<string | undefined> {
+  const lengthHeader = request.headers['content-length'];
+  const chunked = request.headers['transfer-encoding'] !== undefined;
+  if (lengthHeader === undefined && !chunked) return undefined;
+  if (lengthHeader !== undefined) {
+    const length = Number(lengthHeader);
+    if (!Number.isInteger(length) || length < 0 || length > BODY_CAP)
+      throw new BoopyError(400, 'invalid_request', 'This read accepts a small JSON body.');
+    if (length === 0) return undefined;
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request.raw) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > BODY_CAP)
+      throw new BoopyError(400, 'invalid_request', 'This read accepts a small JSON body.');
+    chunks.push(buffer);
+  }
+  if (chunks.length === 0) return undefined;
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function claimInQuery(url: string | undefined): 'continuity' | 'delivery' | null {
+  const query = url?.split('?')[1]?.split('#')[0];
+  if (query === undefined || query.length === 0) return null;
+  let delivery = false;
+  for (const [name, value] of new URLSearchParams(query)) {
+    const field = fieldName(name);
+    if (field === 'continuity' && value === 'grok-bot') return 'continuity';
+    if (field === 'delivery' && value === 'sent') delivery = true;
+  }
+  return delivery ? 'delivery' : null;
+}
+
+function claimInBody(body: unknown): 'continuity' | 'delivery' | null {
+  if (typeof body !== 'string') return claimInValue(body);
+  try {
+    return claimInValue(JSON.parse(body) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+function claimInValue(value: unknown, depth = 0): 'continuity' | 'delivery' | null {
+  if (depth > 20 || value === null || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    let delivery = false;
+    for (const item of value) {
+      const claim = claimInValue(item, depth + 1);
+      if (claim === 'continuity') return 'continuity';
+      if (claim === 'delivery') delivery = true;
+    }
+    return delivery ? 'delivery' : null;
+  }
+  const record = value as Record<string, unknown>;
+  if (hasExact(record.continuity, 'grok-bot')) return 'continuity';
+  let delivery = hasExact(record.delivery, 'sent');
+  for (const nested of Object.values(record)) {
+    const claim = claimInValue(nested, depth + 1);
+    if (claim === 'continuity') return 'continuity';
+    if (claim === 'delivery') delivery = true;
+  }
+  return delivery ? 'delivery' : null;
+}
+
+function hasExact(value: unknown, expected: string): boolean {
+  if (value === expected) return true;
+  if (!Array.isArray(value)) return false;
+  for (const item of value) if (item === expected) return true;
+  return false;
+}
+
+function fieldName(name: string): string {
+  const bracket = name.lastIndexOf('[');
+  if (bracket !== -1 && name.endsWith(']')) return name.slice(bracket + 1, -1);
+  const dot = name.lastIndexOf('.');
+  return dot === -1 ? name : name.slice(dot + 1);
+}
