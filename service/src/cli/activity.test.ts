@@ -695,4 +695,373 @@ describe('pnpm activity', () => {
       await test.close();
     }
   });
+
+  it('says it could not confirm a name it cannot check, and removes nothing', async () => {
+    const test = await setup();
+    const folders: string[] = [];
+    try {
+      const submissionId = await submitted(test);
+      const exported = `boopy-activity-submission-${submissionId}.json`;
+      for (const [finished, request] of [
+        [true, 2],
+        [false, 3],
+      ] as const) {
+        const outDir = join(test.directory, finished ? 'unchecked-finished' : 'unchecked-failed');
+        await mkdir(outDir);
+        folders.push(outDir);
+        const requested = `boopy-activity-request-arq_k${request}.json`;
+        for (const [name, run, advice] of [
+          [
+            exported,
+            () =>
+              exportSubmission({ submissionId, outDir, dataDir: test.dataDir, port: test.port }),
+            finished
+              ? 'The export is recorded; export it again into another folder to get the recorded bytes.'
+              : 'Boopy has recorded this export; exporting it into another folder gives exactly the recorded bytes.',
+          ],
+          [
+            requested,
+            () =>
+              requestActivity({
+                packageId: test.packageId,
+                goal: 'Synthetic goal.',
+                outDir,
+                dataDir: test.dataDir,
+                port: test.port,
+              }),
+            finished ? 'Request again to get a new request file.' : '',
+          ],
+        ] as const) {
+          // While the bytes are written, another program takes search permission off the folder,
+          // so the name can no longer be checked (EACCES rather than a missing name).
+          const restore = await patchWrites(test.directory, async (asUsual, content) => {
+            await chmod(outDir, 0o600);
+            await asUsual(finished ? content : content.slice(0, 16));
+            if (!finished)
+              throw Object.assign(new Error('synthetic full disk'), { code: 'ENOSPC' });
+          });
+          try {
+            await assert.rejects(run(), (error: Error) => {
+              assert.equal(
+                error.message,
+                finished
+                  ? `Boopy could not confirm ${name} is the file it wrote. ${advice}`
+                  : [
+                      `Could not finish writing ${name}, and Boopy could not confirm ${name} is the file it wrote.`,
+                      advice,
+                    ]
+                      .filter(Boolean)
+                      .join(' '),
+              );
+              clean(test, error.message);
+              return true;
+            });
+          } finally {
+            restore();
+            await chmod(outDir, 0o700);
+          }
+          // Nothing was removed: the file still holds what reached it.
+          const { size } = await stat(join(outDir, name));
+          assert.ok(finished ? size > 16 : size === 16, `${name}: ${size} bytes`);
+        }
+        // Not even the request's probe file was removed, since its name could not be checked.
+        const left = await readdir(outDir);
+        assert.equal(left.length, 3, left.join(', '));
+        assert.ok(left.some((entry) => /^\.boopy-activity-.+\.partial$/.test(entry)));
+      }
+    } finally {
+      for (const folder of folders) await chmod(folder, 0o700);
+      await test.close();
+    }
+  });
+
+  it('removes an unfinished file before closing it, so its inode cannot be reused', async () => {
+    const test = await setup();
+    const promises = createRequire(import.meta.url)('node:fs/promises');
+    const openAsUsual = promises.open;
+    const links: bigint[] = [];
+    // Each file the command creates (it opens them exclusively) reports, as it is closed, how
+    // many names still lead to it.
+    promises.open = async (...args: unknown[]) => {
+      const handle: FileHandle = await openAsUsual(...args);
+      if (typeof args[1] === 'number' && args[1] & constants.O_EXCL) {
+        const closeAsUsual = handle.close;
+        handle.close = async () => {
+          links.push((await handle.stat({ bigint: true })).nlink);
+          return closeAsUsual.call(handle);
+        };
+      }
+      return handle;
+    };
+    syncBuiltinESMExports();
+    try {
+      const outDir = join(test.directory, 'closing');
+      await mkdir(outDir);
+      const base = { outDir, dataDir: test.dataDir, port: test.port };
+      await assert.rejects(
+        exportSubmission({ ...base, submissionId: 'sub_unknownclose' }),
+        /404 submission_unknown/,
+      );
+      await assert.rejects(
+        requestActivity({ ...base, packageId: 'ctx_unknownclose', goal: 'Synthetic goal.' }),
+        /404 prepared_unavailable/,
+      );
+      assert.deepEqual(await readdir(outDir), []);
+      // The export file and the request's probe file were each removed before being closed.
+      assert.deepEqual(links, [0n, 0n]);
+    } finally {
+      promises.open = openAsUsual;
+      syncBuiltinESMExports();
+      await test.close();
+    }
+  });
+
+  it('removes a partly written file when the command is stopped while writing it', {
+    timeout: 120_000,
+  }, async () => {
+    const test = await setup();
+    try {
+      const submissionId = await submitted(test);
+      const stall = join(test.directory, 'stall-writes.mjs');
+      await writeFile(stall, STALL_WRITES);
+      for (const [command, options, written] of [
+        [
+          'request',
+          ['--package', test.packageId, '--goal', 'Synthetic goal.'],
+          /^boopy-activity-request-arq_k\d+\.json$/,
+        ],
+        ['export', ['--submission', submissionId], /^boopy-activity-submission-sub_k1\.json$/],
+      ] as const) {
+        for (const [signal, code] of [
+          ['SIGINT', 130],
+          ['SIGTERM', 143],
+        ] as const) {
+          const outDir = await mkdtemp(join(test.directory, `${command}-`));
+          let name = '';
+          const stopped = await stoppedCommand(
+            [
+              '--import',
+              pathToFileURL(stall).href,
+              CLI,
+              command,
+              ...options,
+              '--out-dir',
+              outDir,
+              '--data-dir',
+              test.dataDir,
+              '--port',
+              String(test.port),
+            ],
+            signal,
+            async (stdout) => {
+              await once(stdout, 'data');
+              // The output file has its first bytes; the write has not finished.
+              const named = (await readdir(outDir)).filter((entry) => written.test(entry));
+              assert.equal(named.length, 1, `${command} ${signal}`);
+              name = named[0] ?? '';
+              assert.equal((await stat(join(outDir, name))).size, 16, `${command} ${signal}`);
+            },
+          );
+          assert.deepEqual([stopped.code, stopped.killedBy], [code, null], `${command} ${signal}`);
+          // Neither the partly written file nor the request command's probe file is left.
+          assert.deepEqual(await readdir(outDir), [], `${command} ${signal}`);
+          assert.equal(
+            stopped.printed,
+            `Stopped before ${name} was finished, so it was removed.\n`,
+          );
+          clean(test, stopped.printed);
+        }
+      }
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('removes its claimed file when stopped before the service answers', {
+    timeout: 60_000,
+  }, async () => {
+    const test = await setup();
+    try {
+      const submissionId = await submitted(test);
+      const name = `boopy-activity-submission-${submissionId}.json`;
+      const outDir = join(test.directory, 'stopped');
+      await mkdir(outDir);
+      for (const [signal, code] of [
+        ['SIGINT', 130],
+        ['SIGTERM', 143],
+      ] as const) {
+        const stopped = await stoppedWhileAsking(
+          ['export', '--submission', submissionId, '--out-dir', outDir, '--data-dir', test.dataDir],
+          signal,
+          async () => {
+            // The export file is claimed before the service is asked.
+            assert.deepEqual(await readdir(outDir), [name], signal);
+          },
+        );
+        assert.deepEqual([stopped.code, stopped.killedBy], [code, null], signal);
+        assert.deepEqual(await readdir(outDir), [], signal);
+        assert.equal(stopped.printed, `Stopped before ${name} was finished, so it was removed.\n`);
+        clean(test, stopped.printed);
+      }
+      assert.equal(exportEvents(test), 0);
+      // Nothing is left to refuse the next export into the same folder.
+      const exported = await exportSubmission({
+        submissionId,
+        outDir,
+        dataDir: test.dataDir,
+        port: test.port,
+      });
+      assert.deepEqual(await readdir(outDir), [name]);
+      assert.equal(
+        exported.fileSha256,
+        test.store.view('act_k1').submissions[0]?.export?.fileSha256,
+      );
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('removes its private probe file when a request is stopped before the service answers', {
+    timeout: 60_000,
+  }, async () => {
+    const test = await setup();
+    try {
+      const outDir = join(test.directory, 'stopped');
+      await mkdir(outDir);
+      for (const [signal, code] of [
+        ['SIGINT', 130],
+        ['SIGTERM', 143],
+      ] as const) {
+        const stopped = await stoppedWhileAsking(
+          [
+            'request',
+            '--package',
+            test.packageId,
+            '--goal',
+            'Synthetic goal.',
+            '--out-dir',
+            outDir,
+            '--data-dir',
+            test.dataDir,
+          ],
+          signal,
+          async () => {
+            // The folder takes a private probe file before the service is asked.
+            const [probe, ...others] = await readdir(outDir);
+            assert.match(probe ?? '', /^\.boopy-activity-[0-9a-f-]{36}\.partial$/, signal);
+            assert.deepEqual(others, [], signal);
+          },
+        );
+        assert.deepEqual([stopped.code, stopped.killedBy], [code, null], signal);
+        assert.deepEqual(await readdir(outDir), [], signal);
+        // The probe file is Boopy's own, so the stop leaves no message about it.
+        assert.equal(stopped.printed, '', signal);
+      }
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('checks the output folder and identifiers before any request is made', async () => {
+    const test = await setup();
+    try {
+      const before = test.events();
+      const base = { dataDir: test.dataDir, port: test.port };
+      await assert.rejects(
+        requestActivity({
+          ...base,
+          packageId: test.packageId,
+          goal: 'x',
+          outDir: join(test.directory, 'missing'),
+        }),
+        /folder/,
+      );
+      const notFolder = join(test.directory, 'plain.txt');
+      await writeFile(notFolder, 'synthetic');
+      await assert.rejects(
+        requestActivity({ ...base, packageId: test.packageId, goal: 'x', outDir: notFolder }),
+        /folder/,
+      );
+      for (const submissionId of [
+        'sub_x/../../evil',
+        'sub_x\u0000',
+        `sub_${'x'.repeat(65)}`,
+        'act_x',
+      ])
+        await assert.rejects(
+          exportSubmission({ ...base, submissionId, outDir: test.output }),
+          /submission ID/,
+        );
+      for (const packageId of ['ctx_../x', 'arq_k1', ''])
+        await assert.rejects(
+          requestActivity({ ...base, packageId, goal: 'x', outDir: test.output }),
+          /package ID/,
+        );
+      assert.equal(test.events(), before);
+      assert.deepEqual(await readdir(test.output), []);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('reads input files only when they are regular, bounded and valid UTF-8', async () => {
+    const test = await setup();
+    try {
+      const { request } = await requested(test);
+      const base = { dataDir: test.dataDir, port: test.port };
+      const valid = join(test.directory, 'valid.json');
+      await writeFile(valid, activityFile(request));
+      const link = join(test.directory, 'link.json');
+      await symlink(valid, link);
+      const fifo = join(test.directory, 'fifo');
+      execFileSync('mkfifo', [fifo]);
+      const big = join(test.directory, 'big.json');
+      await writeFile(big, Buffer.alloc(65_537, 0x20));
+      const broken = join(test.directory, 'broken.json');
+      await writeFile(broken, Buffer.from([0x7b, 0xff, 0xfe, 0x7d]));
+      const before = test.events();
+      for (const file of [link, test.directory, fifo, '/dev/zero', big, broken])
+        await assert.rejects(importActivity({ ...base, file }), /file/, file);
+      assert.equal(test.events(), before);
+      const exact = join(test.directory, 'exact.json');
+      const content = activityFile(request);
+      await writeFile(exact, content.padEnd(65_536, ' '));
+      assert.equal((await stat(exact)).size, 65_536);
+      const result = await importActivity({ ...base, file: exact });
+      assert.equal(result.status, 'active');
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('prints the service refusal and its issues, never the token or a private path', async () => {
+    const test = await setup();
+    try {
+      const { request } = await requested(test);
+      const invalid = join(test.directory, 'invalid.json');
+      await writeFile(invalid, JSON.stringify({ ...JSON.parse(activityFile(request)), extra: 1 }));
+      await assert.rejects(
+        importActivity({ file: invalid, dataDir: test.dataDir, port: test.port }),
+        (error: Error) => {
+          assert.match(error.message, /activity_invalid/);
+          assert.match(error.message, /file: Remove the unsupported field "extra"\./);
+          clean(test, error.message);
+          return true;
+        },
+      );
+      const wrongToken = join(test.directory, 'other-data');
+      await mkdir(wrongToken);
+      await writeFile(join(wrongToken, 'connector-token'), 'x'.repeat(TOKEN.length));
+      await assert.rejects(
+        importActivity({ file: invalid, dataDir: wrongToken, port: test.port }),
+        (error: Error) => {
+          assert.match(error.message, /unauthorized/);
+          clean(test, error.message);
+          return true;
+        },
+      );
+    } finally {
+      await test.close();
+    }
+  });
 });
