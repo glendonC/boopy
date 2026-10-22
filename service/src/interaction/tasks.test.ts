@@ -394,4 +394,318 @@ describe('local interaction tasks', () => {
     assert.equal(status?.type, 'status');
     if (status?.type === 'status') assert.equal(status.code, 'try-again');
   });
+
+  it('consulting a device label uses the same actions and components', () => {
+    const journal = Journal.open(':memory:');
+    const tasks = new TaskStore(journal);
+    const labelSource = { ...SOURCE, sourceId: 'src_device_label' };
+    const labelParts = [
+      { type: 'subject', sourceId: 'src_device_label', maskId: null },
+      { type: 'annotation', text: 'Label', evidenceIds: ['ev_label'] },
+      { type: 'dialogue', text: 'The label is unread.', evidenceIds: ['ev_label'] },
+      {
+        type: 'choice',
+        prompt: 'Read it again?',
+        options: [{ id: 'opt_retry', label: 'Try again' }],
+      },
+    ];
+    const manual = tasks.open(
+      {
+        eventId: 'evt_open_manual',
+        sessionId: SESSION,
+        taskId: 'tsk_manual',
+        source: labelSource,
+        intent: 'consult_source',
+        utterance: 'What does this label say?',
+      },
+      AT,
+    );
+    assert.equal(manual.status, 'accepted');
+    if (manual.status !== 'accepted') return;
+    assert.equal(manual.task.intent, 'consult_source');
+    assert.equal(manual.task.revision, 0);
+    assert.equal(manual.task.source.sourceRevision, 1);
+    assert.equal(manual.task.delivery, 'not-sent');
+    assert.equal(manual.task.continuity, 'local-only');
+    assert.equal(manual.task.subjectCorrected, false);
+    assert.deepEqual(manual.task.components, [{ type: 'status', code: 'not-sent' }]);
+    const guide = tasks.receive(
+      {
+        resultId: 'res_manual',
+        sessionId: SESSION,
+        taskId: 'tsk_manual',
+        baseRevision: 0,
+        source: labelSource,
+        evidenceIds: ['ev_label'],
+        components: labelParts,
+      },
+      AT,
+    );
+    assert.equal(guide.status, 'accepted');
+    if (guide.status !== 'accepted') return;
+    assert.equal(guide.task.revision, 1);
+    assert.equal(guide.task.source.sha256, SHA);
+    assert.equal(guide.task.subjectCorrected, false);
+    assert.equal(guide.task.delivery, 'not-sent');
+    assert.equal(guide.task.continuity, 'local-only');
+    assert.deepEqual(guide.task.components.slice(0, -1), labelParts);
+    const claimed = journal.all().find((event) => event.id === 'res_manual');
+    assert.equal(claimed?.type, 'task.provider-accepted');
+    if (claimed?.type !== 'task.provider-accepted') return;
+    assert.equal(claimed.actor, 'system');
+    assert.equal(claimed.data.simulator, true);
+    assert.equal(claimed.data.revision, 1);
+    assert.deepEqual(claimed.data.source, labelSource);
+    const claimSource = claimed.data.source;
+    const claimComponents = claimed.data.components;
+    const retry = tasks.act(
+      {
+        eventId: 'evt_label_retry',
+        sessionId: SESSION,
+        taskId: 'tsk_manual',
+        expectedRevision: 1,
+        action: { type: 'retry' },
+      },
+      AT,
+    );
+    assert.equal(retry.status, 'accepted');
+    if (retry.status !== 'accepted') return;
+    assert.equal(retry.task.revision, 2);
+    assert.equal(retry.task.source.sourceRevision, 1);
+    assert.equal(retry.task.source.sha256, SHA);
+    assert.equal(retry.task.source.sourceId, 'src_device_label');
+    assert.equal(retry.task.subjectCorrected, false);
+    assert.equal(retry.task.delivery, 'not-sent');
+    assert.equal(retry.task.continuity, 'local-only');
+    assert.deepEqual(retry.task.components.slice(0, -1), labelParts);
+    const status = retry.task.components.at(-1);
+    assert.equal(status?.type, 'status');
+    if (status?.type === 'status') assert.equal(status.code, 'try-again');
+    const corrected = tasks.act(
+      {
+        eventId: 'evt_label_wrong',
+        sessionId: SESSION,
+        taskId: 'tsk_manual',
+        expectedRevision: 2,
+        action: { type: 'wrong_subject' },
+      },
+      AT,
+    );
+    assert.equal(corrected.status, 'accepted');
+    if (corrected.status !== 'accepted') return;
+    assert.equal(corrected.task.subjectCorrected, true);
+    assert.equal(corrected.task.revision, 3);
+    assert.equal(corrected.task.source.sourceRevision, 1);
+    assert.equal(corrected.task.source.sha256, SHA);
+    assert.equal(corrected.task.source.sourceId, 'src_device_label');
+    assert.equal(corrected.task.utterance, 'What does this label say?');
+    assert.equal(corrected.task.delivery, 'not-sent');
+    assert.equal(corrected.task.continuity, 'local-only');
+    assert.deepEqual(corrected.task.components, [{ type: 'status', code: 'wrong-item' }]);
+    const still = journal.all().find((event) => event.id === 'res_manual');
+    assert.equal(still?.type, 'task.provider-accepted');
+    if (still?.type !== 'task.provider-accepted') return;
+    assert.equal(still.data.revision, 1);
+    assert.deepEqual(still.data.source, claimSource);
+    assert.deepEqual(still.data.components, claimComponents);
+    assert.equal(still.data.simulator, true);
+    const retried = journal.all().find((event) => event.id === 'evt_label_retry');
+    assert.equal(retried?.type, 'task.action-accepted');
+    if (retried?.type !== 'task.action-accepted') return;
+    assert.equal(retried.actor, 'person');
+    assert.deepEqual(retried.data.action, { type: 'retry' });
+    assert.equal(retried.data.revision, 2);
+    assert.equal(Object.hasOwn(retried.data, 'source'), false);
+    const correction = journal.all().find((event) => event.id === 'evt_label_wrong');
+    assert.equal(correction?.type, 'task.action-accepted');
+    if (correction?.type !== 'task.action-accepted') return;
+    assert.equal(correction.actor, 'person');
+    assert.deepEqual(correction.data.action, { type: 'wrong_subject' });
+    assert.equal(correction.data.revision, 3);
+    assert.equal(Object.hasOwn(correction.data, 'source'), false);
+    const opened = journal.all().find((event) => event.id === 'evt_open_manual');
+    assert.equal(opened?.type, 'task.opened');
+    if (opened?.type !== 'task.opened') return;
+    assert.equal(opened.data.revision, 0);
+    assert.deepEqual(opened.data.source, corrected.task.source);
+    assert.equal(opened.data.utterance, corrected.task.utterance);
+  });
+});
+
+describe('a task opened together with its first result', () => {
+  const opening = {
+    eventId: 'evt_open_capture',
+    sessionId: SESSION,
+    taskId: 'tsk_capture',
+    source: SOURCE,
+    intent: 'consult_source',
+    utterance: 'What is this?',
+  } as const;
+  const first = {
+    resultId: 'res_capture',
+    sessionId: SESSION,
+    taskId: 'tsk_capture',
+    baseRevision: 0,
+    source: SOURCE,
+    evidenceIds: ['ev_photo'],
+    components: [
+      { type: 'subject', sourceId: 'src_sahara_still', maskId: null },
+      { type: 'voice_reply', prompt: 'Answer aloud.' },
+    ],
+  };
+
+  /** An outcome's status when accepted, or its refusal code. */
+  const kind = (outcome: TaskOutcome | undefined) =>
+    outcome === undefined ? undefined : outcome.status === 'accepted' ? 'accepted' : outcome.code;
+
+  it('appends the opening and the result as one step, the system opening it', () => {
+    const journal = Journal.open(':memory:');
+    const tasks = new TaskStore(journal);
+    assert.equal(tasks.forSession(SESSION), undefined);
+    const outcome = tasks.openWithResult(opening, first, AT);
+    assert.equal(outcome.status, 'accepted');
+    if (outcome.status !== 'accepted') return;
+    assert.equal(outcome.task.revision, 1);
+    assert.equal(outcome.task.intent, 'consult_source');
+    assert.equal(outcome.task.utterance, 'What is this?');
+    assert.equal(outcome.task.continuity, 'local-only');
+    assert.equal(outcome.task.delivery, 'not-sent');
+    assert.deepEqual(outcome.task.components, [
+      ...first.components,
+      { type: 'status', code: 'not-sent' },
+    ]);
+    assert.deepEqual(
+      journal.all().map((event) => [event.type, event.actor, event.id]),
+      [
+        ['task.opened', 'system', 'evt_open_capture'],
+        ['task.provider-accepted', 'system', 'res_capture'],
+      ],
+    );
+    assert.deepEqual(tasks.forSession(SESSION), outcome.task);
+    assert.deepEqual(new TaskStore(journal).get('tsk_capture'), outcome.task);
+    assert.equal(tasks.forSession('sess_other'), undefined);
+    assert.deepEqual(tasks.openWithResult(opening, first, AT), outcome);
+    assert.equal(journal.all().length, 2);
+  });
+
+  it('a failure on the second append leaves no opening behind', () => {
+    const journal = Journal.open(':memory:');
+    const tasks = new TaskStore(journal);
+    const append = journal.append.bind(journal);
+    journal.append = (event, id, at) => {
+      if (event.type === 'task.provider-accepted') throw new Error('Synthetic disk failure.');
+      return append(event, id, at);
+    };
+    assert.throws(() => tasks.openWithResult(opening, first, AT), /Synthetic disk failure/);
+    assert.deepEqual(journal.all(), []);
+    assert.equal(tasks.forSession(SESSION), undefined);
+    journal.append = append;
+    assert.equal(kind(tasks.openWithResult(opening, first, AT)), 'accepted');
+    assert.equal(journal.all().length, 2);
+  });
+
+  it('finds the earliest task a session has', () => {
+    const tasks = store();
+    tasks.open({ ...opening, eventId: 'evt_first', taskId: 'tsk_first' }, AT);
+    tasks.open(
+      { ...opening, eventId: 'evt_elsewhere', taskId: 'tsk_elsewhere', sessionId: 'sess_other' },
+      AT,
+    );
+    tasks.open({ ...opening, eventId: 'evt_second', taskId: 'tsk_second' }, AT);
+    assert.equal(tasks.forSession(SESSION)?.taskId, 'tsk_first');
+    assert.equal(tasks.forSession('sess_other')?.taskId, 'tsk_elsewhere');
+  });
+
+  it('refuses an id that another journal event already holds, appending nothing', () => {
+    const journal = Journal.open(':memory:');
+    for (const id of ['evt_taken', 'res_taken'])
+      journal.append(
+        { type: 'session.started', session: 'ses_boopy', actor: 'person', data: { device: null } },
+        id,
+        AT,
+      );
+    const tasks = new TaskStore(journal);
+    assert.equal(kind(tasks.open({ ...opening, eventId: 'evt_taken' }, AT)), 'duplicate_conflict');
+    assert.equal(
+      kind(tasks.openWithResult({ ...opening, eventId: 'evt_taken' }, first, AT)),
+      'duplicate_conflict',
+    );
+    assert.equal(
+      kind(tasks.openWithResult(opening, { ...first, resultId: 'res_taken' }, AT)),
+      'duplicate_conflict',
+    );
+    assert.equal(journal.all().length, 2);
+    assert.equal(kind(tasks.openWithResult(opening, first, AT)), 'accepted');
+    const retry = {
+      eventId: 'evt_taken',
+      sessionId: SESSION,
+      taskId: 'tsk_capture',
+      expectedRevision: 1,
+      action: { type: 'retry' },
+    };
+    assert.equal(kind(tasks.act(retry, AT)), 'duplicate_conflict');
+    assert.equal(
+      kind(tasks.receive({ ...first, resultId: 'res_taken', baseRevision: 1 }, AT)),
+      'duplicate_conflict',
+    );
+    assert.equal(journal.all().length, 4);
+    assert.equal(tasks.get('tsk_capture')?.revision, 1);
+  });
+
+  it('appends nothing when either half would be refused', () => {
+    const journal = Journal.open(':memory:');
+    const tasks = new TaskStore(journal);
+    assert.equal(open(tasks).status, 'accepted');
+    assert.equal(tasks.receive(lesson, AT).status, 'accepted');
+    const before = journal.all().length;
+    const reusedResult = tasks.openWithResult(
+      opening,
+      { ...first, resultId: 'res_korean_prompt' },
+      AT,
+    );
+    assert.equal(reusedResult.status, 'rejected');
+    if (reusedResult.status !== 'rejected') return;
+    assert.equal(reusedResult.code, 'duplicate_conflict');
+    const reusedEvent = tasks.openWithResult({ ...opening, eventId: 'evt_open_sahara' }, first, AT);
+    assert.equal(reusedEvent.status, 'rejected');
+    if (reusedEvent.status !== 'rejected') return;
+    assert.equal(reusedEvent.code, 'duplicate_conflict');
+    const otherSession = tasks.openWithResult(
+      { ...opening, sessionId: 'sess_other', taskId: 'tsk_sahara_later' },
+      { ...first, sessionId: 'sess_other', taskId: 'tsk_sahara_later' },
+      AT,
+    );
+    assert.equal(otherSession.status, 'rejected');
+    if (otherSession.status !== 'rejected') return;
+    assert.equal(otherSession.code, 'task_exists');
+    assert.equal(otherSession.task, null);
+    assert.equal(journal.all().length, before);
+    assert.equal(tasks.get('tsk_capture'), undefined);
+    assert.throws(() => tasks.openWithResult(opening, { ...first, baseRevision: 1 }, AT));
+    assert.throws(() => tasks.openWithResult(opening, { ...first, taskId: 'tsk_elsewhere' }, AT));
+    assert.equal(journal.all().length, before);
+  });
+
+  it('finishes a task opened without its first result, with the same opening only', () => {
+    const journal = Journal.open(':memory:');
+    const tasks = new TaskStore(journal);
+    assert.equal(tasks.open(opening, AT).status, 'accepted');
+    assert.equal(journal.all()[0]?.actor, 'person');
+    const otherTurn = tasks.openWithResult({ ...opening, utterance: 'Another turn.' }, first, AT);
+    assert.equal(otherTurn.status, 'rejected');
+    if (otherTurn.status !== 'rejected') return;
+    assert.equal(otherTurn.code, 'task_exists');
+    assert.equal(otherTurn.task?.revision, 0);
+    assert.equal(journal.all().length, 1);
+    const finished = tasks.openWithResult({ ...opening, eventId: 'evt_open_retry' }, first, AT);
+    assert.equal(finished.status, 'accepted');
+    if (finished.status !== 'accepted') return;
+    assert.equal(finished.task.revision, 1);
+    assert.deepEqual(
+      journal.all().map((event) => event.type),
+      ['task.opened', 'task.provider-accepted'],
+    );
+    assert.deepEqual(tasks.openWithResult(opening, first, AT), finished);
+    assert.equal(journal.all().length, 2);
+  });
 });
