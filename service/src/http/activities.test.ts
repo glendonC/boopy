@@ -330,4 +330,118 @@ describe('activity routes', () => {
       await test.close();
     }
   });
+
+  it('return import issues and file refusals from the local routes, with nothing journaled', async () => {
+    const test = await setup();
+    try {
+      const { request } = await imported(test);
+      const before = journaled(test);
+      const valid = JSON.parse(activityFile(request));
+      for (const [content, status, code] of [
+        ['not json', 400, 'activity_unreadable'],
+        [`{"pad":"${'a'.repeat(70_000)}"}`, 400, 'activity_unreadable'],
+        [
+          JSON.stringify({ ...valid, binding: { ...valid.binding, packetSha256: '2'.repeat(64) } }),
+          409,
+          'activity_binding_mismatch',
+        ],
+      ] as const) {
+        const response = await test.local('/v1/local-activities/imports', { content });
+        assert.equal(response.statusCode, status, response.body);
+        assert.equal(response.json().error.code, code);
+      }
+      const invalid = await test.local('/v1/local-activities/imports', {
+        content: JSON.stringify({ ...valid, author: '<b>Grok</b>', extra: 1 }),
+      });
+      assert.equal(invalid.statusCode, 400);
+      assert.deepEqual(invalid.json().error.issues, [
+        'author: Use plain text without markup.',
+        'file: Remove the unsupported field "extra".',
+      ]);
+      assert.equal(invalid.json().error.code, 'activity_invalid');
+      for (const payload of [{}, { content: 1 }, { content: 'x', extra: 1 }]) {
+        const response = await test.local('/v1/local-activities/imports', payload);
+        assert.equal(response.statusCode, 400);
+        assert.equal(response.json().error.code, 'invalid_request');
+      }
+      const duplicate = await test.local('/v1/local-activities/imports', {
+        content: activityFile(request),
+      });
+      assert.equal(duplicate.json().duplicate, true);
+      for (const [url, payload, status, code] of [
+        [
+          '/v1/local-activities/submissions/sub_unknown/export',
+          undefined,
+          404,
+          'submission_unknown',
+        ],
+        ['/v1/local-activities/replies', { content: '[]' }, 400, 'activity_unreadable'],
+        [
+          '/v1/local-activities/requests',
+          { packageId: 'ctx_unknown', goal: 'Practice.' },
+          404,
+          'prepared_unavailable',
+        ],
+      ] as const) {
+        const response = await test.local(url, payload);
+        assert.equal(response.statusCode, status, response.body);
+        assert.equal(response.json().error.code, code);
+      }
+      assert.equal(journaled(test), before);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('keep the local routes behind the token and the local-only checks, out of OpenAPI', async () => {
+    const test = await setup();
+    try {
+      const { request } = await imported(test);
+      const before = journaled(test);
+      const routes: [string, unknown][] = [
+        ['/v1/local-activities/requests', { packageId: test.packageId, goal: 'Practice.' }],
+        ['/v1/local-activities/imports', { content: activityFile(request) }],
+        ['/v1/local-activities/submissions/sub_unknown/export', undefined],
+        ['/v1/local-activities/replies', { content: '{}' }],
+      ];
+      for (const [url, payload] of routes) {
+        for (const [headers, remoteAddress, expected] of [
+          [{ authorization: '' }, '127.0.0.1', 401],
+          [{ authorization: `Bearer ${'x'.repeat(TOKEN.length)}` }, '127.0.0.1', 401],
+          [{ host: 'fictional.example' }, '127.0.0.1', 403],
+          [{ origin: 'http://localhost' }, '127.0.0.1', 403],
+          [{ origin: 'null' }, '127.0.0.1', 403],
+          [{ forwarded: 'for=127.0.0.1' }, '127.0.0.1', 403],
+          [{ 'x-forwarded-for': '127.0.0.1' }, '127.0.0.1', 403],
+          [{ 'x-real-ip': '127.0.0.1' }, '127.0.0.1', 403],
+          [{}, '192.0.2.1', 403],
+        ] as const) {
+          const response = await test.connector.inject({
+            method: 'POST',
+            url,
+            remoteAddress,
+            headers: { host: '127.0.0.1', authorization, ...headers },
+            ...(payload === undefined ? {} : { payload: payload as object }),
+          });
+          assert.equal(response.statusCode, expected, `${url} ${JSON.stringify(headers)}`);
+        }
+        const encoded = await test.connector.inject({
+          method: 'POST',
+          url: url.replace('local-activities', 'local%2Dactivities'),
+          remoteAddress: '127.0.0.1',
+          headers: { host: '127.0.0.1' },
+          ...(payload === undefined ? {} : { payload: payload as object }),
+        });
+        assert.ok([401, 404].includes(encoded.statusCode), `${encoded.statusCode} ${url}`);
+      }
+      assert.equal(journaled(test), before);
+      const openapi = await test.connector.inject({
+        url: '/openapi.json',
+        headers: { host: '127.0.0.1' },
+      });
+      assert.equal(openapi.body.includes('local-activities'), false);
+    } finally {
+      await test.close();
+    }
+  });
 });
