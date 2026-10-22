@@ -313,4 +313,151 @@ describe('journaled explicit-turn attention integration', () => {
       journal.close();
     }
   });
+
+  it('inspects explicitly supplied views honestly but refuses cached untrusted reuse and source relabeling', async () => {
+    const { boopy, calls, inputs, reset, journal } = setup();
+    try {
+      const view = await boopy.start(startRequest('Describe this trip.'));
+      reset();
+      const frame = {
+        ...frameOf(),
+        source: 'current-surroundings' as const,
+        timestampTrusted: false,
+      };
+      const fresh = await boopy.utter(view.id, {
+        frame,
+        speech: { text: 'Describe the whole view.' },
+        attention: policy,
+      });
+      assert.equal(fresh.attention?.action, 'reuse');
+      assert.equal(fresh.attention?.observationId, fresh.observations.at(-1)?.id);
+      assert.match(fresh.attention?.reason ?? '', /not proof.*current scene or capture time/);
+      assert.equal(calls.interpretation, 1);
+      assert.equal(calls.ocr, 0);
+      assert.equal(calls.segmentation, 0);
+      assert.equal(inputs.at(-1)?.scope, 'scene');
+      reset();
+      const cached = await boopy.utter(view.id, {
+        speech: { text: 'Describe the whole view again.' },
+        attention: policy,
+      });
+      assert.equal(cached.attention?.action, 'fresh-view');
+      const wrong = await boopy.utter(view.id, {
+        speech: { text: 'Describe the whole view.' },
+        attention: { ...policy, source: 'past-recollection' },
+      });
+      assert.equal(wrong.attention?.action, 'clarify');
+      assert.deepEqual(calls, zero);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('does not fall back from missing selected IDs or accept supplied trusted future evidence', async () => {
+    const { boopy, journal, calls, reset } = setup();
+    try {
+      const view = await boopy.start(startRequest('Describe this trip.'));
+      reset();
+      const missing = await boopy.utter(view.id, {
+        speech: { text: 'Describe the whole view.' },
+        attention: { ...policy, observationId: 'synthetic-missing' },
+      });
+      assert.equal(missing.attention?.action, 'clarify');
+      assert.equal(missing.attention?.observationId, null);
+      const future = await boopy.utter(view.id, {
+        speech: { text: 'Describe the whole view.' },
+        attention: policy,
+        frame: {
+          ...frameOf(),
+          source: 'current-surroundings',
+          timestampTrusted: true,
+          capturedAt: '2099-01-01T00:00:00.000Z',
+        },
+      });
+      assert.equal(future.attention?.action, 'clarify');
+      assert.deepEqual(calls, zero);
+      const untyped = await boopy.utter(view.id, {
+        speech: { text: 'Describe the whole view.' },
+        attention: policy,
+        frame: frameOf(),
+      });
+      assert.equal(untyped.attention?.action, 'fresh-view');
+      assert.deepEqual(calls, zero);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('reuses trusted selected sources with bounded requested OCR and preserves human notes through commit/replay', async () => {
+    const { boopy, deps, journal, calls, reset } = setup();
+    try {
+      const request = startRequest('Describe this trip.');
+      const view = await boopy.start(request);
+      reset();
+      const trusted = {
+        ...frameOf(),
+        source: 'displayed-image' as const,
+        timestampTrusted: true,
+        capturedAt: '1970-01-01T18:00:00.000Z',
+      };
+      const attention = {
+        ...policy,
+        source: 'displayed-image' as const,
+        maxAgeMs: 60000,
+        ocrRequested: true,
+      };
+      const fresh = await boopy.utter(view.id, {
+        frame: trusted,
+        speech: { text: 'Describe the whole picture.' },
+        attention,
+      });
+      assert.equal(fresh.attention?.action, 'reuse');
+      assert.equal(calls.ocr, 1);
+      assert.equal(calls.segmentation, 0);
+      reset();
+      const cached = await boopy.utter(view.id, {
+        speech: { text: 'Describe the whole picture again.' },
+        attention: {
+          ...attention,
+          observationId: fresh.observations.at(-1)?.id,
+          ocrRequested: false,
+        },
+      });
+      assert.equal(cached.attention?.action, 'reuse');
+      assert.equal(calls.interpretation, 1);
+      assert.equal(calls.ocr, 0);
+      reset();
+      const segmented = await boopy.utter(view.id, {
+        speech: { text: 'Describe the whole picture boundary.' },
+        attention: {
+          ...attention,
+          observationId: fresh.observations.at(-1)?.id,
+          ocrRequested: false,
+          segmentationRequested: true,
+        },
+      });
+      assert.equal(calls.interpretation, 1);
+      assert.equal(calls.ocr, 0);
+      assert.ok(calls.segmentation > 0 && calls.segmentation <= 4);
+      reset();
+      const target = segmented.items.find((item) => item.kind === 'object');
+      assert.ok(target);
+      const note = 'I felt Much Colder on that Trip.';
+      const noted = await boopy.utter(view.id, {
+        speech: { text: note },
+        cues: { targetItemId: target.id },
+        attention: { ...policy, evidence: 'none' },
+      });
+      assert.equal(noted.items.find((item) => item.id === target.id)?.note, note);
+      assert.deepEqual(calls, zero);
+      const committed = boopy.commit(view.id);
+      const pkg = boopy.package(committed.committed?.packageId ?? '');
+      assert.ok(pkg);
+      assert.ok(pkg.items.some((item) => item.note === note));
+      assert.deepEqual(new Boopy(deps).package(pkg.id), pkg);
+      assert.deepEqual(new Boopy(deps).view(view.id).attention, noted.attention);
+    } finally {
+      journal.close();
+    }
+  });
 });
