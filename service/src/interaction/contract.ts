@@ -3,6 +3,7 @@
  * Boopy validates the schema. Nothing here is executable, and nothing here is a
  * connection to a person's existing assistant. Delivery stays not-sent.
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export const TaskId = z.string().regex(/^tsk_[A-Za-z0-9_-]{1,64}$/);
@@ -109,6 +110,114 @@ export const UserAction = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('cancel') }),
 ]);
 export type UserAction = z.infer<typeof UserAction>;
+
+export const Revision = z.number().int().min(0).max(1_000_000);
+export const At = z.iso.datetime();
+
+export const OpenTask = z.strictObject({
+  eventId: EventId,
+  sessionId: SessionId,
+  taskId: TaskId,
+  source: SourceRef,
+  intent: Intent,
+  utterance: personLine,
+});
+export type OpenTask = z.infer<typeof OpenTask>;
+
+export const ActInput = z.strictObject({
+  eventId: EventId,
+  sessionId: SessionId,
+  taskId: TaskId,
+  expectedRevision: Revision,
+  action: UserAction,
+});
+export type ActInput = z.infer<typeof ActInput>;
+
+export function payloadHash(value: unknown): string {
+  return createHash('sha256').update(canonical(value)).digest('hex');
+}
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean')
+    return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('Invalid task payload number.');
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map((item) => canonical(item)).join(',')}]`;
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`)
+      .join(',')}}`;
+  }
+  throw new Error('Invalid task payload value.');
+}
+
+export const OpenedData = z.strictObject({
+  payloadSha256: Sha256,
+  eventId: EventId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  source: SourceRef,
+  intent: Intent,
+  utterance: personLine,
+  revision: z.literal(0),
+  outcome: z.literal('accepted'),
+});
+export type OpenedData = z.infer<typeof OpenedData>;
+
+export const ActionAcceptedData = z.strictObject({
+  payloadSha256: Sha256,
+  eventId: EventId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  expectedRevision: Revision,
+  revision: Revision,
+  action: UserAction,
+  outcome: z.literal('accepted'),
+});
+export type ActionAcceptedData = z.infer<typeof ActionAcceptedData>;
+
+export const ActionRejectedData = z.strictObject({
+  payloadSha256: Sha256,
+  eventId: EventId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  expectedRevision: Revision,
+  revision: Revision,
+  action: UserAction,
+  code: z.enum(['stale_revision', 'cancelled']),
+  outcome: z.literal('rejected'),
+});
+export type ActionRejectedData = z.infer<typeof ActionRejectedData>;
+
+type Envelope<Type extends string, Actor extends 'person' | 'system', Data> = {
+  readonly type: Type;
+  readonly session: string;
+  readonly actor: Actor;
+  readonly data: Data;
+};
+
+export type TaskEvent =
+  | Envelope<'task.opened', 'person', OpenedData>
+  | Envelope<'task.action-accepted', 'person', ActionAcceptedData>
+  | Envelope<'task.action-rejected', 'person', ActionRejectedData>;
+
+export type TaskOutcome =
+  | { readonly status: 'accepted'; readonly task: TaskView }
+  | {
+      readonly status: 'rejected';
+      readonly code:
+        | 'unknown_task'
+        | 'session_mismatch'
+        | 'task_exists'
+        | 'duplicate_conflict'
+        | 'stale_revision'
+        | 'cancelled';
+      readonly task: TaskView | null;
+    };
 
 export type Attempt = {
   readonly eventId: string;
