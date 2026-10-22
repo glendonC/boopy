@@ -394,3 +394,370 @@ for (const [label, change, expected] of [
     await code(inspectRecordedMedia(clip, { tool: audioTool(change) }), expected);
   });
 }
+
+if (process.env.BOOPY_TEST_NO_MEDIA_TOOLS !== '1') {
+  it('executes core guards and explicitly skips codec proof with both optional tools absent', async (context) => {
+    const preload = join(directory, 'missing-tools.mjs');
+    await writeFile(
+      preload,
+      `
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const isTool = (file) => ['/opt/homebrew/bin/ffmpeg', '/opt/homebrew/bin/ffprobe'].includes(file);
+const missing = () => Object.assign(new Error('Synthetic missing optional tool.'), { code: 'ENOENT' });
+const originalSync = childProcess.spawnSync;
+const originalSpawn = childProcess.spawn;
+childProcess.spawnSync = (file, ...args) => isTool(file)
+  ? { pid: 0, output: [null, null, null], stdout: null, stderr: null, status: null,
+      signal: null, error: missing() }
+  : originalSync(file, ...args);
+childProcess.spawn = (file, ...args) => { if (isTool(file)) throw missing(); return originalSpawn(file, ...args); };
+syncBuiltinESMExports();
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        preload,
+        '--test',
+        '--test-reporter=spec',
+        'src/recorded-media.test.ts',
+        'src/cli/replay.test.ts',
+      ],
+      {
+        cwd: fileURLToPath(new URL('../', import.meta.url)),
+        env: {
+          PATH: process.env.PATH ?? '',
+          NODE_NO_WARNINGS: '1',
+          BOOPY_TEST_NO_MEDIA_TOOLS: '1',
+        },
+        timeout: 10_000,
+        maxBuffer: 65_536,
+        encoding: 'utf8',
+      },
+    );
+    assert.equal(result.status, 0, 'core guard suite must pass with optional tools absent');
+    assert.match(result.stdout, /pass [1-9]\d*/);
+    assert.match(result.stdout, /fail 0\b/);
+    assert.match(result.stdout, /skipped 2\b/);
+    assert.match(
+      result.stdout,
+      /Optional installed FFmpeg\/FFprobe unavailable; real codec proof was not run/,
+    );
+    context.diagnostic(
+      `Optional tools absent child: ${['tests', 'pass', 'fail', 'skipped']
+        .map(
+          (field) =>
+            `${field} ${new RegExp(`${field} (\\d+)`).exec(result.stdout)?.[1] ?? 'unknown'}`,
+        )
+        .join('; ')}.`,
+    );
+    for (const guard of [
+      'rejects URL, network and control-containing paths',
+      'rejects edit lists and external references',
+      'refuses mismatched decoded byte count and sanitizes untrusted tool failures',
+      'kills and waits for its only child on timeout budget exhaustion',
+      'does not print raw diagnostic messages, paths or metadata',
+    ])
+      assert.ok(result.stdout.includes(guard), `missing core guard: ${guard}`);
+  });
+}
+
+it('rejects empty and oversized regular files before any child', async () => {
+  const input = join(directory, 'size-limit.mov');
+  await writeFile(input, '');
+  await code(inspectRecordedMedia(input), 'media_limit');
+  await truncate(input, 128 * 1024 * 1024 + 1);
+  await code(
+    inspectRecordedMedia(input, {
+      tool: async () => {
+        assert.fail('no child');
+      },
+    }),
+    'media_limit',
+  );
+});
+
+it('never passes an operator path to a child or returns raw unselected metadata', async () => {
+  const result = await inspectRecordedMedia(clip, {
+    tool: fakeTool((value) => {
+      Object.assign(value.format.tags, { location: 'private-marker', title: 'private-marker' });
+    }),
+  });
+  assert.equal(JSON.stringify(result).includes('private-marker'), false);
+  assert.equal(JSON.stringify(result).includes(clip), false);
+});
+
+it('capture date is an unverified metadata claim with explicit offset, never replay-now', async () => {
+  const result = await inspectRecordedMedia(clip, {
+    tool: fakeTool((value) => {
+      Object.assign(value.format.tags, { creation_time: '2020-01-02T03:04:05+02:00' });
+    }),
+  });
+  assert.deepEqual(result.captureOrigin, {
+    value: '2020-01-02T01:04:05.000Z',
+    source: 'metadata',
+    trust: 'unverified',
+    timezone: 'explicit',
+    status: 'unverified',
+    sources: ['format:creation_time'],
+  });
+});
+
+for (const [tags, status, timezone] of [
+  [{ creation_time: '2020-01-02T03:04:05' }, 'unknown', 'missing'],
+  [{ creation_time: 'not-a-date' }, 'unknown', 'unknown'],
+  [{ creation_time: '2020-02-30T03:04:05Z' }, 'unknown', 'unknown'],
+  [
+    {
+      creation_time: '2020-01-02T03:04:05Z',
+      'com.apple.quicktime.creationdate': '2020-01-03T03:04:05Z',
+    },
+    'conflict',
+    'explicit',
+  ],
+] as const) {
+  it(`keeps ${status}/${timezone} capture metadata unresolved`, async () => {
+    const result = await inspectRecordedMedia(clip, {
+      tool: fakeTool((value) => {
+        Object.assign(value.format.tags, tags);
+      }),
+    });
+    assert.equal(result.captureOrigin.value, null);
+    assert.equal(result.captureOrigin.status, status);
+    assert.equal(result.captureOrigin.timezone, timezone);
+    assert.equal(result.captureOrigin.trust, 'unknown');
+  });
+}
+
+it('conflicting container and stream dates stay unresolved', async () => {
+  const result = await inspectRecordedMedia(clip, {
+    tool: fakeTool((value) => {
+      Object.assign(value.format.tags, { creation_time: '2020-01-02T03:04:05Z' });
+      Object.assign(value.streams[0]?.tags ?? {}, { creation_time: '2020-01-03T03:04:05Z' });
+    }),
+  });
+  assert.equal(result.captureOrigin.status, 'conflict');
+  assert.equal(result.captureOrigin.value, null);
+});
+
+for (const input of [
+  'https://example.invalid/clip.mov',
+  'file:///tmp/clip.mov',
+  '//host/clip.mov',
+  'clip\u{000A}.mov',
+]) {
+  it('rejects URL, network and control-containing paths before any child', async () => {
+    await code(
+      inspectRecordedMedia(input, {
+        tool: async () => {
+          assert.fail('no child');
+        },
+      }),
+      'invalid_input',
+    );
+  });
+}
+it('rejects directories, symlink files and symlink parent directories', async () => {
+  await mkdir(join(directory, 'nested'));
+  await symlink(clip, join(directory, 'linked.mov'));
+  await symlink(directory, join(directory, 'linked-directory'));
+  for (const input of [
+    directory,
+    join(directory, 'linked.mov'),
+    join(directory, 'linked-directory', 'structural.mov'),
+  ]) {
+    await code(inspectRecordedMedia(input), 'invalid_input');
+  }
+});
+
+it('refuses playlists and malformed atoms without a child', async () => {
+  const path = join(directory, 'playlist.mov');
+  await writeFile(path, '#EXTM3U\nhttps://example.invalid/clip.mov');
+  await code(
+    inspectRecordedMedia(path, {
+      tool: async () => {
+        assert.fail('no child');
+      },
+    }),
+    'unsupported_container',
+  );
+});
+
+it('rejects edit lists and external references before a child', async () => {
+  const original = await readFile(clip);
+  for (const [needle, replacement, expected] of [
+    ['free', 'edts', 'unsupported_edits'],
+    ['url ', 'alis', 'external_reference'],
+  ]) {
+    const bytes = Buffer.from(original);
+    const offset =
+      needle === 'url '
+        ? bytes.indexOf(Buffer.from([0, 0, 0, 12, 0x75, 0x72, 0x6c, 0x20])) + 4
+        : bytes.indexOf(needle ?? '');
+    if (needle === 'free' && offset < 0) {
+      const atom = Buffer.alloc(8);
+      atom.writeUInt32BE(8);
+      atom.write('edts', 4);
+      const path = join(directory, 'edit.mov');
+      await writeFile(path, Buffer.concat([bytes, atom]));
+      await code(inspectRecordedMedia(path), expected ?? '');
+      continue;
+    }
+    assert.ok(offset >= 4);
+    if (needle === 'url ') assert.equal(bytes.readUInt32BE(offset - 4), 12);
+    bytes.write(replacement ?? '', offset);
+    const path = join(directory, `${needle?.trim()}.mov`);
+    await writeFile(path, bytes);
+    await code(
+      inspectRecordedMedia(path, {
+        tool: async () => {
+          assert.fail('no child');
+        },
+      }),
+      expected ?? '',
+    );
+  }
+});
+
+for (const [change, expected] of [
+  [
+    (value: ReturnType<typeof metadata>) => {
+      Object.assign(value.streams[0] ?? {}, { width: 4000 });
+    },
+    'media_limit',
+  ],
+  [
+    (value: ReturnType<typeof metadata>) => {
+      value.format.duration = '1801';
+    },
+    'media_limit',
+  ],
+  [
+    (value: ReturnType<typeof metadata>) => {
+      Object.assign(value.streams[0] ?? {}, { pix_fmt: 'yuv420p10le' });
+    },
+    'unsupported_video',
+  ],
+  [
+    (value: ReturnType<typeof metadata>) => {
+      Object.assign(value.streams[0] ?? {}, { color_transfer: 'smpte2084' });
+    },
+    'unsupported_video',
+  ],
+  [
+    (value: ReturnType<typeof metadata>) => {
+      Object.assign(value.streams[0] ?? {}, { side_data_list: [{ rotation: 90 }] });
+    },
+    'unsupported_video',
+  ],
+  [
+    (value: ReturnType<typeof metadata>) => {
+      Object.assign(value.streams[0] ?? {}, { start_pts: 100 });
+    },
+    'unsupported_timeline',
+  ],
+] as const) {
+  it(`fails closed on unsupported metadata (${expected})`, async () => {
+    await code(inspectRecordedMedia(clip, { tool: fakeTool(change) }), expected);
+  });
+}
+
+it('fails on variable, repeated or discontinuous timestamps instead of inventing CFR', async () => {
+  for (const pts of [
+    [0, 8192, 16400, 24576],
+    [0, 8192, 8192, 24576],
+    [0, 8192, 24576, 32768],
+  ]) {
+    const tool = fakeTool();
+    await code(
+      inspectRecordedMedia(clip, {
+        tool: async (request) =>
+          request.args.includes('-show_frames')
+            ? Buffer.from(JSON.stringify({ frames: pts.map((value) => syntheticFrame(value)) }))
+            : tool(request),
+      }),
+      'unsupported_timeline',
+    );
+  }
+});
+
+it('rejects frame-level stereo/HDR transformation metadata instead of dropping it', async () => {
+  const base = fakeTool();
+  await code(
+    inspectRecordedMedia(clip, {
+      tool: async (request) => {
+        if (!request.args.includes('-show_frames')) return base(request);
+        const value = frames();
+        Object.assign(value.frames[0] ?? {}, { side_data_list: [{ side_data_type: 'Stereo 3D' }] });
+        return Buffer.from(JSON.stringify(value));
+      },
+    }),
+    'unsupported_video',
+  );
+});
+
+it('rejects frame dimensions or pixel formats changing within the source', async () => {
+  const base = fakeTool();
+  await code(
+    inspectRecordedMedia(clip, {
+      tool: async (request) => {
+        if (!request.args.includes('-show_frames')) return base(request);
+        const value = frames();
+        Object.assign(value.frames[1] ?? {}, { width: 192, height: 32 });
+        return Buffer.from(JSON.stringify(value));
+      },
+    }),
+    'unsupported_video',
+  );
+});
+
+it('enforces finite selected range, frame count and decoded-byte budgets before decoder', async () => {
+  for (const range of [
+    { startSeconds: -1, durationSeconds: 1 },
+    { startSeconds: 0, durationSeconds: 0 },
+    { startSeconds: Number.NaN, durationSeconds: 1 },
+    { startSeconds: 1, durationSeconds: 2 },
+    { startSeconds: 0, durationSeconds: 61 },
+  ])
+    await code(decodeRecordedFrames(clip, range, { tool: fakeTool() }), 'invalid_range');
+});
+
+it('refuses mismatched decoded byte count and sanitizes untrusted tool failures', async () => {
+  await code(
+    decodeRecordedFrames(
+      clip,
+      { startSeconds: 0, durationSeconds: 2 },
+      {
+        tool: async (request) =>
+          request.tool === 'ffmpeg' ? Buffer.alloc(1) : fakeTool()(request),
+      },
+    ),
+    'decode_failed',
+  );
+  await code(
+    inspectRecordedMedia(clip, {
+      tool: async () => {
+        throw new Error(`${clip} private-marker`);
+      },
+    }),
+    'tool_failed',
+  );
+  await code(
+    inspectRecordedMedia(clip, { tool: async () => Buffer.from('private-marker') }),
+    'invalid_probe',
+  );
+  await code(inspectRecordedMedia(clip, { tool: async () => Buffer.alloc(65_537) }), 'tool_limit');
+});
+
+it('allows only one active intake and child chain per process', async () => {
+  let release: (() => void) | undefined;
+  let entered: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+});
