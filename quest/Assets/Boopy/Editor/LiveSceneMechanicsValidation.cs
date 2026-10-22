@@ -378,5 +378,297 @@ namespace Boopy.Quest.Editor
                 foreach (var mesh in meshes) UnityEngine.Object.DestroyImmediate(mesh);
             }
         }
+
+        public static void Validate()
+        {
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            var root = new GameObject("Synthetic native live mechanics");
+            try
+            {
+                var head = new GameObject("Synthetic eyes").transform; head.SetParent(root.transform, false);
+                var room = root.AddComponent<RoomCamera>();
+                var hud = LiveSceneHud.Create(root.transform, head, room);
+                var fixture = Fixture(10f, 7);
+                Require(hud.Show(fixture.Result, fixture.Request, fixture.Snapshot, 11f), "Valid captured source was rejected.");
+                Require(!VisibleLabels(hud).Any(), "Unattended source created a label.");
+                hud.SetAttentionRays(ToObject(room, fixture, 0, head.position), null);
+                hud.RefreshAttention(11f, Empty, Center, 1f);
+                var chip = VisibleLabels(hud).SingleOrDefault();
+                Require(chip != null && hud.CurrentTarget?.ObjectIndex == 0, "Actual attended contour has no proposed native label.");
+                Require(chip!.ItemId == "" && !chip.GetComponentsInChildren<Collider>(true).Any(c => c.enabled),
+                    "Live presentation fabricated an item identity or entered the correction hit path.");
+                var words = chip.GetComponentsInChildren<TextMeshPro>().Where(text => text.gameObject.activeInHierarchy).ToArray();
+                Require(words.Length == 1 && words[0].text == "Synthetic left?" && words[0].font == BoopyTypography.Medium,
+                    "Live label does not use the concise proposed name and Plex presentation.");
+                Require(hud.GetComponentsInChildren<SpatialAction>(true).Length == 0, "Unsupported live actions appeared.");
+                Require(fixture.Result.Verification == "proposed" && fixture.Result.Objects[0].Confidence == .4f,
+                    "Attention confirmed or rewrote detector evidence.");
+                Require(chip.Anchor.HasValue && OnBoundary(chip.Anchor.Value,
+                    room.PlaceBoundary(fixture.Result.Objects[0].GroundingFor(fixture.Result), fixture.Snapshot, out _)),
+                    "Leader does not end on its own actual placed outline.");
+                CheckPlacement(chip, head, room, fixture, Empty);
+                ValidateNeighbors(root, head, room, hud, fixture);
+                var wrong = Fixture(10f, 7);
+                Require(!hud.Show(fixture.Result, wrong.Request, fixture.Snapshot, 11f), "Request identity mismatch was admitted.");
+                Require(!hud.Show(fixture.Result, fixture.Request, Fixture(10.1f, 7).Snapshot, 11f), "Snapshot capture time mismatch was admitted.");
+                var wrongPixels = new Snapshot(new byte[] { 2 }, fixture.Snapshot.Width, fixture.Snapshot.Height,
+                    fixture.Snapshot.CapturedAt, fixture.Snapshot.Pose, fixture.Snapshot.Depth, fixture.Snapshot.Camera, 10f);
+                Require(!hud.Show(fixture.Result, fixture.Request, wrongPixels, 11f), "Snapshot/request pixel mismatch was admitted.");
+                var wrongPose = new Snapshot(fixture.Snapshot.Jpeg, fixture.Snapshot.Width, fixture.Snapshot.Height,
+                    fixture.Snapshot.CapturedAt, new Pose(new Vector3(.5f, 0f, 0f), Quaternion.identity), fixture.Snapshot.Depth, fixture.Snapshot.Camera, 10f);
+                Require(!hud.Show(fixture.Result, fixture.Request, wrongPose, 11f), "Snapshot placement pose disagreed with request camera pose but was admitted.");
+                Require(hud.Show(fixture.Result, fixture.Request, fixture.Snapshot, 11f), "Original source could not resume after negative admissions.");
+                hud.SetAttentionRays(ToObject(room, fixture, 0, head.position), null);
+                hud.RefreshAttention(11f, Empty, Center, 1f);
+                chip = VisibleLabels(hud).Single();
+                foreach (var overlay in hud.GetComponentsInChildren<GroundedOverlay>())
+                    Require(!overlay.GetComponentsInChildren<MeshRenderer>().Any(renderer => renderer.enabled),
+                        "Ambient attention created a filled or breathing surface.");
+
+                // Reading the label retains only its original target and source lifetime.
+                var original = hud.CurrentTarget;
+                hud.SetAttentionRays(new Ray(head.position, chip.Home - head.position), null);
+                hud.RefreshAttention(11.2f, Empty, Center, 1f);
+                Require(hud.HasPresentationFocus && ReferenceEquals(hud.CurrentTarget, original),
+                    "Targeting its own label immediately lost its source or selected a new object.");
+                hud.RefreshAttention(13f, Empty, Center, 1f);
+                Require(hud.HasPresentationFocus && VisibleLabels(hud).Count() == 1, "Inclusive source lifetime changed.");
+                hud.RefreshAttention(13.001f, Empty, Center, 1f);
+                Require(!hud.HasPresentationFocus && hud.CurrentTarget == null && !VisibleLabels(hud).Any() && hud.VisibleObjects == 0,
+                    "Own-label focus renewed source time or kept expired evidence visible.");
+
+                Require(hud.Show(fixture.Result, fixture.Request, fixture.Snapshot, 11f), "Fresh synthetic source did not resume.");
+                hud.SetAttentionRays(ToObject(room, fixture, 0, head.position), new Ray(head.position, Vector3.up));
+                hud.RefreshAttention(11f, Empty, Center, 1f);
+                Require(hud.CurrentTarget == null && !VisibleLabels(hud).Any(), "Active hand miss fell back to a head target.");
+                hud.SetAttentionRays(ToObject(room, fixture, 0, head.position), ToObject(room, fixture, 1, head.position));
+                hud.RefreshAttention(11f, Empty, Center, 1f);
+                Require(hud.CurrentTarget?.ObjectIndex == 1 && hud.CurrentTarget.FromPointer, "Current active hand did not win.");
+
+                // A new admission clears old attention before any independent new contour hit.
+                var replacement = Fixture(10.5f, 8);
+                replacement.Result.Objects[0].Label = "Synthetic unusually long proposed category with shape";
+                Require(hud.Show(replacement.Result, replacement.Request, replacement.Snapshot, 11f), "Replacement was not admitted.");
+                Require(hud.CurrentTarget == null && !hud.HasPresentationFocus && !VisibleLabels(hud).Any(),
+                    "Replacement inherited selection, label or focus from another source.");
+                hud.SetAttentionRays(ToObject(room, replacement, 0, head.position), null);
+                hud.RefreshAttention(11f, new[] { Bounds }, Center, 1f);
+                Require(hud.VisibleObjects == 2 && !VisibleLabels(hud).Any() && !hud.HasPresentationFocus,
+                    "No-space layout covered protected content or cleared still-current quiet contours.");
+                foreach (var scale in new[] { 1f, 1.2f })
+                {
+                    hud.RefreshAttention(11f, Empty, Center, scale);
+                    chip = VisibleLabels(hud).SingleOrDefault();
+                    Require(chip != null, "Measured standard/large label could not fit the synthetic clear view.");
+                    CheckPlacement(chip!, head, room, replacement, Empty);
+                }
+                var placed = hud.GetComponentsInChildren<GroundedOverlay>().Select(overlay =>
+                {
+                    var line = overlay.GetComponentInChildren<LineRenderer>();
+                    var positions = new Vector3[line.positionCount]; line.GetPositions(positions); return positions;
+                }).ToArray();
+                head.position = new Vector3(.12f, .03f, 0f);
+                hud.SetAttentionRays(ToObject(room, replacement, 0, head.position), null);
+                hud.RefreshAttention(11.2f, Empty, Center, 1.2f);
+                var moved = hud.GetComponentsInChildren<GroundedOverlay>();
+                for (var i = 0; i < moved.Length; i++)
+                {
+                    var line = moved[i].GetComponentInChildren<LineRenderer>();
+                    var positions = new Vector3[line.positionCount]; line.GetPositions(positions);
+                    Require(positions.SequenceEqual(placed[i]), "Head movement relocated captured source geometry.");
+                }
+                foreach (var visible in VisibleLabels(hud)) CheckPlacement(visible, head, room, replacement, Empty);
+                hud.SetActive(true, true);
+                hud.RefreshAttention(11.3f, Empty, Center, 1f);
+                var reduced = VisibleLabels(hud).Single(); var home = reduced.Home;
+                hud.Refresh(.5f, 11.8f); hud.RefreshAttention(11.8f, Empty, Center, 1f);
+                Require(reduced.Home == home, "Reduced motion displaced an unchanged safe label.");
+                hud.SetPaused(true);
+                Require(hud.CurrentTarget == null && !hud.HasPresentationFocus && !VisibleLabels(hud).Any(), "Pause retained live presentation.");
+                hud.SetPaused(false);
+                Require(!hud.Show(fixture.Result, fixture.Request, fixture.Snapshot, 14f), "Delayed receipt renewed old source age.");
+                var ambiguous = Fixture(14f, 9);
+                ambiguous.Result.Objects[1].Box = ambiguous.Result.Objects[0].Box;
+                ambiguous.Result.Objects[1].Contour = ambiguous.Result.Objects[0].Contour;
+                Require(hud.Show(ambiguous.Result, ambiguous.Request, ambiguous.Snapshot, 14.1f), "Valid ambiguous evidence was discarded.");
+                hud.SetAttentionRays(ToObject(room, ambiguous, 0, head.position), null);
+                hud.RefreshAttention(14.1f, Empty, Center, 1f);
+                Require(hud.CurrentTarget == null && !VisibleLabels(hud).Any(), "Overlapping captured surfaces fabricated an attended object.");
+                var reordered = Fixture(14f, 10); reordered.Result.Objects.Reverse();
+                Require(hud.Show(reordered.Result, reordered.Request, reordered.Snapshot, 14.1f), "Reordered source could not be admitted.");
+                hud.SetAttentionRays(ToObject(room, reordered, 0, head.position), null);
+                hud.RefreshAttention(14.1f, Empty, Center, 1f);
+                Require(hud.CurrentTarget?.ObjectIndex == 0 && VisibleLabels(hud).Single().GetComponentsInChildren<TextMeshPro>()
+                    .Single(text => text.gameObject.activeInHierarchy).text == "Synthetic right?", "Display sorting changed original proposal identity.");
+                ValidateCaller(root, head, room, hud);
+                Debug.Log("Boopy native live mechanics passed; synthetic source/rays/time, no design acceptance or headset claim.");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        private static void ValidateCaller(GameObject root, Transform head, RoomCamera room, LiveSceneHud hud)
+        {
+            head.position = Vector3.zero; head.rotation = Quaternion.identity;
+            var console = ContextConsole.Create(root.transform, head); console.Place(new Vector3(.6f, -.3f, 1.2f));
+            var scene = SessionScene.Create(root.transform, room, head);
+            var app = root.AddComponent<BoopyApp>();
+            Set(app, "head", head); Set(app, "room", room); Set(app, "console", console);
+            Set(app, "scene", scene); Set(app, "liveHud", hud); Set(app, "inputAllowed", true);
+            Set(app, "connectionLiveSceneAvailable", true); Set(app, "liveScenePaused", false);
+            var original = Fixture(20f, 20); var replacement = Fixture(20.5f, 21);
+            hud.SetActive(true, true);
+            using var accepted = new CancellationTokenSource();
+            Require((bool)Call(app, "ApplyLiveSceneResult", original.Result, original.Request, original.Snapshot, accepted, 21f)!,
+                "Actual asynchronous admission path did not show a valid synthetic source.");
+            hud.SetAttentionRays(ToObject(room, original, 0, head.position), null);
+            hud.RefreshAttention(21f, Empty, Center, 1f);
+            var chip = VisibleLabels(hud).Single();
+            hud.SetAttentionRays(new Ray(head.position, chip.Home - head.position), null);
+            hud.RefreshAttention(21.1f, Empty, Center, 1f);
+            Require(hud.HasPresentationFocus, "Caller fixture did not enter own-label focus.");
+            using var inFlight = new CancellationTokenSource(); Set(app, "liveRequest", inFlight);
+            Call(app, "UpdateLiveScene", 21.2f);
+            Require(inFlight.IsCancellationRequested && hud.CurrentTarget?.EventId == original.Result.EventId && VisibleLabels(hud).Any(),
+                "Own-label capture hold cleared its current label or failed to cancel ambient work.");
+            using var uncanceledReply = new CancellationTokenSource();
+            Require(!(bool)Call(app, "ApplyLiveSceneResult", replacement.Result, replacement.Request, replacement.Snapshot, uncanceledReply, 21.3f)!,
+                "In-flight replacement was applied while reading the original source label.");
+            Require(hud.CurrentTarget?.EventId == original.Result.EventId, "Dropped reply changed held source identity.");
+            hud.SetAttentionRays(ToObject(room, original, 0, head.position), null);
+            hud.RefreshAttention(21.4f, Empty, Center, 1f);
+            using var afterExit = new CancellationTokenSource(); Set(app, "liveRequest", afterExit);
+            Call(app, "UpdateLiveScene", 21.4f);
+            Require(!hud.HasPresentationFocus && !afterExit.IsCancellationRequested
+                && (bool)app.GetType().GetProperty("AmbientCaptureAllowed", Private)!.GetValue(app)!,
+                "Leaving the label did not release the actual capture-only gate.");
+            chip = VisibleLabels(hud).Single();
+            hud.SetAttentionRays(new Ray(head.position, chip.Home - head.position), null);
+            hud.RefreshAttention(21.5f, Empty, Center, 1f);
+            hud.RefreshAttention(23.001f, Empty, Center, 1f); Set(app, "liveRequest", null);
+            Call(app, "UpdateLiveScene", 23.001f);
+            Require(!hud.HasPresentationFocus && hud.CurrentTarget == null && !VisibleLabels(hud).Any()
+                && (bool)app.GetType().GetProperty("AmbientCaptureAllowed", Private)!.GetValue(app)!,
+                "Expiry did not release the real capture gate, or restored a stale label.");
+            Require((bool)Call(app, "ApplyLiveSceneResult", replacement.Result, replacement.Request, replacement.Snapshot, uncanceledReply, 23.001f)!,
+                "Fresh replacement could not enter after hold expiry.");
+            hud.SetAttentionRays(ToObject(room, replacement, 0, head.position), null);
+            hud.RefreshAttention(23.001f, Empty, Center, 1f);
+            Set(console, "focused", ConsoleAction.Talk);
+            using var suppressed = new CancellationTokenSource(); Set(app, "liveRequest", suppressed);
+            Call(app, "UpdateLiveScene", 23.1f);
+            Require(suppressed.IsCancellationRequested && hud.VisibleObjects == 0 && hud.CurrentTarget == null && !VisibleLabels(hud).Any(),
+                "Unrelated control focus did not clear the entire ambient presentation.");
+            Require(!(bool)Call(app, "ApplyLiveSceneResult", replacement.Result, replacement.Request, replacement.Snapshot, uncanceledReply, 23.1f)!,
+                "Late result restored a suppressed source.");
+            Set(console, "focused", ConsoleAction.None); Set(app, "liveRequest", null);
+        }
+
+        private static void ValidateNeighbors(GameObject root, Transform head, RoomCamera room, LiveSceneHud hud, Synthetic fixture)
+        {
+            var controls = ContextConsole.Create(root.transform, head);
+            var scene = SessionScene.Create(root.transform, room, head);
+            try
+            {
+                scene.Remember("synthetic-neighbor-observation", fixture.Snapshot);
+                scene.PlaceConsole(controls);
+                var view = new SessionView { Id = "synthetic-neighbor-session", State = "review", ReferentId = "synthetic-neighbor-item" };
+                view.Items.Add(new Item { Id = "synthetic-neighbor-item", Kind = "object", Status = "proposed", Label = "Neighbor proposal",
+                    Grounding = new Grounding { Kind = "box", ObservationId = "synthetic-neighbor-observation",
+                        Box = new Box2 { X0 = .4f, Y0 = .12f, X1 = .55f, Y1 = .2f } } });
+                scene.Render(view);
+                foreach (var scale in new[] { 1f, 1.2f })
+                {
+                    if ((controls.ComfortScale > 1f) != (scale > 1f)) controls.Activate(ConsoleAction.Size);
+                    controls.RefreshVisuals(1f);
+                    foreach (var neighbor in scene.GetComponentsInChildren<Chip>()) neighbor.Face(head);
+                    var occupied = new List<LabelRect>(); scene.AppendPresentationKeepouts(occupied, controls);
+                    Require(occupied.Count >= 4, "Real controls, conversation label and captured object envelopes were not collected.");
+                    hud.RefreshAttention(11f, occupied, Center, scale);
+                    foreach (var live in VisibleLabels(hud)) CheckPlacement(live, head, room, fixture, occupied);
+                }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(scene.gameObject); UnityEngine.Object.DestroyImmediate(controls.gameObject); }
+        }
+
+        private static IEnumerable<Chip> VisibleLabels(LiveSceneHud hud) =>
+            hud.GetComponentsInChildren<Chip>(true).Where(chip => chip.gameObject.activeInHierarchy);
+
+        private static void CheckPlacement(Chip chip, Transform head, RoomCamera room, Synthetic fixture, IReadOnlyList<LabelRect> occupied)
+        {
+            chip.Face(head);
+            foreach (var text in chip.GetComponentsInChildren<TextMeshPro>())
+            {
+                text.ForceMeshUpdate(true, true);
+                Require(!text.isTextOverflowing, "Native proposed name overflowed its measured text rectangle.");
+            }
+            var half = chip.LayoutSize * .5f;
+            var corners = new[] { new Vector3(-half.x, -half.y, 0f), new Vector3(half.x, -half.y, 0f),
+                new Vector3(half.x, half.y, 0f), new Vector3(-half.x, half.y, 0f) };
+            var world = corners.Select(point => chip.transform.TransformPoint(point)).Select(ToNumerics).ToArray();
+            var viewer = new HeadPose(ToNumerics(head.position), ToNumerics(head.forward));
+            Require(ProjectedKeepout.TryEnvelope(world, viewer, out var footprint) && Bounds.Contains(footprint)
+                && !footprint.Intersects(Center, .02f) && ProjectedKeepout.IsClear(footprint, occupied, .02f),
+                "Actual measured label intersects center, controls, another label or view bounds.");
+            foreach (var item in fixture.Result.Objects)
+            foreach (var grounding in new[] { item.GroundingFor(fixture.Result), new Grounding { Kind = "box", Box = item.Box } })
+            {
+                var boundary = room.PlaceBoundary(grounding, fixture.Snapshot, out _).Select(ToNumerics).ToArray();
+                Require(!ProjectedKeepout.TryEnvelope(boundary, viewer, out var area) || !footprint.Intersects(area, .02f),
+                    "Actual label footprint covers a captured contour or original box.");
+            }
+        }
+
+        private sealed class Synthetic
+        {
+            public SceneObservation Result = null!;
+            public SceneObservationRequest Request = null!;
+            public Snapshot Snapshot = null!;
+        }
+        private static Synthetic Fixture(float sourceTime, int sequence, float distance = 1.8f)
+        {
+            var snapshot = new Snapshot(new byte[] { 1 }, 80, 80,
+                new DateTime(1970, 1, 1, 12, 0, 0, DateTimeKind.Utc).AddSeconds(sourceTime),
+                new Pose(Vector3.zero, Quaternion.identity), new DepthGrid { Columns = 1, Rows = 1, Meters = new float?[] { distance } },
+                new CameraInfo { Pose = new Pose3 { Position = new float[3], Rotation = new[] { 0f, 0f, 0f, 1f } },
+                    FocalLength = new[] { 40f, 40f }, PrincipalPoint = new[] { 40f, 40f }, SensorResolution = new[] { 80, 80 } }, sourceTime);
+            var request = new SceneObservationRequest {
+                StreamId = "11111111-1111-4111-8111-111111111111", FrameId = Guid.NewGuid().ToString(), Sequence = sequence, Frame = snapshot.ToFrame()
+            };
+            var result = new SceneObservation {
+                StreamId = request.StreamId, FrameId = request.FrameId, Sequence = sequence, CapturedAt = request.Frame.CapturedAt,
+                FrameSha256 = "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
+                EventId = "synthetic-event-" + sequence, Provider = "fixture", Model = "synthetic", Verification = "proposed"
+            };
+            foreach (var left in new[] { .15f, .65f })
+            {
+                var box = new Box2 { X0 = left, Y0 = .35f, X1 = left + .2f, Y1 = .65f };
+                result.Objects.Add(new SceneObject {
+                    Label = left < .5f ? "Synthetic left" : "Synthetic right", Confidence = .4f, MaskConfidence = .8f,
+                    MaskPixels = 500, MaskSha256 = new string(left < .5f ? 'b' : 'c', 64), Box = box,
+                    Contour = Geometry.Corners(box).Select(point => new Point2 { X = point.X, Y = point.Y }).ToList()
+                });
+            }
+            return new Synthetic { Result = result, Request = request, Snapshot = snapshot };
+        }
+        private static Ray ToObject(RoomCamera room, Synthetic fixture, int index, Vector3 origin)
+        {
+            var points = room.PlaceBoundary(fixture.Result.Objects[index].GroundingFor(fixture.Result), fixture.Snapshot, out _);
+            var center = points.Aggregate(Vector3.zero, (sum, point) => sum + point) / points.Length;
+            return new Ray(origin, center - origin);
+        }
+        private static bool OnBoundary(Vector3 anchor, IReadOnlyList<Vector3> points)
+        {
+            for (var i = 0; i < points.Count; i++)
+            {
+                var a = points[i]; var edge = points[(i + 1) % points.Count] - a;
+                var amount = edge.sqrMagnitude > 0 ? Mathf.Clamp01(Vector3.Dot(anchor - a, edge) / edge.sqrMagnitude) : 0f;
+                if ((anchor - a - edge * amount).sqrMagnitude <= 1e-8f) return true;
+            }
+            return false;
+        }
+        private static N.Vector3 ToNumerics(Vector3 point) => new N.Vector3(point.x, point.y, point.z);
+        private static object? Call(object target, string method, params object[] args) => target.GetType().GetMethod(method, Private)!.Invoke(target, args);
+        private static void Set(object target, string field, object? value) => target.GetType().GetField(field, Private)!.SetValue(target, value);
+        private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     }
 }
