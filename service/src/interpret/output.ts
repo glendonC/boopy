@@ -280,3 +280,123 @@ export interface Normalized {
   readonly items: Item[];
   readonly relations: Relation[];
 }
+
+/**
+ * The model's proposal as Boopy items: every item `proposed`, origin `model`, unit coordinates,
+ * ids unique to this interpretation, and text items backed by the exact OCR lines they cover.
+ */
+export function normalize(
+  output: ModelOutput,
+  context: {
+    readonly interpretationId: string;
+    readonly observationId: string;
+    readonly scope: 'auto' | 'scene';
+    readonly text: readonly TextLine[];
+  },
+): Normalized {
+  const ids = new Map<string, string>();
+  const idFor = (key: string) => {
+    const existing = ids.get(key);
+    if (existing !== undefined) return existing;
+    const slug =
+      key
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || 'item';
+    let id = `${context.interpretationId}.${slug}`;
+    for (let n = 2; [...ids.values()].includes(id); n += 1)
+      id = `${context.interpretationId}.${slug}-${n}`;
+    ids.set(key, id);
+    return id;
+  };
+  const grounding = (box: Box | null, point: Point | null, scene: boolean): Grounding => {
+    if (!scene && box !== null) return { kind: 'box', observationId: context.observationId, box };
+    if (!scene && point !== null)
+      return { kind: 'point', observationId: context.observationId, point };
+    return { kind: 'scene' };
+  };
+  const base = { origin: 'model' as const, status: 'proposed' as const, emphasis: false };
+
+  const discrepancies: { about: string; text: string }[] = [];
+  const items: Item[] = output.items.map((raw) => {
+    const box = gridBox(raw.box);
+    const point = gridPoint(raw.point);
+    const id = idFor(raw.key);
+    const written = raw.scene ? null : asWritten(raw.label, box, context.text);
+    if (written?.question != null) discrepancies.push({ about: id, text: written.question });
+    return {
+      id,
+      kind: raw.kind.trim().toLowerCase() || 'object',
+      label: written?.label ?? raw.label.trim(),
+      ...(raw.gloss !== null && raw.gloss.trim() !== '' && { gloss: raw.gloss.trim() }),
+      statement: raw.statement.trim(),
+      grounding: grounding(box, point, raw.scene),
+      confidence: confidenceOf(raw.confidence),
+      ...(raw.why.trim() !== '' && { why: raw.why.trim() }),
+      ...(written !== null && { text: written.text }),
+      interpretationId: context.interpretationId,
+      ...base,
+    };
+  });
+
+  const intent: Item = {
+    id: `${context.interpretationId}.intent`,
+    kind: 'goal',
+    label: output.intent.label.trim(),
+    statement: output.intent.statement.trim(),
+    grounding: { kind: 'scene' },
+    confidence: confidenceOf(output.intent.confidence),
+    interpretationId: context.interpretationId,
+    ...base,
+  };
+
+  const asked: { text: string; about: Item | undefined }[] = [
+    ...output.questions.map((question) => ({
+      text: question.text,
+      about:
+        question.about === null
+          ? undefined
+          : items.find((item) => item.id === ids.get(question.about ?? '')),
+    })),
+    ...discrepancies.map((d) => ({
+      text: d.text,
+      about: items.find((item) => item.id === d.about),
+    })),
+  ];
+  const questions: Item[] = asked.map((question, index) => ({
+    id: `${context.interpretationId}.question-${index + 1}`,
+    kind: 'question',
+    label: question.text.trim(),
+    statement: question.text.trim(),
+    grounding: question.about?.grounding ?? { kind: 'scene' },
+    confidence: null,
+    interpretationId: context.interpretationId,
+    ...base,
+  }));
+
+  const known = new Set(items.map((item) => item.id));
+  const relations: Relation[] = output.relations.flatMap((relation, index) => {
+    const from = ids.get(relation.from);
+    const to = ids.get(relation.to);
+    if (from === undefined || to === undefined || !known.has(from) || !known.has(to)) return [];
+    return [
+      {
+        id: `${context.interpretationId}.relation-${index + 1}`,
+        from,
+        to,
+        kind: relation.kind,
+        ...(relation.label !== null && { label: relation.label }),
+      },
+    ];
+  });
+
+  const referentKey = output.referent.key;
+  const referentId = referentKey === null ? null : (ids.get(referentKey) ?? null);
+  return {
+    scope: context.scope === 'scene' ? 'scene' : output.scope,
+    referentId: referentId !== null && known.has(referentId) ? referentId : null,
+    intentId: intent.id,
+    items: [intent, ...items, ...questions],
+    relations,
+  };
+}
