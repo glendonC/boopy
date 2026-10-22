@@ -775,4 +775,357 @@ describe('answer a task aloud', () => {
       await ctx.close();
     }
   });
+
+  it('a retry that arrives while the first is transcribing waits for it', {
+    timeout: 5000,
+  }, async () => {
+    const ctx = setup();
+    try {
+      const { session } = await ctx.opened();
+      let release = () => {};
+      ctx.hold(
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+      const first = ctx.post(ANSWERS, answer(session.id, 1));
+      const second = ctx.post(ANSWERS, answer(session.id, 1));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(ctx.transcriptions(), 1);
+      for (const body of [
+        answer(session.id, 0),
+        answer(session.id, 1, 'evt_answer_one', OTHER_WAV),
+      ]) {
+        const conflict = await ctx.post(ANSWERS, body);
+        assert.equal(conflict.statusCode, 409, conflict.body);
+        assert.equal(conflict.json().error.code, 'duplicate_conflict');
+      }
+      release();
+      const [a, b] = await Promise.all([first, second]);
+      assert.equal(a.statusCode, 200, a.body);
+      assert.deepEqual(b.json(), a.json());
+      assert.equal(ctx.transcriptions(), 1);
+      assert.equal(a.json().attempts.length, 1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('an action that reuses the event id of an answer still being transcribed is a conflict', {
+    timeout: 5000,
+  }, async () => {
+    const ctx = setup();
+    try {
+      const { session } = await ctx.opened();
+      let release = () => {};
+      ctx.hold(
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+      const pending = ctx.post(ANSWERS, answer(session.id, 1));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(ctx.transcriptions(), 1);
+      const acted = await ctx.post(ACTIONS, {
+        eventId: 'evt_answer_one',
+        sessionId: session.id,
+        expectedRevision: 1,
+        action: { type: 'retry' },
+      });
+      assert.equal(acted.statusCode, 409, acted.body);
+      assert.equal(acted.json().error.code, 'duplicate_conflict');
+      release();
+      const answered = await pending;
+      assert.equal(answered.statusCode, 200, answered.body);
+      assert.equal(answered.json().revision, 2);
+      assert.equal(answered.json().attempts.length, 1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('refuses an unknown task or another session before transcribing', async () => {
+    const ctx = setup();
+    try {
+      const { session } = await ctx.opened();
+      const before = ctx.journal.all().length;
+      for (const url of ['/v1/tasks/tsk_missing/answers', '/v1/tasks/tsk%5Fcapture/answers']) {
+        const response = await ctx.post(url, answer(session.id, 1));
+        assert.equal(response.statusCode, 404, response.body);
+        assert.equal(response.json().error.code, 'unknown_task');
+      }
+      const other = await ctx.post(ANSWERS, answer('ses_other', 1));
+      assert.equal(other.statusCode, 409, other.body);
+      assert.equal(other.json().error.code, 'session_mismatch');
+      assert.equal(ctx.transcriptions(), 0);
+      assert.equal(ctx.journal.all().length, before);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('a recognizer failure journals nothing', async () => {
+    const ctx = setup();
+    try {
+      const { session, task } = await ctx.opened();
+      const before = ctx.journal.all().length;
+      ctx.speech.transcribe = async () => {
+        throw new Error('Synthetic recognizer failure.');
+      };
+      const response = await ctx.post(ANSWERS, answer(session.id, 1));
+      assert.equal(response.statusCode, 502, response.body);
+      assert.equal(response.json().error.code, 'speech_failed');
+      assert.equal(response.body.includes('Synthetic'), false);
+      assert.equal(ctx.journal.all().length, before);
+      assert.deepEqual((await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json(), task);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe('act on a task', () => {
+  it('wrong subject clears the parts and keeps the source, and cancel closes the task', async () => {
+    const ctx = setup();
+    try {
+      const { session, task } = await ctx.opened();
+      const body = {
+        eventId: 'evt_wrong_subject',
+        sessionId: session.id,
+        expectedRevision: 1,
+        action: { type: 'wrong_subject' },
+      };
+      const response = await ctx.post(ACTIONS, body);
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.headers['cache-control'], 'no-store');
+      const view = response.json();
+      assert.deepEqual(view.components, [{ type: 'status', code: 'wrong-item' }]);
+      assert.equal(view.subjectCorrected, true);
+      assert.deepEqual(view.source, task.source);
+      assert.equal(view.utterance, task.utterance);
+      assert.equal(view.revision, 2);
+      assert.equal(view.delivery, 'not-sent');
+      const count = ctx.journal.all().length;
+      assert.deepEqual((await ctx.post(ACTIONS, body)).json(), view);
+      assert.equal(ctx.journal.all().length, count);
+      for (const [eventId, type, revision, status] of [
+        ['evt_save', 'save_for_later', 2, 'continue-later'],
+        ['evt_retry', 'retry', 3, 'try-again'],
+        ['evt_cancel', 'cancel', 4, 'continue-later'],
+      ] as const) {
+        const acted = await ctx.post(ACTIONS, {
+          eventId,
+          sessionId: session.id,
+          expectedRevision: revision,
+          action: { type },
+        });
+        assert.equal(acted.statusCode, 200, acted.body);
+        assert.deepEqual(acted.json().components.at(-1), { type: 'status', code: status });
+      }
+      const closed = (await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json();
+      assert.equal(closed.phase, 'cancelled');
+      const cancelledAt = ctx.journal.all().length;
+      const late = await ctx.post(ANSWERS, answer(session.id, 5));
+      assert.equal(late.statusCode, 409, late.body);
+      assert.equal(late.json().error.code, 'cancelled');
+      assert.equal(ctx.transcriptions(), 0);
+      assert.equal(ctx.journal.all().length, cancelledAt);
+      assert.deepEqual((await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json(), closed);
+      const after = await ctx.post(ACTIONS, {
+        eventId: 'evt_after_cancel',
+        sessionId: session.id,
+        expectedRevision: 5,
+        action: { type: 'retry' },
+      });
+      assert.equal(after.statusCode, 409, after.body);
+      assert.equal(after.json().error.code, 'cancelled');
+      assert.equal((await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json().revision, 5);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('a spoken answer is not an action here, and a stale or unknown action is refused', async () => {
+    const ctx = setup();
+    try {
+      const { session, task } = await ctx.opened();
+      const before = ctx.journal.all().length;
+      for (const action of [
+        { type: 'voice_reply' },
+        { type: 'voice_reply', text: ANSWER, recognitionUncertain: false },
+      ]) {
+        const response = await ctx.post(ACTIONS, {
+          eventId: 'evt_spoken_action',
+          sessionId: session.id,
+          expectedRevision: 1,
+          action,
+        });
+        assert.equal(response.statusCode, 400, response.body);
+        assert.equal(response.json().error.code, 'invalid_request');
+      }
+      assert.equal(ctx.journal.all().length, before);
+      const missing = await ctx.post('/v1/tasks/tsk_missing/actions', {
+        eventId: 'evt_missing',
+        sessionId: session.id,
+        expectedRevision: 1,
+        action: { type: 'retry' },
+      });
+      assert.equal(missing.statusCode, 404, missing.body);
+      assert.equal(missing.json().error.code, 'unknown_task');
+      const stale = await ctx.post(ACTIONS, {
+        eventId: 'evt_stale_retry',
+        sessionId: session.id,
+        expectedRevision: 0,
+        action: { type: 'retry' },
+      });
+      assert.equal(stale.statusCode, 409, stale.body);
+      assert.equal(stale.json().error.code, 'stale_revision');
+      const now = (await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json();
+      assert.equal(now.revision, task.revision);
+      assert.deepEqual(now.components, task.components);
+      assert.equal(ctx.transcriptions(), 0);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe('task routes on the headset boundary', () => {
+  it('refuses a non-loopback Host or a browser Origin on every task route', async () => {
+    const ctx = setup();
+    try {
+      const { session, task } = await ctx.opened();
+      const before = ctx.journal.all().length;
+      const calls: [string, object][] = [
+        [`/v1/sessions/${session.id}/task`, OPEN],
+        [ANSWERS, answer(session.id, 1)],
+        [
+          ACTIONS,
+          {
+            eventId: 'evt_wrong_subject',
+            sessionId: session.id,
+            expectedRevision: 1,
+            action: { type: 'wrong_subject' },
+          },
+        ],
+      ];
+      for (const [url, body] of calls) {
+        const foreign = await ctx.post(url, body, { host: 'evil.example' });
+        assert.equal(foreign.statusCode, 403, `${url} ${foreign.body}`);
+        assert.equal(foreign.json().error.code, 'forbidden_host');
+        const browser = await ctx.post(url, body, { origin: 'https://evil.example' });
+        assert.equal(browser.statusCode, 403, `${url} ${browser.body}`);
+        assert.equal(browser.json().error.code, 'browser_not_allowed');
+      }
+      const read = await ctx.get(`/v1/tasks/${OPEN.taskId}`, { origin: 'https://evil.example' });
+      assert.equal(read.statusCode, 403, read.body);
+      assert.equal(read.json().error.code, 'browser_not_allowed');
+      assert.equal(read.body.includes(SAID), false);
+      assert.equal(ctx.journal.all().length, before);
+      assert.equal(ctx.transcriptions(), 0);
+      assert.deepEqual((await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json(), task);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('the open and action routes take at most 16 KiB, and answers keep the headset limit', async () => {
+    const ctx = setup();
+    try {
+      const session = await ctx.start();
+      const before = ctx.journal.all().length;
+      const padding = 'x'.repeat(17 * 1024);
+      const open = await ctx.post(`/v1/sessions/${session.id}/task`, { ...OPEN, padding });
+      assert.equal(open.statusCode, 413, open.body);
+      const acted = await ctx.post(ACTIONS, {
+        eventId: 'evt_large',
+        sessionId: session.id,
+        expectedRevision: 0,
+        action: { type: 'retry' },
+        padding,
+      });
+      assert.equal(acted.statusCode, 413, acted.body);
+      assert.equal(ctx.journal.all().length, before);
+      const opened = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
+      assert.equal(opened.statusCode, 200, opened.body);
+      const spoken = await ctx.post(
+        ANSWERS,
+        answer(session.id, 1, 'evt_answer_large', Buffer.alloc(64 * 1024, 1).toString('base64')),
+      );
+      assert.equal(spoken.statusCode, 200, spoken.body);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('no field accepts a claim of delivery or continuity', async () => {
+    const ctx = setup();
+    try {
+      const fresh = await ctx.start();
+      const claims = [{ delivery: 'sent' }, { continuity: 'grok-bot' }];
+      for (const claim of claims) {
+        const response = await ctx.post(`/v1/sessions/${fresh.id}/task`, { ...OPEN, ...claim });
+        assert.equal(response.statusCode, 400, response.body);
+        assert.equal(response.json().error.code, 'invalid_request');
+      }
+      assert.equal(ctx.tasks.forSession(fresh.id), undefined);
+      const opened = await ctx.post(`/v1/sessions/${fresh.id}/task`, OPEN);
+      const task = opened.json();
+      const before = ctx.journal.all().length;
+      const bodies = claims.flatMap((claim) => [
+        [ANSWERS, { ...answer(fresh.id, 1), ...claim }],
+        [ANSWERS, { ...answer(fresh.id, 1), speech: { wav: WAV, ...claim } }],
+        [
+          ACTIONS,
+          {
+            eventId: 'evt_claim',
+            sessionId: fresh.id,
+            expectedRevision: 1,
+            action: { type: 'retry' },
+            ...claim,
+          },
+        ],
+        [
+          ACTIONS,
+          {
+            eventId: 'evt_claim',
+            sessionId: fresh.id,
+            expectedRevision: 1,
+            action: { type: 'retry', ...claim },
+          },
+        ],
+      ]) as [string, object][];
+      for (const [url, body] of bodies) {
+        const response = await ctx.post(url, body);
+        assert.equal(response.statusCode, 400, `${url} ${response.body}`);
+        assert.equal(response.json().error.code, 'invalid_request');
+        assert.equal(response.body.includes('grok-bot'), false);
+      }
+      assert.equal(ctx.journal.all().length, before);
+      assert.equal(ctx.transcriptions(), 0);
+      const now = (await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json();
+      assert.deepEqual(now, task);
+      assert.equal(now.delivery, 'not-sent');
+      assert.equal(now.continuity, 'local-only');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('an answer over the headset body limit is refused unread', async () => {
+    const ctx = setup();
+    try {
+      const { session } = await ctx.opened();
+      const before = ctx.journal.all().length;
+      const response = await ctx.post(ANSWERS, {
+        ...answer(session.id, 1),
+        speech: { wav: 'A'.repeat(9 * 1024 * 1024) },
+      });
+      assert.equal(response.statusCode, 413, response.body);
+      assert.equal(ctx.transcriptions(), 0);
+      assert.equal(ctx.journal.all().length, before);
+    } finally {
+      await ctx.close();
+    }
+  });
 });
