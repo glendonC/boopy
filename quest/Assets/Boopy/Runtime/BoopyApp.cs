@@ -767,5 +767,356 @@ namespace Boopy.Quest
                 Debug.LogWarning($"Boopy: capture failed: {failure.GetType().Name}.");
             }
         }
+
+        private async Task CaptureAfterAcknowledgement(HandInput hand, string? targetId, EvidenceTurn evidenceTurn, int generation, bool fromButton = false)
+        {
+            using var preparation = new CancellationTokenSource();
+            capturePreparation = preparation;
+            try
+            {
+                // Give the actual listening acknowledgement one render opportunity while
+                // recording already runs. The saved source pose/time is taken below, not at pinch.
+                await Awaitable.NextFrameAsync(preparation.Token);
+                if (generation != captureGeneration || (fromButton ? !buttonTalk.Recording : active != hand) || pendingEvidence != evidenceTurn ||
+                    !inputAllowed || !isActiveAndEnabled || !voice.Recording) return;
+                if (evidenceTurn.RequiresPicture)
+                {
+                    Capture(hand, targetId, !fromButton);
+                    if (pending == null) throw new InvalidOperationException("The capture source is unavailable.");
+                    if (scene?.ConsolePlaced == true) captureScan?.Begin(pending, console?.ReducedMotion ?? false);
+                }
+                else { pending = null; pendingTarget = targetId; pendingCues = new Cues { TargetItemId = targetId }; }
+                captureReady = true;
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception failure)
+            {
+                if (generation != captureGeneration) return;
+                DiscardRecording(); active = null; pending = null; pendingCues = null; pendingTarget = null;
+                marker?.Hide(); feedback?.Play(AudioCue.Failure);
+                console?.ShowError("I couldn’t get a picture. Please try again.");
+                dialogue?.Show(DialogueStage.Error, "I couldn’t get a picture. Please try again.");
+                Debug.LogWarning($"Boopy: capture failed: {failure.GetType().Name}.");
+            }
+            finally { if (ReferenceEquals(capturePreparation, preparation)) capturePreparation = null; }
+        }
+
+        /// <summary>
+        /// The frame and cues after the listening acknowledgement. By the end of the sentence the head
+        /// may have moved. The hand's ray wins over head direction.
+        /// </summary>
+        private void Capture(HandInput hand, string? targetId, bool includePointer = true)
+        {
+            if (room == null || gaze == null || scene == null) return;
+            pendingTarget = targetId;
+            pending = room.Capture();
+            var cues = new Cues { TargetItemId = pendingTarget };
+            if (pending != null)
+            {
+                var gazeImage = room.ToImage(gaze.Point, pending.Pose);
+                if (gazeImage != null)
+                {
+                    cues.Gaze = new Cue { Point = gazeImage, World = World(gaze.Point), OnSurface = gaze.OnSurface };
+                }
+                if (includePointer && hand.RayActive && room.TryHit(hand.Ray, 6f, out var handPoint, out _))
+                {
+                    var handImage = room.ToImage(handPoint, pending.Pose);
+                    if (handImage != null)
+                    {
+                        cues.Pointer = new PointerCue { Point = handImage, World = World(handPoint), OnSurface = true, Hand = hand.Right ? "right" : "left" };
+                    }
+                    marker?.Show(handPoint, true);
+                }
+                else
+                {
+                    marker?.Show(gaze.Point, gaze.OnSurface);
+                }
+            }
+            pendingCues = cues;
+        }
+
+        // Constructed on Unity's synchronization context; transport never mutates scene objects.
+        private IProgress<TurnProgress> TurnProgressFor(CancellationTokenSource request, string? expectedSession = null) =>
+            new Progress<TurnProgress>(progress => ApplyTurnProgress(request, expectedSession, progress));
+
+        private void ApplyTurnProgress(CancellationTokenSource request, string? expectedSession, TurnProgress progress)
+        {
+            if (!ReferenceEquals(captureRequest, request) || request.IsCancellationRequested || !busy ||
+                !inputAllowed || !isActiveAndEnabled || (expectedSession != null && session?.Id != expectedSession)) return;
+            console?.ShowTurnProgress(progress);
+            dialogue?.Show(DialogueStage.Working, progress.Words);
+        }
+
+        private async Task Send(byte[] wav)
+        {
+            if (client == null || status == null || scene == null) return;
+            busy = true;
+            SayStatus(null);
+            console?.ShowProcessing(pendingTarget != null);
+            var evidenceTurn = pendingEvidence ?? new EvidenceTurn(false);
+            dialogue?.Show(DialogueStage.Working, "Sending…");
+            Debug.Log("Boopy: sending capture to Mac.");
+            var snapshot = pending;
+            using var request = new CancellationTokenSource();
+            captureRequest = request;
+            dialogue?.SetCancelableWait(true);
+            SessionView? speechView = null, taskView = null;
+            bool restoreAfterWait = false;
+            try
+            {
+                var speech = new SpeechData { Wav = Convert.ToBase64String(wav) };
+                var frame = snapshot?.ToFrame();
+                if (frame != null) { frame.Source = "current-surroundings"; frame.TimestampTrusted = false; }
+                SessionView view;
+                var starting = session == null || session.State == "committed";
+                if (starting)
+                {
+                    if (evidenceTurn.RequiresPicture && snapshot == null)
+                    {
+                        ReportFailure("The camera is not ready. Allow camera access, then try again.");
+                        return;
+                    }
+                    var start = evidenceTurn.Start(speech, pendingCues ?? new Cues(), frame);
+                    start.RequestId = Guid.NewGuid().ToString("D");
+                    if (!TryPersistCapture(start.RequestId)) return;
+                    unresolvedStartId = start.RequestId;
+                    unresolvedSnapshot = snapshot;
+                    view = await client.StartStreamingAsync(start, TurnProgressFor(request), request.Token);
+                }
+                else
+                {
+                    view = await client.UtterStreamingAsync(session.Id, evidenceTurn.Utter(speech, pendingCues, frame), TurnProgressFor(request, session.Id), request.Token);
+                }
+                request.Token.ThrowIfCancellationRequested();
+                // A recovered start returns the current projection. Its original pixels belong
+                // to the first observation, never a later observation from another turn.
+                var observation = starting ? view.Observations.FirstOrDefault() : view.Observations.LastOrDefault();
+                if (snapshot != null && observation != null) scene.Remember(observation.Id, snapshot);
+                if (starting && !ClearCaptureRecovery()) return;
+                Apply(view);
+                speechView = view;
+                // A first turn with Boopy's line on a grounded referent may be the session's task.
+                // Its follow-ups wait for the Mac's answer, so they never flash and vanish.
+                if (starting && TaskTurn(view)) { taskView = view; console?.ShowTask(null); }
+                Debug.Log($"Boopy: received session state={view.State} items={view.Items.Count}.");
+            }
+            catch (OperationCanceledException)
+            {
+                restoreAfterWait = true;
+                cancelledWaitNotice = "Stopped waiting. The Mac may still finish this capture.";
+                ReportFailure(cancelledWaitNotice);
+            }
+            catch (ServiceException refused)
+            {
+                Debug.LogWarning($"Boopy: request refused status={refused.Status}.");
+                if (refused.Code == "service_unavailable") ClearCaptureRecovery();
+                cancelledWaitNotice = refused.Message;
+                ReportFailure(refused.Message);
+            }
+            catch (Exception failure)
+            {
+                Debug.LogWarning($"Boopy: request failed: {failure.GetType().Name}");
+                cancelledWaitNotice = NeedsCaptureRecovery
+                    ? "Mac connection lost. Check the earlier capture before starting another."
+                    : "Couldn't get the reply. The Mac may still finish this turn. Reconnect before trying again.";
+                ReportFailure(cancelledWaitNotice);
+            }
+            finally
+            {
+                captureRequest = null;
+                dialogue?.SetCancelableWait(false);
+                busy = false;
+                console?.SetBusy(false);
+                pending = null;
+                pendingEvidence = null; console?.InputPolicy.End();
+                console?.SetCaptureRecovery(NeedsCaptureRecovery);
+                marker?.Hide();
+                if (restoreAfterWait && isActiveAndEnabled && inputAllowed && dialogue?.gameObject.activeSelf == false && cancelledWaitNotice != null) ReportFailure(cancelledWaitNotice);
+            }
+            if (speechView != null) _ = Speak(speechView);
+            if (taskView != null) _ = OpenTask(taskView);
+        }
+
+        /// <summary>A tap on a card: a proposal becomes confirmed; anything else goes back to a proposal.</summary>
+        private async Task Act(string itemId, string? explicitAction = null)
+        {
+            StopSpeech();
+            if (client == null || session == null || session.State == "committed" || busy || NeedsCaptureRecovery) return;
+            var item = session.Items.FirstOrDefault(candidate => candidate.Id == itemId);
+            if (item == null) return;
+            busy = true;
+            console?.SetBusy(true);
+            try
+            {
+                var action = explicitAction ?? (item.Status == "proposed" ? "confirm" : "reset");
+                Apply(await client.ActAsync(session.Id, new ActionRequest { ItemId = itemId, Action = action }));
+            }
+            catch (ServiceException refused)
+            {
+                ReportFailure(refused.Message);
+            }
+            catch (Exception)
+            {
+                ReportFailure("Mac connection lost. Reconnect USB and try again.");
+            }
+            finally
+            {
+                busy = false;
+                console?.SetBusy(false);
+            }
+        }
+
+        /// <summary>
+        /// One task view on the parts already in the scene: the chip on the outlined subject, the
+        /// docked dialogue line with "Not sent" in its speaker line, and at most one control under it.
+        /// The view must belong to the current session.
+        /// </summary>
+        public void PresentTask(string json)
+        {
+            var presented = InteractionPresentation.Read(json);
+            if (session == null || presented.SessionId != session.Id)
+                throw new ArgumentException("The task belongs to another session.");
+            task = presented;
+            if (inputAllowed && isActiveAndEnabled) ShowTask();
+        }
+
+        private void ShowTask()
+        {
+            var shown = PresentedTask;
+            if (shown == null) return;
+            scene?.PresentTask(shown);
+            dialogue?.SetComfort(console?.ComfortScale ?? 1f, console?.ReducedMotion ?? false);
+            dialogue?.ShowTask(shown.SpeakerLine, shown.Caption);
+            console?.ShowTask(shown.AnswerLabel);
+            dialogue?.SetFallback(scene != null && !scene.ConsolePlaced);
+        }
+
+        private void EndTask()
+        {
+            var shown = task != null;
+            task = null;
+            if (shown) scene?.PresentTask(null);
+            console?.EndTask();
+        }
+
+        // The Mac decides whether a task exists. The headset asks only when the first turn ends
+        // with Boopy's line and a referent grounded on an observation.
+        private static bool TaskTurn(SessionView view)
+        {
+            var latest = view.Utterances.LastOrDefault()?.Id;
+            var referent = view.Items.FirstOrDefault(item => item.Id == view.ReferentId);
+            return view.State == "review" && !string.IsNullOrWhiteSpace(latest) && view.Dialogue != null
+                && view.Dialogue.Speaker == "boopy" && view.Dialogue.UtteranceId == latest
+                && !string.IsNullOrWhiteSpace(view.Dialogue.Text)
+                && referent != null && !ContextReview.IsExcluded(referent) && referent.Grounding.ObservationId != null;
+        }
+
+        /// <summary>
+        /// Ask the Mac for the session's task and present it. No task, or any failure, keeps the
+        /// session's own presentation and shows no error. A lost reply is asked again with the same
+        /// ids, which is the same open.
+        /// </summary>
+        private async Task OpenTask(SessionView view)
+        {
+            if (client == null) { console?.EndTask(); return; }
+            if (taskSessionId != view.Id)
+            {
+                taskSessionId = view.Id; taskOpenEventId = TaskIds.NewEventId(); taskOpenId = TaskIds.NewTaskId();
+            }
+            taskOpen?.Cancel();
+            using var opening = new CancellationTokenSource();
+            taskOpen = opening;
+            string? json = null;
+            try
+            {
+                try { json = await client.OpenTaskAsync(view.Id, taskOpenEventId!, taskOpenId!, opening.Token); }
+                catch (ServiceException lost) when (lost.Code == "connection_lost" && !opening.IsCancellationRequested)
+                {
+                    json = await client.OpenTaskAsync(view.Id, taskOpenEventId!, taskOpenId!, opening.Token);
+                }
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception failure) { Debug.Log($"Boopy: no task for this turn ({failure.GetType().Name})."); }
+            finally { if (ReferenceEquals(taskOpen, opening)) taskOpen = null; }
+            // A later turn, a tap or a new recording owns the presentation now.
+            if (!ReferenceEquals(session, view)) return;
+            InteractionPresentation? opened = null;
+            try { if (json != null) opened = InteractionPresentation.Read(json); }
+            catch (ArgumentException) { }
+            if (opened == null || opened.SessionId != view.Id || busy || voice.Recording || buttonTalk.Recording)
+            {
+                console?.EndTask();
+                return;
+            }
+            task = opened;
+            Debug.Log("Boopy: task presented on the selected subject. Not sent.");
+            if (inputAllowed && isActiveAndEnabled) ShowTask();
+        }
+
+        private void Apply(SessionView view)
+        {
+            cancelledWaitNotice = null;
+            StopSpeech();
+            // Only the same view, applied again after focus or enable, keeps its task. A new view,
+            // such as a later Talk turn, returns to the session's own presentation.
+            var keepTask = task != null && ReferenceEquals(view, session) && task.SessionId == view.Id;
+            if (!keepTask) EndTask();
+            if (!inputAllowed || !isActiveAndEnabled) { session = view; return; }
+            var acknowledgement = AudioFeedback.ForTransition(session, view);
+            if (acknowledgement != null) feedback?.Play(acknowledgement.Value);
+            var newConversation = session?.Id != view.Id;
+            if (newConversation) handoffReturnSession = null;
+            if (session?.Id != view.Id || (handoffSelection != null && handoffSelection.PackageId != view.Committed?.PackageId))
+            {
+                StopHandoffWait(); handoffSelection = null; handoffSubmitted = false; handoffState = "not-prepared";
+            }
+            session = view;
+            if (handoffRecoveryRecord != null && handoffRecoveryRecord.SessionId != view.Id) handoffRecoveryOffered = true;
+            console?.Render(view);
+            console?.SetHandoffState(handoffState, handoffSelection?.RequestId);
+            UpdateHandoffRecoveryPresentation();
+            dialogue?.SetComfort(console?.ComfortScale ?? 1f, console?.ReducedMotion ?? false);
+            var latestTurn = view.Utterances.LastOrDefault()?.Id;
+            var response = view.Dialogue != null && view.Dialogue.UtteranceId == latestTurn && view.Dialogue.Speaker == "boopy"
+                ? view.Dialogue.Text : view.Notice;
+            var interpretationFailure = view.InterpretationFailure;
+            var failedInterpretation = interpretationFailure != null && !string.IsNullOrWhiteSpace(latestTurn)
+                && interpretationFailure.UtteranceId == latestTurn
+                && (interpretationFailure.Code == "interpreter_unavailable" || interpretationFailure.Code == "interpreter_failed");
+            if (failedInterpretation && view.State != "committed")
+            {
+                console?.ShowInterpretationFailure(interpretationFailure!.Message);
+                dialogue?.Show(DialogueStage.Error, interpretationFailure.Message);
+            }
+            else if (view.State == "committed") dialogue?.Show(DialogueStage.LocalSave,
+                view.Utterances.LastOrDefault()?.Kind == "commit" && !string.IsNullOrWhiteSpace(response)
+                    ? response! : console?.HandoffStatusWords ?? "Context kept on your Mac. Not sent yet.");
+            else if (view.Attention != null && view.Attention.UtteranceId == latestTurn &&
+                (view.Attention.Action == "clarify" || view.Attention.Action == "fresh-view"))
+                dialogue?.Show(view.Attention.Action == "clarify" ? DialogueStage.Clarification : DialogueStage.FreshView,
+                    response ?? view.Attention.Reason);
+            else if (!string.IsNullOrWhiteSpace(response)) dialogue?.Show(DialogueStage.Response, response!);
+            else dialogue?.Hide();
+            if (view.State == "committed" && scene != null && pocket != null)
+            {
+                SayStatus(null);
+                scene.Boop(pocket, () => { });
+                return;
+            }
+            scene?.Render(view);
+            dialogue?.SetFallback(scene != null && !scene.ConsolePlaced);
+            SayStatus(!ContextReview.CanSave(view) && view.Model == null && view.Attention?.Action != "no-visual-work" && string.IsNullOrWhiteSpace(response)
+                ? "I didn’t get an answer. Please try again." : null, 8f);
+            if (keepTask) ShowTask();
+        }
+
+        private ConsoleAction ControlHit(Ray ray, out Vector3 point)
+        {
+            point = default;
+            var fallbackAction = dialogue?.HitFallbackAction(ray, out point) ?? ConsoleAction.None;
+            if (fallbackAction != ConsoleAction.None) return fallbackAction;
+
+            return console == null ? ConsoleAction.None : console.HitAction(ray, out point);
+        }
     }
 }
