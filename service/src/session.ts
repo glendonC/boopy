@@ -350,3 +350,119 @@ export class Projection {
     }
   }
 }
+
+/** Whether the person has acted on an item, which a new interpretation must never discard. */
+export function touched(item: Item): boolean {
+  return (
+    item.origin === 'person' ||
+    item.status !== 'proposed' ||
+    item.emphasis ||
+    item.note !== undefined ||
+    item.proposedLabel !== undefined
+  );
+}
+
+const sameLabel = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * A new interpretation replaces the model's untouched, unreferenced proposals. Items the person
+ * explicitly addressed remain available under their original IDs without becoming confirmed.
+ * Confirmed, rejected, marked, renamed, annotated or added items stay too.
+ */
+function acceptProposal(
+  session: SessionState,
+  proposal: {
+    readonly scope: Scope;
+    readonly referentId: string | null;
+    readonly intentId: string | null;
+    readonly items: readonly Item[];
+    readonly relations: readonly Relation[];
+  },
+): void {
+  const referenced = new Set(session.utterances.map((utterance) => utterance.targetItemId));
+  const decided = session.items.filter(touched);
+  const kept = session.items.filter((item) => touched(item) || referenced.has(item.id));
+  const keptIntent = kept.find((item) => item.id === session.intentId);
+  const fresh = proposal.items.filter(
+    (item) =>
+      // A selected reference is not proof that a same-named object in a new view is identical.
+      !decided.some((old) => sameLabel(old.label, item.label)) &&
+      !(keptIntent !== undefined && item.id === proposal.intentId),
+  );
+  session.items = [...kept, ...fresh.map((item) => ({ ...item }))];
+  const exists = new Set(session.items.map((item) => item.id));
+  session.relations = [...session.relations, ...proposal.relations].filter(
+    (relation) => exists.has(relation.from) && exists.has(relation.to),
+  );
+  session.scope = proposal.scope;
+  session.intentId = keptIntent?.id ?? proposal.intentId;
+  if (proposal.referentId !== null && exists.has(proposal.referentId)) {
+    session.referentId = proposal.referentId;
+  } else if (session.referentId !== null && !exists.has(session.referentId)) {
+    session.referentId = null;
+  }
+}
+
+function correct(session: SessionState, correction: Correction): void {
+  if (correction.op === 'add') {
+    session.items.push({ ...correction.item });
+    return;
+  }
+  if (correction.op === 'rescope') {
+    session.scope = correction.scope;
+    return;
+  }
+  const item = session.items.find((candidate) => candidate.id === correction.itemId);
+  if (item === undefined) throw new Error(`Correction names unknown item ${correction.itemId}.`);
+  switch (correction.op) {
+    case 'confirm':
+      item.status = 'confirmed';
+      return;
+    case 'reject':
+      item.status = 'rejected';
+      item.emphasis = false;
+      if (correction.reason !== undefined) item.note = correction.reason;
+      return;
+    case 'ignore':
+      item.status = 'ignored';
+      item.emphasis = false;
+      return;
+    case 'known':
+      item.status = 'known';
+      return;
+    case 'matters':
+      item.emphasis = true;
+      if (item.status === 'proposed') item.status = 'confirmed';
+      return;
+    case 'reset':
+      item.status = item.origin === 'person' ? 'confirmed' : 'proposed';
+      item.emphasis = false;
+      return;
+    case 'relabel':
+      if (item.origin === 'model') {
+        item.proposedLabel ??= item.label;
+        item.statement = `"${correction.label}", as the person named it; the model had proposed "${item.proposedLabel}".`;
+      }
+      // Renaming the person's own words changes their label, not their exact authored statement.
+      item.label = correction.label;
+      item.status = 'confirmed';
+      return;
+    case 'note':
+      item.note = item.note === undefined ? correction.note : `${item.note} ${correction.note}`;
+      return;
+  }
+}
+
+/** The kind of each utterance, as the session view reports it. */
+export function utteranceKind(reading: Reading): UtteranceKind {
+  switch (reading.kind) {
+    case 'ask':
+    case 'refocus':
+    case 'rescope':
+      return 'ask';
+    case 'commit':
+      return 'commit';
+    default:
+      return 'correct';
+  }
+}
