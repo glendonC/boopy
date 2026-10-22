@@ -1,0 +1,290 @@
+/**
+ * The wire vocabulary between the headset, the service and agents. Image coordinates are always
+ * normalized 0 to 1 with the origin at the top-left (x right, y down); provider grids are
+ * converted at their adapters, and the headset flips y into its camera viewport.
+ */
+import { z } from 'zod';
+import { EvidenceBundle } from './evidence-contract.ts';
+
+const Unit = z.number().min(0).max(1);
+
+export const Point = z.object({ x: Unit, y: Unit });
+export type Point = z.infer<typeof Point>;
+
+export const Box = z
+  .object({ x0: Unit, y0: Unit, x1: Unit, y1: Unit })
+  .refine((box) => box.x0 < box.x1 && box.y0 < box.y1, 'A box needs a positive area.');
+export type Box = z.infer<typeof Box>;
+
+export const Vec3 = z.tuple([z.number(), z.number(), z.number()]);
+export const Quat = z.tuple([z.number(), z.number(), z.number(), z.number()]);
+export const Pose = z.object({ position: Vec3, rotation: Quat });
+export type Pose = z.infer<typeof Pose>;
+
+/** The passthrough camera at the frame's own timestamp, as MRUK's PassthroughCameraAccess reports it. */
+export const Camera = z.object({
+  eye: z.enum(['left', 'right']),
+  pose: Pose,
+  focalLength: z.tuple([z.number(), z.number()]),
+  principalPoint: z.tuple([z.number(), z.number()]),
+  sensorResolution: z.tuple([z.number().int(), z.number().int()]),
+});
+export type Camera = z.infer<typeof Camera>;
+
+/**
+ * Distances in meters along rays through the centers of a grid over the frame, row by row from
+ * the top-left, sampled when the frame was captured; null where depth had no answer.
+ */
+export const DepthGrid = z
+  .object({
+    columns: z.number().int().min(1).max(64),
+    rows: z.number().int().min(1).max(64),
+    meters: z.array(z.number().nullable()),
+  })
+  .refine((grid) => grid.meters.length === grid.columns * grid.rows, 'One distance per cell.');
+export type DepthGrid = z.infer<typeof DepthGrid>;
+
+export const AttentionSource = z.enum([
+  'current-surroundings',
+  'displayed-image',
+  'virtual-scene',
+  'past-recollection',
+  'unknown',
+]);
+export const AttentionInput = z.object({
+  scope: z.enum(['scene', 'target']),
+  evidence: z.enum(['none', 'visual']),
+  source: AttentionSource,
+  observationId: z.string().min(1).optional(),
+  ambiguousTarget: z.boolean().default(false),
+  ocrRequested: z.boolean().default(false),
+  segmentationRequested: z.boolean().default(false),
+  maxAgeMs: z.number().finite().min(0).max(60000).default(15000),
+});
+export type AttentionInput = z.infer<typeof AttentionInput>;
+export const AttentionView = z.object({
+  utteranceId: z.string(),
+  source: AttentionSource,
+  action: z.enum(['no-visual-work', 'reuse', 'fresh-view', 'clarify']),
+  reason: z.string(),
+  observationId: z.string().nullable(),
+  work: z.object({ ocr: z.boolean(), segmentation: z.boolean() }),
+});
+export type AttentionView = z.infer<typeof AttentionView>;
+export const ContextualAction = z.object({
+  id: z.string().min(1),
+  question: z.string().trim().min(1).max(120),
+  targetItemId: z.string().nullable(),
+  observationId: z.string().nullable(),
+});
+export type ContextualAction = z.infer<typeof ContextualAction>;
+export const ContextualActionSelection = z.object({
+  utteranceId: z.string().min(1),
+  responseAt: z.string().min(1),
+  actionId: z.string().min(1),
+});
+export type ContextualActionSelection = z.infer<typeof ContextualActionSelection>;
+export const ChoiceCard = z.object({
+  id: z.string().min(1),
+  kind: z.literal('choice'),
+  prompt: z.string().trim().min(1).max(160),
+  options: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        label: z.string().trim().min(1).max(60),
+        value: z.string().trim().min(1).max(240),
+      }),
+    )
+    .min(2)
+    .max(3),
+  selectedOptionId: z.string().nullable(),
+});
+export type ChoiceCard = z.infer<typeof ChoiceCard>;
+export const ChoiceSelection = z.strictObject({
+  utteranceId: z.string().min(1),
+  responseAt: z.string().min(1),
+  cardId: z.string().min(1),
+  optionId: z.string().min(1),
+});
+export type ChoiceSelection = z.infer<typeof ChoiceSelection>;
+export const DialogueView = z.object({
+  speaker: z.literal('boopy'),
+  choice: ChoiceCard.optional(),
+  actions: z.array(ContextualAction).max(2).optional(),
+  text: z.string(),
+  utteranceId: z.string(),
+  at: z.string(),
+});
+export type DialogueView = z.infer<typeof DialogueView>;
+
+export const Frame = z.object({
+  /** JPEG, base64. */
+  jpeg: z.string().min(1),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  capturedAt: z.iso.datetime({ offset: true }),
+  source: AttentionSource.optional(),
+  timestampTrusted: z.boolean().optional(),
+  camera: Camera.optional(),
+  depth: DepthGrid.optional(),
+});
+export type Frame = z.infer<typeof Frame>;
+
+/** Where a ray met the room, projected into the frame. */
+export const Cue = z.object({
+  point: Point,
+  world: Vec3.optional(),
+  /** The ray met a surface in depth, rather than being placed at a fallback distance. */
+  onSurface: z.boolean(),
+});
+export type Cue = z.infer<typeof Cue>;
+
+export const Cues = z.object({
+  gaze: Cue.optional(),
+  pointer: Cue.extend({ hand: z.enum(['left', 'right']) }).optional(),
+  /** The card under the ray when the pinch began. */
+  targetItemId: z.string().optional(),
+});
+export type Cues = z.infer<typeof Cues>;
+
+export const Speech = z.union([
+  z.object({ wav: z.string().min(1) }),
+  z.object({ text: z.string().trim().min(1).max(2000), language: z.string().optional() }),
+]);
+export type Speech = z.infer<typeof Speech>;
+
+export const Device = z.object({ model: z.string().max(100), app: z.string().max(100) });
+export const StartRequestId = z.uuid();
+
+export const StartSessionRequest = z
+  .object({
+    requestId: StartRequestId.optional(),
+    frame: Frame.optional(),
+    attention: AttentionInput.optional(),
+    cues: Cues,
+    speech: Speech,
+    device: Device.optional(),
+  })
+  .refine((request) => request.frame !== undefined || request.attention?.evidence === 'none', {
+    message: 'A frame is required unless this is an explicit nonvisual turn.',
+    path: ['frame'],
+  });
+export type StartSessionRequest = z.infer<typeof StartSessionRequest>;
+
+export const UtteranceRequest = z.object({
+  selection: ContextualActionSelection.optional(),
+  attention: AttentionInput.optional(),
+  frame: Frame.optional(),
+  cues: Cues.optional(),
+  speech: Speech,
+});
+export type UtteranceRequest = z.infer<typeof UtteranceRequest>;
+
+/** What a pinch on a card does. */
+export const ItemAction = z.enum(['confirm', 'reject', 'ignore', 'known', 'matters', 'reset']);
+export type ItemAction = z.infer<typeof ItemAction>;
+
+export const ActionRequest = z.object({ itemId: z.string(), action: ItemAction });
+export type ActionRequest = z.infer<typeof ActionRequest>;
+
+export const Scope = z.enum(['object', 'region', 'text', 'scene']);
+export type Scope = z.infer<typeof Scope>;
+
+export const ItemStatus = z.enum(['proposed', 'confirmed', 'rejected', 'ignored', 'known']);
+export type ItemStatus = z.infer<typeof ItemStatus>;
+
+export const Origin = z.enum(['model', 'person']);
+export type Origin = z.infer<typeof Origin>;
+
+/** Spatial detector evidence is proposed independently of a person's item confirmation. */
+export const SpatialEvidence = z.object({
+  provider: z.literal('meta'),
+  model: z.literal('sam-3.1'),
+  concept: z.string().min(1).max(120),
+  latencyMs: z.number().nonnegative(),
+  confidence: Unit.nullable(),
+  verification: z.literal('proposed'),
+  outcome: z.enum(['contour', 'no-match', 'ambiguous', 'failed']),
+  frameSha256: z.string(),
+  utteranceId: z.string(),
+  maskSha256: z.string().optional(),
+});
+export type SpatialEvidence = z.infer<typeof SpatialEvidence>;
+
+/** Original grounding plus separately attributed, proposed segmentation when enabled. */
+export const Grounding = z.object({
+  kind: z.enum(['box', 'point', 'scene']),
+  observationId: z.string().optional(),
+  box: Box.optional(),
+  point: Point.optional(),
+  /** Ordered outer boundary, closed implicitly; the original model box is retained. */
+  contour: z.array(Point).min(3).max(256).optional(),
+  spatial: SpatialEvidence.optional(),
+});
+export type Grounding = z.infer<typeof Grounding>;
+
+/**
+ * Anything the person and the model talk about. `kind` is open: object, text, place, activity,
+ * quality, topic, goal, vocabulary, grammar, question, note, and new kinds without a schema change.
+ */
+export const Item = z.object({
+  id: z.string(),
+  kind: z.string(),
+  label: z.string(),
+  gloss: z.string().optional(),
+  statement: z.string(),
+  grounding: Grounding,
+  /** The model's confidence; null for what the person said themselves. */
+  confidence: z.number().min(0).max(1).nullable(),
+  why: z.string().optional(),
+  origin: Origin,
+  status: ItemStatus,
+  emphasis: z.boolean(),
+  note: z.string().optional(),
+  /** The model's label before the person changed it. */
+  proposedLabel: z.string().optional(),
+  /** Exact text read by OCR that backs this item. */
+  text: z.array(z.string()).optional(),
+  interpretationId: z.string().optional(),
+});
+export type Item = z.infer<typeof Item>;
+
+export const Relation = z.object({
+  id: z.string(),
+  from: z.string(),
+  to: z.string(),
+  kind: z.string(),
+  label: z.string().optional(),
+});
+export type Relation = z.infer<typeof Relation>;
+
+export const UtteranceKind = z.enum(['ask', 'correct', 'commit', 'unclear']);
+export type UtteranceKind = z.infer<typeof UtteranceKind>;
+
+/** Headset-only request for the exact current Boopy reply; callers cannot supply speech text. */
+export const SpeechOutputRequest = z
+  .object({
+    utteranceId: z.string().min(1).max(160),
+    responseAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
+export type SpeechOutputRequest = z.infer<typeof SpeechOutputRequest>;
+export const SpeechOutputResponse = z.object({
+  sessionId: z.string(),
+  utteranceId: z.string(),
+  responseAt: z.string(),
+  speaker: z.literal('boopy'),
+  mimeType: z.literal('audio/wav'),
+  wav: z.string(),
+  language: z.string(),
+  voice: z.string(),
+  latencyMs: z.number().nonnegative(),
+});
+export type SpeechOutputResponse = z.infer<typeof SpeechOutputResponse>;
+
+export const InterpretationFailure = z.object({
+  code: z.enum(['interpreter_unavailable', 'interpreter_failed']),
+  utteranceId: z.string(),
+  message: z.string(),
+});
