@@ -1095,3 +1095,152 @@ export const ActivityRequestFile = z.strictObject({
   sources: z.array(SourceEntry),
   context: z.strictObject({ packageId: PackageId, packetSha256: Sha256, packet: z.string() }),
 });
+
+/** Section 6, written by Boopy. */
+export const ActivitySubmissionFile = z.strictObject({
+  type: z.literal('boopy.activity-submission'),
+  version: z.literal(1),
+  submissionId: SubmissionId,
+  activityId: ActivityId,
+  requestId: RequestId,
+  exportedAt: z.string(),
+  delivery: z.enum(['not-sent-by-boopy', 'sent-by-boopy-to-local-model']),
+  note: z.string(),
+  activity: z.strictObject({
+    claimedAuthor: z.string().nullable(),
+    authorship: z.enum(['claimed-by-file', 'called-by-boopy']),
+    artifactSha256: Sha256,
+    body: z.record(z.string(), z.unknown()),
+  }),
+  submission: z.strictObject({
+    number: z.number().int().min(1),
+    submittedAt: z.string(),
+    revision: z.number().int().min(1),
+    arrange: ArrangeResult.nullable(),
+    sequence: SequenceResult.nullable(),
+    hintsRevealed: z.array(RevealedHint),
+    hintsRevealedSincePrevious: z.array(z.number().int().min(0)),
+  }),
+  boopyChecked: z.strictObject({
+    arrangementRelation: z
+      .strictObject({
+        subject: TokenKey,
+        object: TokenKey,
+        requested: Direction,
+        arranged: RelationView.nullable(),
+        matches: z.boolean(),
+      })
+      .nullable(),
+  }),
+  digest: z.string(),
+  instructions: z.array(z.string()).min(1),
+  respondWith: z.strictObject({
+    type: z.literal('boopy.activity-reply'),
+    version: z.literal(1),
+    binding: z.strictObject({ submissionId: SubmissionId, activityId: ActivityId }),
+    echo: z.string(),
+  }),
+});
+
+/** Prompt schemas guide generation; the strict readers remain authoritative. */
+type JsonSchema = Record<string, unknown>;
+const text = (max: number) => ({ type: 'string', minLength: 1, maxLength: max });
+const nullable = (schema: JsonSchema) => ({ anyOf: [schema, { type: 'null' }] });
+const one = (value: string) => ({ enum: [value] });
+const object = (properties: Record<string, JsonSchema>) => ({
+  type: 'object',
+  additionalProperties: false,
+  required: Object.keys(properties),
+  properties,
+});
+const list = (min: number, max: number, items: JsonSchema) => ({
+  type: 'array',
+  minItems: min,
+  maxItems: max,
+  items,
+});
+const LANGUAGE = { type: 'string', pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}$' };
+const TOKEN_KEY = { enum: ['a', 'b', 'c', 'd'] };
+const BOUNDED = { type: 'number', minimum: -1e9, maximum: 1e9 };
+const promptTextItem = (textMax: number, glossMax: number) =>
+  object({ text: text(textMax), language: LANGUAGE, gloss: nullable(text(glossMax)) });
+
+/**
+ * Contract section 2 as far as JSON Schema goes: lengths, counts, enums, the per-axis token
+ * counts, a target only on viewer-left-right, and source IDs limited to the ones the input lists.
+ * Key order, distinct target tokens, unique tile texts, one word per space tile, one component of
+ * each type, the number axis step rule and the display rules stay with Boopy's importer.
+ * The activity comes before fallbackText so the fallback is written about a finished activity.
+ */
+function activityBodySchema(sourceIds: string[]) {
+  const sourceId = sourceIds.length === 0 ? { type: 'null' } : nullable({ enum: sourceIds });
+  const tokens = (min: number, max: number) =>
+    list(min, max, object({ key: TOKEN_KEY, label: promptTextItem(24, 40), sourceId }));
+  const arrange = (axis: JsonSchema, [min, max]: [number, number], target: JsonSchema) =>
+    object({ type: one('arrange'), axis, tokens: tokens(min, max), target });
+  const sequence = (joiner: string, max: number) =>
+    object({
+      type: one('sequence'),
+      joiner: one(joiner),
+      language: LANGUAGE,
+      tiles: list(
+        3,
+        8,
+        object({
+          key: { enum: ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'] },
+          text: text(max),
+        }),
+      ),
+    });
+  const direction = { enum: ['left-of', 'right-of'] };
+  return object({
+    title: text(60),
+    purpose: text(200),
+    instruction: promptTextItem(200, 240),
+    components: list(1, 2, {
+      anyOf: [
+        arrange(
+          object({ kind: one('viewer-left-right') }),
+          [2, 2],
+          nullable(object({ subject: TOKEN_KEY, relation: direction, object: TOKEN_KEY })),
+        ),
+        arrange(object({ kind: one('scale'), low: text(24), high: text(24) }), [2, 4], {
+          type: 'null',
+        }),
+        arrange(
+          object({
+            kind: one('number'),
+            min: BOUNDED,
+            max: BOUNDED,
+            step: { type: 'number', minimum: 0.000001, maximum: 2e9 },
+            unit: nullable(text(12)),
+          }),
+          [1, 4],
+          { type: 'null' },
+        ),
+        sequence('space', 24),
+        sequence('list', 48),
+      ],
+    }),
+    hints: list(0, 3, promptTextItem(200, 240)),
+  });
+}
+
+/** The `format` schema for activity mode: only what the model writes. */
+export function activityAnswerSchema(sourceIds: string[]) {
+  return object({ activity: activityBodySchema(sourceIds), fallbackText: text(800) });
+}
+
+/** The `format` schema for reply mode; next reuses the activity body under the same sources. */
+export function replyAnswerSchema(sourceIds: string[]) {
+  const point = object({
+    about: { enum: ['overall', 'arrange', 'sequence', 'hints'] },
+    text: text(300),
+    language: LANGUAGE,
+    gloss: nullable(text(300)),
+  });
+  return object({
+    reply: object({ summary: promptTextItem(300, 300), points: list(1, 4, point) }),
+    next: nullable(object({ activity: activityBodySchema(sourceIds), fallbackText: text(800) })),
+  });
+}
