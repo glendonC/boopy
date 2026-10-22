@@ -376,3 +376,394 @@ export function readActivityFile(content: string): FileRead<ActivityFile> {
 export function readReplyFile(content: string): FileRead<ReplyFile> {
   return readFile(content, ReplyFile);
 }
+
+function readFile<T>(content: string, schema: z.ZodType<T>): FileRead<T> {
+  const found = readContainer(content);
+  if (found === null) return { kind: 'unreadable' };
+  const parsed = schema.safeParse(found.value, { reportInput: true });
+  if (!parsed.success) return { kind: 'invalid', issues: formatIssues(parsed.error.issues, []) };
+  return {
+    kind: 'read',
+    container: found.container,
+    artifactSha256: sha256(content),
+    file: parsed.data,
+  };
+}
+
+/** Whitespace that may surround a file; a second byte order mark is not whitespace here. */
+const SPACE = /[^\S\ufeff]/;
+
+/** An anchored match for the leading run and an index scan for the trailing one: linear time. */
+function trimSurrounding(text: string): string {
+  const start = /^[^\S\ufeff]*/.exec(text)?.[0].length ?? 0;
+  let end = text.length;
+  while (end > start && SPACE.test(text.charAt(end - 1))) end -= 1;
+  return text.slice(start, end);
+}
+
+/**
+ * Well-formed content of at most 64 KiB in UTF-8 bytes. After one leading byte order mark and
+ * surrounding whitespace are removed, the whole content is one JSON object; otherwise it holds
+ * exactly one fenced block, labelled exactly json.
+ */
+export function readContainer(
+  content: string,
+): { container: Container; value: Record<string, unknown> } | null {
+  if (!content.isWellFormed() || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) return null;
+  const text = trimSurrounding(content.startsWith('\ufeff') ? content.slice(1) : content);
+  const whole = jsonObject(text);
+  if (whole !== null) return { container: 'json', value: whole };
+  const blocks = fencedBlocks(text);
+  const block = blocks[0];
+  if (blocks.length !== 1 || block?.info !== 'json' || !block.closed) return null;
+  const inner = jsonObject(trimSurrounding(block.body));
+  return inner === null ? null : { container: 'fenced-json', value: inner };
+}
+
+function jsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value = strictJson(text);
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const ESCAPES = new Map([
+  ['"', '"'],
+  ['\\', '\\'],
+  ['/', '/'],
+  ['b', '\b'],
+  ['f', '\f'],
+  ['n', '\n'],
+  ['r', '\r'],
+  ['t', '\t'],
+]);
+const JSON_NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+/**
+ * RFC 8259 JSON within Boopy's limits. JSON.parse keeps the last of duplicate keys, accepts
+ * prototype keys, lone surrogate escapes and 1e999, and nests without bound; this refuses all of
+ * them, recursing at most 32 levels.
+ */
+function strictJson(text: string): unknown {
+  let at = 0;
+  const fail = (): never => {
+    throw new Error('Unreadable JSON.');
+  };
+  const skip = () => {
+    while (' \t\n\r'.includes(text.charAt(at)) && at < text.length) at += 1;
+  };
+  const literal = <T>(word: string, result: T): T => {
+    if (!text.startsWith(word, at)) fail();
+    at += word.length;
+    return result;
+  };
+  const string = (): string => {
+    at += 1;
+    let result = '';
+    let start = at;
+    for (;;) {
+      if (at >= text.length) fail();
+      const code = text.charCodeAt(at);
+      if (code === 0x22) break;
+      if (code < 0x20) fail();
+      if (code !== 0x5c) {
+        at += 1;
+        continue;
+      }
+      result += text.slice(start, at);
+      const escaped = text.charAt(at + 1);
+      at += 2;
+      if (escaped === 'u') {
+        const hex = text.slice(at, at + 4);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) fail();
+        result += String.fromCharCode(Number.parseInt(hex, 16));
+        at += 4;
+      } else result += ESCAPES.get(escaped) ?? fail();
+      start = at;
+    }
+    result += text.slice(start, at);
+    at += 1;
+    return result.isWellFormed() ? result : fail();
+  };
+  const value = (depth: number): unknown => {
+    skip();
+    const char = text.charAt(at);
+    if (char === '{' || char === '[') {
+      if (depth > MAX_DEPTH) fail();
+      at += 1;
+      return char === '{' ? object(depth) : array(depth);
+    }
+    if (char === '"') return string();
+    if (char === 't') return literal('true', true);
+    if (char === 'f') return literal('false', false);
+    if (char === 'n') return literal('null', null);
+    JSON_NUMBER.lastIndex = at;
+    const match = JSON_NUMBER.exec(text)?.[0] ?? fail();
+    at += match.length;
+    const number = Number(match);
+    return Number.isFinite(number) ? number : fail();
+  };
+  const object = (depth: number) => {
+    const result: Record<string, unknown> = {};
+    const keys = new Set<string>();
+    skip();
+    if (text.charAt(at) === '}') {
+      at += 1;
+      return result;
+    }
+    for (;;) {
+      skip();
+      if (text.charAt(at) !== '"') fail();
+      const key = string();
+      if (keys.has(key) || RESERVED_KEYS.has(key)) fail();
+      keys.add(key);
+      skip();
+      if (text.charAt(at) !== ':') fail();
+      at += 1;
+      result[key] = value(depth + 1);
+      skip();
+      const next = text.charAt(at);
+      at += 1;
+      if (next === '}') return result;
+      if (next !== ',') fail();
+    }
+  };
+  const array = (depth: number) => {
+    const result: unknown[] = [];
+    skip();
+    if (text.charAt(at) === ']') {
+      at += 1;
+      return result;
+    }
+    for (;;) {
+      result.push(value(depth + 1));
+      skip();
+      const next = text.charAt(at);
+      at += 1;
+      if (next === ']') return result;
+      if (next !== ',') fail();
+    }
+  };
+  const result = value(1);
+  skip();
+  return at === text.length ? result : fail();
+}
+
+/** CommonMark fences: three or more backticks or tildes, closed by an equal or longer run. */
+function fencedBlocks(text: string) {
+  const blocks: { info: string; body: string; closed: boolean }[] = [];
+  let open: { char: string; length: number; info: string; lines: string[] } | null = null;
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    if (open === null) {
+      const start = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      const fence = start?.[1] ?? '';
+      const info = (start?.[2] ?? '').trim();
+      if (!start || (fence.startsWith('`') && info.includes('`'))) continue;
+      open = { char: fence.charAt(0), length: fence.length, info, lines: [] };
+      continue;
+    }
+    const end = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)?.[1];
+    if (end?.startsWith(open.char) && end.length >= open.length) {
+      blocks.push({ info: open.info, body: open.lines.join('\n'), closed: true });
+      open = null;
+    } else open.lines.push(line);
+  }
+  if (open) blocks.push({ info: open.info, body: open.lines.join('\n'), closed: false });
+  return blocks;
+}
+
+/** Issues are Boopy's words; anything echoed from a file is cleaned and clipped first. */
+function formatIssues(issues: readonly z.core.$ZodIssue[], prefix: readonly PropertyKey[]) {
+  return issues.slice(0, MAX_ISSUES).map((issue) => {
+    const path = [...prefix, ...issue.path].map(String).join('.') || 'file';
+    return clip(clean(`${path}: ${messageOf(issue)}`), 200);
+  });
+}
+
+function messageOf(issue: z.core.$ZodIssue): string {
+  const items = (count: number | bigint) => `${count} item${Number(count) === 1 ? '' : 's'}`;
+  switch (issue.code) {
+    case 'unrecognized_keys': {
+      // A key name is repeated only when it cannot carry a link or hidden characters.
+      const named = issue.keys
+        .slice(0, 3)
+        .map((key) => (/^[A-Za-z0-9_-]{1,40}$/.test(key) ? `"${key}"` : '(unprintable key)'));
+      const more = issue.keys.length > 3 ? ` and ${issue.keys.length - 3} more` : '';
+      return issue.keys.length === 1
+        ? `Remove the unsupported field ${named[0]}.`
+        : `Remove the unsupported fields ${named.join(', ')}${more}.`;
+    }
+    case 'invalid_type':
+      return issue.input === undefined ? 'Required.' : issue.message;
+    case 'too_big':
+      if (issue.origin === 'array') return `Use at most ${items(issue.maximum)}.`;
+      if (issue.origin === 'string') return `Use at most ${issue.maximum} characters.`;
+      return `Use a number no greater than ${issue.maximum}.`;
+    case 'too_small':
+      if (issue.origin === 'array') return `Use at least ${items(issue.minimum)}.`;
+      if (issue.origin === 'string') return `Use at least ${issue.minimum} characters.`;
+      return `Use a number no less than ${issue.minimum}.`;
+    default:
+      return issue.message;
+  }
+}
+
+function clean(value: string): string {
+  return [...value]
+    .map((char) => (char === '<' || char === '>' || !displayable(char) ? '?' : char))
+    .join('');
+}
+
+function clip(value: string, max: number): string {
+  const chars = [...value];
+  return chars.length <= max ? value : `${chars.slice(0, max - 1).join('')}…`;
+}
+
+export function sha256(value: string | Uint8Array): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** A position per token: null until placed, else x from 0 (your left, low, min) to 1. */
+export type Positions = Readonly<Record<string, number | null>>;
+
+const placedAt = (positions: Positions, key: string) => {
+  const x = positions[key];
+  return typeof x === 'number' ? x : null;
+};
+
+/** |dx| rounded to 9 decimals, so 0.3 - 0.2 counts as exactly 0.10 apart. */
+const apart = (a: number, b: number) => Math.round(Math.abs(a - b) * 1e9) / 1e9 >= MIN_SEPARATION;
+
+/** From the person's own view: whether the subject sits left or right of the object. */
+export function relationOf(positions: Positions, subject: string, object: string): Relation | null {
+  const from = placedAt(positions, subject);
+  const to = placedAt(positions, object);
+  if (from === null || to === null) return null;
+  if (!apart(from, to)) return 'unclear';
+  return from < to ? 'left-of' : 'right-of';
+}
+
+/** Placed keys by ascending x (ties keep key order); `ties` when neighbours are too close. */
+export function orderOf<Key extends string>(positions: Positions, keys: readonly Key[]) {
+  const placed = keys.filter((key) => placedAt(positions, key) !== null);
+  const x = (key: Key) => placedAt(positions, key) ?? 0;
+  const order = placed.sort((a, b) => x(a) - x(b) || keys.indexOf(a) - keys.indexOf(b));
+  const ties = order.some((key, index) => {
+    const previous = order[index - 1];
+    return previous !== undefined && !apart(x(key), x(previous));
+  });
+  return { order, ties };
+}
+
+/**
+ * `minU + k * stepU` micro-units with `k = Math.round(x * (maxU - minU) / stepU)`, so binary
+ * noise never reaches a view, the journal or a digest.
+ */
+export function snapValue(
+  axis: { min: number; max: number; step: number },
+  x: number | null,
+): number | null {
+  if (x === null) return null;
+  const minU = micro(axis.min);
+  const stepU = micro(axis.step);
+  const k = Math.round((x * (micro(axis.max) - minU)) / stepU);
+  const snapped = (minU + k * stepU) / MICRO;
+  return snapped === 0 ? 0 : snapped;
+}
+
+/** An exact decimal from whole micro-units, without exponent or trailing zeros. */
+function formatNumber(value: number): string {
+  const units = micro(value);
+  const whole = Math.floor(Math.abs(units) / MICRO);
+  const fraction = String(Math.abs(units) % MICRO)
+    .padStart(6, '0')
+    .replace(/0+$/, '');
+  return `${units < 0 ? '-' : ''}${whole}${fraction ? `.${fraction}` : ''}`;
+}
+
+export type Derived = {
+  relation: Relation | null;
+  matchesTarget: boolean | null;
+  order: TokenKey[];
+  ties: boolean;
+  values: Record<string, number | null> | null;
+};
+
+export function deriveArrangement(component: ArrangeComponent, positions: Positions): Derived {
+  const keys = component.tokens.map((token) => token.key);
+  const axis = component.axis;
+  const target = component.target ?? null;
+  const relation =
+    axis.kind === 'viewer-left-right'
+      ? relationOf(positions, target?.subject ?? 'a', target?.object ?? 'b')
+      : null;
+  return {
+    relation,
+    matchesTarget: target === null ? null : relation === target.relation,
+    ...orderOf(positions, keys),
+    values:
+      axis.kind === 'number'
+        ? Object.fromEntries(keys.map((key) => [key, snapValue(axis, placedAt(positions, key))]))
+        : null,
+  };
+}
+
+export function sequenceText(component: SequenceComponent, chosen: readonly string[]): string {
+  return chosen
+    .map((key) => component.tiles.find((tile) => tile.key === key)?.text ?? '')
+    .join(component.joiner === 'space' ? ' ' : '; ');
+}
+
+/**
+ * Boopy decides the order tiles are shown in: ascending SHA-256 of `<activityId>:<tileKey>`, so
+ * the bank never reveals an answer order the assistant happened to write. Keys stay the file's.
+ */
+export function tileDisplayOrder<Tile extends { key: string }>(
+  activityId: string,
+  tiles: readonly Tile[],
+): Tile[] {
+  return tiles
+    .map((tile) => ({ tile, rank: sha256(`${activityId}:${tile.key}`) }))
+    .sort((a, b) => (a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : 0))
+    .map((entry) => entry.tile);
+}
+
+export function arrangeOf(activity: ActivityBody): ArrangeComponent | null {
+  return activity.components.find((component) => component.type === 'arrange') ?? null;
+}
+
+export function sequenceOf(activity: ActivityBody): SequenceComponent | null {
+  return activity.components.find((component) => component.type === 'sequence') ?? null;
+}
+
+/**
+ * One line of at most 400 characters, parts joined by " | ". Only the sequence quote is ever
+ * shortened, with an ellipsis, so the arrangement and hint count always survive.
+ */
+export function digestOf(
+  activity: ActivityBody,
+  state: { positions: Positions | null; chosen: readonly string[]; hintsRevealed: number },
+): string {
+  const arrange = arrangeOf(activity);
+  const sequence = sequenceOf(activity);
+  const hints = `hints: ${state.hintsRevealed} of ${activity.hints.length}`;
+  const render = (quote: string | null) =>
+    [
+      ...(arrange ? [arrangeDigest(arrange, state.positions ?? {})] : []),
+      ...(sequence ? [quote === null ? 'sequence: (empty)' : `sequence: "${quote}"`] : []),
+      hints,
+    ].join(' | ');
+  const text = sequence && state.chosen.length > 0 ? sequenceText(sequence, state.chosen) : null;
+  const line = render(text);
+  const over = [...line].length - DIGEST_LIMIT;
+  if (over <= 0 || text === null) return clip(line, DIGEST_LIMIT);
+  const chars = [...text];
+  return clip(
+    render(`${chars.slice(0, Math.max(0, chars.length - over - 1)).join('')}…`),
+    DIGEST_LIMIT,
+  );
+}
