@@ -1,0 +1,7 @@
+# Runtime-tested together on macOS 26.7 / Apple M5 Max, Python 3.12.9.
+torch==2.14.1
+torchvision==0.29.1
+transformers==5.19.0
+pillow==12.3.0
+opencv-python-headless==5.0.0.93
+numpy==2.5.4

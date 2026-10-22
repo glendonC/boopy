@@ -760,4 +760,115 @@ it('allows only one active intake and child chain per process', async () => {
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
+  const pending = inspectRecordedMedia(clip, {
+    tool: async (request) => {
+      entered?.();
+      await gate;
+      return fakeTool()(request);
+    },
+  });
+  await ready;
+  try {
+    await code(inspectRecordedMedia(clip), 'media_busy');
+  } finally {
+    release?.();
+    await pending;
+  }
+});
+
+for (const [stream, expected] of [
+  ['stdout', 'tool_limit'],
+  ['stderr', 'tool_limit'],
+  ['timeout', 'tool_timeout'],
+] as const) {
+  it(`kills and waits for its only child on ${stream} budget exhaustion`, async () => {
+    let killed = false;
+    let closed = false;
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: (signal: string) => {
+        assert.equal(signal, 'SIGKILL');
+        killed = true;
+        setImmediate(() => {
+          closed = true;
+          child.emit('close', null);
+        });
+        return true;
+      },
+    });
+    const tool = makeRecordedMediaTool((path, _args, options) => {
+      assert.equal(path, '/opt/homebrew/bin/ffprobe');
+      assert.equal(options.shell, false);
+      assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe']);
+      if (stream !== 'timeout')
+        setImmediate(() => {
+          child[stream].write(Buffer.alloc(stream === 'stdout' ? 33 : 16_385));
+        });
+      return child as unknown as ChildProcessWithoutNullStreams;
+    });
+    await code(
+      tool({
+        tool: 'ffprobe',
+        args: [],
+        source: Buffer.from('synthetic'),
+        timeoutMs: 5,
+        maxStdoutBytes: 32,
+      }),
+      expected,
+    );
+    assert.equal(killed, true);
+    assert.equal(closed, true);
+  });
+}
+
+it('rejects too many probed frames and an excessive RGB selection before decoding', async () => {
+  const base = fakeTool();
+  await code(
+    inspectRecordedMedia(clip, {
+      tool: async (request) =>
+        request.args.includes('-show_frames')
+          ? Buffer.from(
+              JSON.stringify({
+                frames: Array.from({ length: 61 }, (_, pts) => syntheticFrame(pts, 1)),
+              }),
+            )
+          : base(request),
+    }),
+    'media_limit',
+  );
+  let decoded = false;
+  await code(
+    decodeRecordedFrames(
+      clip,
+      { startSeconds: 0, durationSeconds: 60 },
+      {
+        tool: async (request) => {
+          if (request.tool === 'ffmpeg') {
+            decoded = true;
+            assert.fail('no decoder');
+          }
+          if (request.args.includes('-show_frames'))
+            return Buffer.from(
+              JSON.stringify({
+                frames: Array.from({ length: 60 }, (_, pts) => syntheticFrame(pts, 1, 1280, 720)),
+              }),
+            );
+          const value = metadata();
+          Object.assign(value.streams[0] ?? {}, {
+            width: 1280,
+            height: 720,
+            duration_ts: 60,
+            nb_frames: '60',
+            time_base: '1/1',
+          });
+          value.format.duration = '60';
+          return Buffer.from(JSON.stringify(value));
+        },
+      },
+    ),
+    'media_limit',
+  );
+  assert.equal(decoded, false);
 });
