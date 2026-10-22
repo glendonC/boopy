@@ -681,3 +681,117 @@ test('usage errors and non-loopback Ollama addresses are refused without a call'
   assert.equal(ollama.requests.length, 0);
   assert.equal(await exists(out), false);
 });
+
+test('the probe prints one line of sizes, hashes and timings and never file or model content', async (t) => {
+  const directory = await scratch(t);
+  const goal = changedGoal('INPUT-MARKER-7f3a');
+  const input = join(directory, 'marked-request.json');
+  await writeFile(input, goal);
+  const responses = [
+    answering(
+      { ...activityAnswer, fallbackText: 'OUTPUT-MARKER-9c1d' },
+      { private: 'PROVIDER-MARKER-2b6e', done_reason: 'PROVIDER-MARKER-2b6e' },
+    ),
+    (outgoing) => {
+      outgoing.writeHead(500);
+      outgoing.end('PROVIDER-MARKER-2b6e failure');
+    },
+    answering('OUTPUT-MARKER-9c1d is not JSON'),
+  ];
+  const ollama = await fakeOllama(t, (outgoing, count) => responses[count - 1](outgoing));
+  const results = [];
+  for (const index of [0, 1, 2])
+    results.push(
+      await runProbe([
+        'activity',
+        '--request',
+        input,
+        '--out',
+        join(directory, `out-${index}.json`),
+        '--url',
+        ollama.url,
+      ]),
+    );
+  const prose = join(directory, 'prose.json');
+  await writeFile(prose, 'INPUT-MARKER-7f3a is not JSON');
+  results.push(
+    await runProbe([
+      'activity',
+      '--request',
+      prose,
+      '--out',
+      join(directory, 'out-3.json'),
+      '--url',
+      ollama.url,
+    ]),
+  );
+  assert.deepEqual(
+    results.map((result) => result.code),
+    [0, 1, 1, 2],
+  );
+  const allowed = new Set([
+    'probe',
+    'mode',
+    'outcome',
+    'reason',
+    'model',
+    'url',
+    'schemaVia',
+    'deadlineMs',
+    'temperature',
+    'numPredict',
+    'think',
+    'modelCalls',
+    'inputBytes',
+    'inputSha256',
+    'instructions',
+    'systemBytes',
+    'promptBytes',
+    'schemaBytes',
+    'requestBytes',
+    'status',
+    'responseBytes',
+    'contentBytes',
+    'wallMs',
+    'totalMs',
+    'loadMs',
+    'promptEvalMs',
+    'evalMs',
+    'promptTokens',
+    'outputTokens',
+    'doneReason',
+    'outputFile',
+    'outputBytes',
+    'outputSha256',
+  ]);
+  for (const result of results) {
+    for (const marker of ['INPUT-MARKER', 'OUTPUT-MARKER', 'PROVIDER-MARKER', 'Camel', '낙타'])
+      assert.ok(!`${result.stdout}${result.stderr}`.includes(marker), marker);
+    assert.ok(!result.stdout.includes(directory), 'No absolute paths are printed.');
+    assert.ok(result.stderr.split('\n').filter(Boolean).length <= 1);
+    const summary = summaryOf(result);
+    for (const [key, value] of Object.entries(summary)) {
+      assert.ok(allowed.has(key), key);
+      assert.ok(
+        value === null || ['number', 'boolean'].includes(typeof value) || typeof value === 'string',
+        key,
+      );
+    }
+  }
+  const written = summaryOf(results[0]);
+  assert.equal(written.outputFile, 'out-0.json');
+  assert.match(written.outputSha256, /^[a-f0-9]{64}$/);
+  assert.match(written.inputSha256, /^[a-f0-9]{64}$/);
+  assert.equal(written.totalMs, 2500);
+  assert.equal(written.promptTokens, 900);
+  assert.equal(written.outputTokens, 300);
+  assert.equal('doneReason' in written, false, 'Unexpected provider text is dropped.');
+  assert.equal(typeof written.wallMs, 'number');
+  assert.equal(summaryOf(results[1]).status, 500);
+});
+
+function changedGoal(marker) {
+  const value = JSON.parse(requestText);
+  value.goal = `Synthetic goal ${marker}`;
+  return JSON.stringify(value);
+}
