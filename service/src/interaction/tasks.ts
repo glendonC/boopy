@@ -380,4 +380,263 @@ export class TaskStore {
   #fold(): Fold {
     return fold(this.#journal.withTypePrefix('task.'));
   }
+
+  /** Appends an event and applies it to the fold in hand, so the new view needs no new read. */
+  #append(event: TaskEvent, id: string, at: string, current: Fold): void {
+    apply(this.#journal.append(event, id, at), current.tasks, current.seen);
+  }
+}
+
+function replay(prior: Seen, hash: string, tasks: Map<string, State>): TaskOutcome {
+  if (prior.hash !== hash) return CONFLICT;
+  const task = mustView({ tasks, seen: new Map() }, prior.taskId);
+  if (prior.outcome === 'accepted') return { status: 'accepted', task };
+  if (
+    prior.code === 'stale_revision' ||
+    prior.code === 'cancelled' ||
+    prior.code === 'source_mismatch'
+  )
+    return { status: 'rejected', code: prior.code, task };
+  return CONFLICT;
+}
+
+function mustView(foldResult: Fold, taskId: string): TaskView {
+  const task = view(foldResult.tasks.get(taskId));
+  if (!task) throw new Error('Task projection lost an accepted task.');
+  return task;
+}
+
+function view(state: State | undefined): TaskView | undefined {
+  if (!state) return undefined;
+  return present(state);
+}
+
+function present(state: State): TaskView {
+  return {
+    taskId: state.taskId,
+    sessionId: state.sessionId,
+    revision: state.revision,
+    source: state.source,
+    intent: state.intent,
+    utterance: state.utterance,
+    phase: state.phase,
+    continuity: 'local-only',
+    delivery: 'not-sent',
+    subjectCorrected: state.subjectCorrected,
+    components: [...state.providerComponents, { type: 'status', code: state.status }],
+    attempts: state.attempts.map((attempt) => ({ ...attempt })),
+    lastRejection: state.lastRejection,
+  };
+}
+
+function fold(events: readonly Recorded[]): Fold {
+  const tasks = new Map<string, State>();
+  const seen = new Map<string, Seen>();
+  for (const event of events) {
+    if (!event.type.startsWith('task.')) continue;
+    apply(event, tasks, seen);
+  }
+  return { tasks, seen };
+}
+
+function apply(event: Recorded, tasks: Map<string, State>, seen: Map<string, Seen>): void {
+  if (event.type === 'task.opened') {
+    const data = OpenedSchema.parse(event.data);
+    check(event, data, ['person', 'system'], payloadHash(openMaterial(data)));
+    if (tasks.has(data.taskId)) throw new Error('Duplicate task open.');
+    tasks.set(data.taskId, {
+      taskId: data.taskId,
+      sessionId: data.sessionId,
+      revision: 0,
+      source: data.source,
+      intent: data.intent,
+      utterance: data.utterance,
+      phase: 'open',
+      subjectCorrected: false,
+      providerComponents: [],
+      status: 'not-sent',
+      attempts: [],
+      lastRejection: null,
+    });
+    seen.set(event.id, {
+      hash: data.payloadSha256,
+      outcome: 'accepted',
+      code: null,
+      taskId: data.taskId,
+      action: null,
+    });
+    return;
+  }
+  if (event.type === 'task.action-accepted') {
+    const data = ActionAcceptedSchema.parse(event.data);
+    const state = requireState(tasks, data.taskId, data.sessionId);
+    check(event, data, ['person'], payloadHash(actMaterial(data)));
+    if (data.expectedRevision !== state.revision || data.revision !== state.revision + 1)
+      throw new Error('Action revision does not follow the journal.');
+    applyAction(state, data);
+    seen.set(event.id, {
+      hash: data.payloadSha256,
+      outcome: 'accepted',
+      code: null,
+      taskId: data.taskId,
+      action: actionOf(data),
+    });
+    return;
+  }
+  if (event.type === 'task.action-rejected') {
+    const data = ActionRejectedSchema.parse(event.data);
+    const state = requireState(tasks, data.taskId, data.sessionId);
+    check(event, data, ['person'], payloadHash(actMaterial(data)));
+    if (data.revision !== state.revision) throw new Error('Rejected action changed the revision.');
+    state.lastRejection = { eventId: data.eventId, code: data.code };
+    seen.set(event.id, {
+      hash: data.payloadSha256,
+      outcome: 'rejected',
+      code: data.code,
+      taskId: data.taskId,
+      action: actionOf(data),
+    });
+    return;
+  }
+  if (event.type === 'task.provider-accepted') {
+    const data = ProviderAcceptedSchema.parse(event.data);
+    const state = requireState(tasks, data.taskId, data.sessionId);
+    check(event, data, ['system'], payloadHash(providerMaterial(data)));
+    if (data.baseRevision !== state.revision || data.revision !== state.revision + 1)
+      throw new Error('Provider revision does not follow the journal.');
+    if (!sameSource(state.source, data.source)) throw new Error('Provider replaced the source.');
+    state.providerComponents = structuredClone(data.components);
+    state.status = 'not-sent';
+    state.revision = data.revision;
+    seen.set(event.id, {
+      hash: data.payloadSha256,
+      outcome: 'accepted',
+      code: null,
+      taskId: data.taskId,
+      action: null,
+    });
+    return;
+  }
+  if (event.type === 'task.provider-rejected') {
+    const data = ProviderRejectedSchema.parse(event.data);
+    const state = requireState(tasks, data.taskId, data.sessionId);
+    check(event, data, ['system'], payloadHash(providerMaterial(data)));
+    if (data.revision !== state.revision)
+      throw new Error('Rejected provider result changed the revision.');
+    state.lastRejection = { eventId: data.resultId, code: data.code };
+    seen.set(event.id, {
+      hash: data.payloadSha256,
+      outcome: 'rejected',
+      code: data.code,
+      taskId: data.taskId,
+      action: null,
+    });
+    return;
+  }
+  throw new Error(`Unhandled task event ${event.type}.`);
+}
+
+function actionOf(data: ActionAcceptedData | ActionRejectedData): Seen['action'] {
+  return {
+    type: data.action.type,
+    sessionId: data.sessionId,
+    expectedRevision: data.expectedRevision,
+    audioSha256: data.action.type === 'voice_reply' ? (data.action.audioSha256 ?? null) : null,
+  };
+}
+
+function applyAction(state: State, data: ActionAcceptedData): void {
+  const action = data.action;
+  if (action.type === 'voice_reply') {
+    // The attempt keeps its shape: audio provenance stays in the journal, not in the view.
+    state.attempts.push({
+      eventId: data.eventId,
+      text: action.text,
+      recognitionUncertain: action.recognitionUncertain,
+      kind: 'practice-attempt',
+    });
+    state.status = 'not-sent';
+  } else if (action.type === 'wrong_subject') {
+    state.subjectCorrected = true;
+    state.providerComponents = [];
+    state.status = 'wrong-item';
+  } else if (action.type === 'save_for_later') {
+    state.status = 'continue-later';
+  } else if (action.type === 'retry') {
+    state.status = 'try-again';
+  } else {
+    state.phase = 'cancelled';
+    state.status = 'continue-later';
+  }
+  state.revision = data.revision;
+  state.lastRejection = null;
+}
+
+function requireState(tasks: Map<string, State>, taskId: string, sessionId: string): State {
+  const state = tasks.get(taskId);
+  if (!state || state.sessionId !== sessionId) throw new Error('Task event has no open task.');
+  return state;
+}
+
+function check(
+  event: Recorded,
+  data: { sessionId: string; payloadSha256: string },
+  actors: readonly ('person' | 'system')[],
+  hash: string,
+): void {
+  if (
+    !(actors as readonly string[]).includes(event.actor) ||
+    event.session !== data.sessionId ||
+    data.payloadSha256 !== hash
+  )
+    throw new Error('Task event does not match its payload.');
+}
+
+function sameSource(left: TaskView['source'], right: TaskView['source']): boolean {
+  return (
+    left.sourceId === right.sourceId &&
+    left.sourceRevision === right.sourceRevision &&
+    left.sha256 === right.sha256
+  );
+}
+
+function openMaterial(input: OpenTask | OpenedData) {
+  return {
+    eventId: input.eventId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    source: input.source,
+    intent: input.intent,
+    utterance: input.utterance,
+  };
+}
+
+function actMaterial(input: ActInput | ActionAcceptedData | ActionRejectedData) {
+  return {
+    eventId: input.eventId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    expectedRevision: input.expectedRevision,
+    action: input.action,
+  };
+}
+
+function providerMaterial(input: {
+  resultId: string;
+  taskId: string;
+  sessionId: string;
+  baseRevision: number;
+  source: ProviderResult['source'];
+  evidenceIds: readonly string[];
+  components: readonly Component[];
+}) {
+  return {
+    resultId: input.resultId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    baseRevision: input.baseRevision,
+    source: input.source,
+    evidenceIds: input.evidenceIds,
+    components: input.components,
+  };
 }
