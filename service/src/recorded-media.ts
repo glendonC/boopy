@@ -351,3 +351,288 @@ function captureOrigin(
   result.trust = 'unverified';
   return result;
 }
+
+const INPUT_ARGS = [
+  '-hide_banner',
+  '-v',
+  'error',
+  '-max_alloc',
+  '67108864',
+  '-max_pixels',
+  '921600',
+  '-threads',
+  '1',
+  '-protocol_whitelist',
+  'pipe',
+  '-format_whitelist',
+  'mov',
+  '-f',
+  'mov',
+  '-enable_drefs',
+  '0',
+  '-use_absolute_path',
+  '0',
+];
+
+async function intake<T>(
+  input: string,
+  options: Options,
+  operation: (
+    source: Buffer,
+    call: (tool: keyof typeof TOOL_PATHS, args: string[], max: number) => Promise<Buffer>,
+  ) => Promise<T>,
+): Promise<T> {
+  if (active) fail('media_busy');
+  active = true;
+  const deadline = performance.now() + TOTAL_MS;
+  try {
+    const source = await readSelectedFile(input, deadline);
+    checkContainer(source);
+    const call = async (tool: keyof typeof TOOL_PATHS, args: string[], max: number) => {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) fail('tool_timeout');
+      try {
+        const bytes = await (options.tool ?? runTool)({
+          tool,
+          args,
+          source,
+          timeoutMs: Math.min(tool === 'ffmpeg' ? 10_000 : 5000, remaining),
+          maxStdoutBytes: max,
+        });
+        if (performance.now() > deadline) fail('tool_timeout');
+        if (!Buffer.isBuffer(bytes) || bytes.length > max) fail('tool_limit');
+        return bytes;
+      } catch (error) {
+        if (error instanceof RecordedMediaError && ERROR_CODES.includes(error.code)) throw error;
+        fail('tool_failed');
+      }
+    };
+    return await operation(source, call);
+  } finally {
+    active = false;
+  }
+}
+
+async function probe(
+  call: (tool: keyof typeof TOOL_PATHS, args: string[], max: number) => Promise<Buffer>,
+) {
+  async function json(args: string[]) {
+    const bytes = await call(
+      'ffprobe',
+      [...INPUT_ARGS, ...args, '-of', 'json', '-i', 'pipe:0'],
+      MAX_PROBE_BYTES,
+    );
+    try {
+      return record(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+    } catch {
+      fail('invalid_probe');
+    }
+  }
+  const metadata = await json([
+    '-show_streams',
+    '-show_format',
+    '-show_entries',
+    'stream=index,codec_type,codec_name,codec_tag_string,width,height,pix_fmt,time_base,start_pts,duration_ts,nb_frames,color_transfer,field_order,sample_aspect_ratio,channels,sample_rate:stream_tags=creation_time,com.apple.quicktime.creationdate:stream_side_data:format=format_name,duration:format_tags=creation_time,com.apple.quicktime.creationdate',
+  ]);
+  if (
+    !Array.isArray(metadata.streams) ||
+    metadata.streams.length < 1 ||
+    metadata.streams.length > 2
+  )
+    fail('unsupported_video');
+  const streams = metadata.streams.map(record);
+  const videos = streams.filter((stream) => stream.codec_type === 'video');
+  const audio = streams.filter((stream) => stream.codec_type === 'audio');
+  if (videos.length !== 1 || audio.length > 1 || videos.length + audio.length !== streams.length)
+    fail('unsupported_video');
+  const video = videos[0];
+  if (!video) fail('unsupported_video');
+  if (
+    !(
+      (video.codec_name === 'h264' && video.codec_tag_string === 'avc1') ||
+      (video.codec_name === 'hevc' && video.codec_tag_string === 'hvc1')
+    ) ||
+    video.pix_fmt !== 'yuv420p' ||
+    ![undefined, 'unknown', 'bt709', 'smpte170m', 'iec61966-2-1'].includes(
+      video.color_transfer as string | undefined,
+    ) ||
+    ![undefined, 'unknown', 'progressive'].includes(video.field_order as string | undefined) ||
+    ![undefined, '1:1'].includes(video.sample_aspect_ratio as string | undefined) ||
+    (video.side_data_list !== undefined &&
+      (!Array.isArray(video.side_data_list) || video.side_data_list.length !== 0))
+  )
+    fail('unsupported_video');
+  const width = integer(video.width);
+  const height = integer(video.height);
+  if (width <= 0 || height <= 0 || width > 1280 || height > 720) fail('media_limit');
+  const base = timeBase(video.time_base);
+  const durationTicks = integer(video.duration_ts);
+  const durationSeconds = (durationTicks * base.numerator) / base.denominator;
+  const format = record(metadata.format);
+  if (format.format_name !== 'mov,mp4,m4a,3gp,3g2,mj2') fail('unsupported_container');
+  if (
+    !(durationSeconds > 0 && durationSeconds <= MAX_SECONDS) ||
+    typeof format.duration !== 'string' ||
+    !/^\d+(?:\.\d+)?$/.test(format.duration) ||
+    Number(format.duration) > MAX_SECONDS
+  )
+    fail('media_limit');
+  if (video.start_pts !== 0 || Math.abs(Number(format.duration) - durationSeconds) > 0.000001)
+    fail('unsupported_timeline');
+  for (const stream of audio) {
+    if (
+      stream.codec_name !== 'aac' ||
+      ![1, 2].includes(integer(stream.channels)) ||
+      !['8000', '16000', '22050', '24000', '32000', '44100', '48000'].includes(
+        String(stream.sample_rate),
+      )
+    )
+      fail('unsupported_audio');
+    if (stream.start_pts !== 0) fail('unsupported_timeline');
+    const audioBase = timeBase(stream.time_base);
+    const audioTicks = integer(stream.duration_ts);
+    // Compare exact source durations across time bases, without rounding or alignment repair.
+    if (
+      audioTicks <= 0 ||
+      BigInt(audioTicks) * BigInt(audioBase.numerator) * BigInt(base.denominator) !==
+        BigInt(durationTicks) * BigInt(base.numerator) * BigInt(audioBase.denominator)
+    )
+      fail('unsupported_timeline');
+  }
+  const timeline = await json([
+    '-select_streams',
+    'v:0',
+    '-show_frames',
+    '-show_entries',
+    'frame=pts,duration,color_transfer,width,height,pix_fmt,sample_aspect_ratio,interlaced_frame:frame_side_data=side_data_type',
+  ]);
+  if (
+    !Array.isArray(timeline.frames) ||
+    timeline.frames.length < 1 ||
+    timeline.frames.length > MAX_FRAMES
+  )
+    fail('media_limit');
+  const frames = timeline.frames.map((value) => {
+    const frame = record(value);
+    if (
+      integer(frame.width) !== width ||
+      integer(frame.height) !== height ||
+      frame.pix_fmt !== 'yuv420p' ||
+      frame.sample_aspect_ratio !== '1:1' ||
+      frame.interlaced_frame !== 0
+    )
+      fail('unsupported_video');
+    if (
+      ![undefined, 'unknown', 'bt709', 'smpte170m', 'iec61966-2-1'].includes(
+        frame.color_transfer as string | undefined,
+      )
+    )
+      fail('unsupported_video');
+    if (
+      frame.side_data_list !== undefined &&
+      (!Array.isArray(frame.side_data_list) ||
+        frame.side_data_list.some(
+          (side) => record(side).side_data_type !== 'H.26[45] User Data Unregistered SEI message',
+        ))
+    )
+      fail('unsupported_video');
+    return { pts: integer(frame.pts), duration: integer(frame.duration) };
+  });
+  const step = frames[0]?.duration;
+  if (
+    !step ||
+    step <= 0 ||
+    String(frames.length) !== video.nb_frames ||
+    step * frames.length !== durationTicks ||
+    frames.some((frame, index) => frame.pts !== index * step || frame.duration !== step)
+  )
+    fail('unsupported_timeline');
+  const info: Omit<RecordedMediaInfo, 'sourceSha256'> = {
+    videoFrames: frames.length,
+    audioTracks: audio.length,
+    width,
+    height,
+    durationSeconds,
+    sourceTimeBase: base,
+    sourceTrackIndex: integer(video.index),
+    captureOrigin: captureOrigin(streams, format),
+  };
+  return { info, frames };
+}
+
+export async function inspectRecordedMedia(
+  input: string,
+  options: Options = {},
+): Promise<RecordedMediaInfo> {
+  return intake(input, options, async (source, call) => ({
+    ...(await probe(call)).info,
+    sourceSha256: createHash('sha256').update(source).digest('hex'),
+  }));
+}
+
+export async function decodeRecordedFrames(input: string, range: Range, options: Options = {}) {
+  if (
+    !Number.isFinite(range.startSeconds) ||
+    !Number.isFinite(range.durationSeconds) ||
+    range.startSeconds < 0 ||
+    range.durationSeconds <= 0 ||
+    range.durationSeconds > MAX_SECONDS
+  )
+    fail('invalid_range');
+  return intake(input, options, async (source, call) => {
+    const { info, frames } = await probe(call);
+    const end = range.startSeconds + range.durationSeconds;
+    if (end > info.durationSeconds) fail('invalid_range');
+    const chosen = frames.filter((frame) => {
+      const seconds = (frame.pts * info.sourceTimeBase.numerator) / info.sourceTimeBase.denominator;
+      return seconds >= range.startSeconds && seconds < end;
+    });
+    if (chosen.length === 0 || chosen.length > MAX_FRAMES) fail('invalid_range');
+    const frameBytes = info.width * info.height * 3;
+    const total = frameBytes * chosen.length;
+    if (total > MAX_DECODE_BYTES) fail('media_limit');
+    const expression = chosen.map((frame) => `eq(pts\\,${frame.pts})`).join('+');
+    const rgb = await call(
+      'ffmpeg',
+      [
+        ...INPUT_ARGS,
+        '-nostdin',
+        '-noautorotate',
+        '-copyts',
+        '-i',
+        'pipe:0',
+        '-map',
+        '0:v:0',
+        '-an',
+        '-sn',
+        '-dn',
+        '-vf',
+        `select=${expression}`,
+        '-fps_mode',
+        'passthrough',
+        '-frames:v',
+        String(chosen.length),
+        '-threads',
+        '1',
+        '-filter_threads',
+        '1',
+        '-f',
+        'rawvideo',
+        '-pix_fmt',
+        'rgb24',
+        'pipe:1',
+      ],
+      total,
+    );
+    if (rgb.length !== total) fail('decode_failed');
+    return {
+      ...info,
+      sourceSha256: createHash('sha256').update(source).digest('hex'),
+      frames: chosen.map((frame, index) => ({
+        sourcePts: frame.pts,
+        sourceDuration: frame.duration,
+        rgb: rgb.subarray(index * frameBytes, (index + 1) * frameBytes),
+      })),
+    };
+  });
+}
