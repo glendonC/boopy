@@ -1,0 +1,94 @@
+{
+  "status": "synthetic-local-contract-not-zetaris-runtime",
+  "context": [
+    [
+      "synthetic-trip-1",
+      "dune-1",
+      "revision-1",
+      "dune",
+      "Synthetic displayed dune photo",
+      "1970-01-01T12:00:00Z",
+      "unconfirmed",
+      0.62,
+      null,
+      "synthetic-grant-1"
+    ],
+    [
+      "synthetic-trip-1",
+      "tent-1",
+      "revision-1",
+      "tent",
+      "Synthetic rejected tent proposal",
+      "1970-01-01T12:00:00Z",
+      "rejected",
+      0.9,
+      null,
+      "synthetic-grant-1"
+    ],
+    [
+      "synthetic-trip-1",
+      "camel-old",
+      "revision-1",
+      "camel",
+      "Synthetic superseded proposal",
+      "1970-01-01T12:00:00Z",
+      "confirmed",
+      0.8,
+      "revision-2",
+      "synthetic-grant-1"
+    ],
+    [
+      "synthetic-trip-1",
+      "known-1",
+      "revision-1",
+      "dune",
+      "Synthetic known vocabulary",
+      "1970-01-01T12:00:00Z",
+      "known",
+      null,
+      null,
+      "synthetic-grant-1"
+    ],
+    [
+      "synthetic-trip-1",
+      "ungranted-1",
+      "revision-1",
+      "dune",
+      "Synthetic unselected record",
+      "1970-01-01T12:00:00Z",
+      "unconfirmed",
+      null,
+      null,
+      "other-grant"
+    ]
+  ],
+  "references": [
+    [
+      "synthetic-glossary-1",
+      "dune",
+      "모래 언덕",
+      "version-1",
+      "1970-01-01T10:00:00Z",
+      "synthetic-unreviewed",
+      "https://example.invalid/synthetic-glossary/dune"
+    ],
+    [
+      "synthetic-glossary-2",
+      "tent",
+      "텐트",
+      "version-1",
+      "1970-01-01T10:00:00Z",
+      "synthetic-unreviewed",
+      "https://example.invalid/synthetic-glossary/tent"
+    ],
+    [
+      "synthetic-glossary-3",
+      "camel",
+      "낙타",
+      "version-1",
+      "1970-01-01T10:00:00Z",
+      "synthetic-unreviewed",
+      "https://example.invalid/synthetic-glossary/camel"
+    ]
+  ]
+}
