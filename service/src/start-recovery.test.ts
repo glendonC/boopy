@@ -359,4 +359,123 @@ describe('durable keyed first-session recovery', () => {
       journal.close();
     }
   });
+
+  it('restart marks journaled unfinished start interrupted once and recovers actual partial session without resuming', async () => {
+    const original = testBoopy();
+    const replayJournal = Journal.open(':memory:');
+    try {
+      const request = StartSessionRequest.parse({
+        ...startRequest('Synthetic interrupted request.'),
+        requestId,
+      });
+      await original.boopy.start(request);
+      const start = original.journal.all().find((event) => event.type === 'session.started');
+      assert.ok(start);
+      replayJournal.append(start, 'synthetic-start-event', start.at);
+      const replay = new Boopy({ ...original.deps, journal: replayJournal });
+      const status = replay.startStatus(requestId);
+      assert.equal(status.status, 'interrupted');
+      assert.equal(status.sessionId, start.session);
+      assert.equal(status.view, null);
+      assert.equal(replay.view(start.session).observations.length, 0);
+      await assert.rejects(replay.start(request), matchesCode('start_interrupted'));
+      assert.equal(
+        replayJournal.all().filter((event) => event.type === 'session.start.finished').length,
+        1,
+      );
+      const count = replayJournal.all().length;
+      assert.equal(
+        new Boopy({ ...original.deps, journal: replayJournal }).startStatus(requestId).status,
+        'interrupted',
+      );
+      assert.equal(replayJournal.all().length, count);
+    } finally {
+      original.journal.close();
+      replayJournal.close();
+    }
+  });
+
+  it('REST recovery stays loopback-only and absent from connector, with invalid/unknown IDs denied', async () => {
+    const { boopy, journal } = testBoopy();
+    const app = headsetApp(boopy, { logger: false });
+    const connector = connectorApp(boopy, {
+      token: 'synthetic-token',
+      baseUrl: 'http://127.0.0.1',
+      logger: false,
+    });
+    try {
+      const request = StartSessionRequest.parse({
+        cues: {},
+        speech: { text: 'Synthetic spoken context.' },
+        attention: { source: 'unknown', scope: 'scene', evidence: 'none' },
+        requestId,
+      });
+      const view = await boopy.start(request);
+      const recovered = await app.inject({ method: 'GET', url: `/v1/session-starts/${requestId}` });
+      assert.equal(recovered.statusCode, 200);
+      assert.equal(recovered.json().sessionId, view.id);
+      assert.equal(recovered.json().status, 'succeeded');
+      assert.equal(recovered.headers['cache-control'], 'no-store');
+      assert.equal(recovered.json().view.id, view.id);
+      assert.equal(
+        (
+          await app.inject({
+            method: 'GET',
+            url: `/v1/session-starts/${requestId}`,
+            headers: { host: 'untrusted.invalid' },
+          })
+        ).statusCode,
+        403,
+      );
+      assert.equal(
+        (await app.inject({ method: 'GET', url: '/v1/session-starts/not-a-uuid' })).statusCode,
+        400,
+      );
+      const unknown = await app.inject({
+        method: 'GET',
+        url: '/v1/session-starts/682b16a5-ea1b-4d53-b768-b66854860391',
+      });
+      assert.equal(unknown.statusCode, 404);
+      assert.equal(unknown.json().error.code, 'start_unknown');
+      const hidden = await connector.inject({
+        method: 'GET',
+        url: `/v1/session-starts/${requestId}`,
+        headers: { authorization: 'Bearer synthetic-token' },
+      });
+      assert.equal(hidden.statusCode, 404);
+      const before = journal.all().length;
+      const malformed = await app.inject({
+        method: 'POST',
+        url: '/v1/sessions',
+        payload: { ...request, requestId: 'not-a-uuid' },
+      });
+      assert.equal(malformed.statusCode, 400);
+      assert.equal(journal.all().length, before);
+    } finally {
+      await app.close();
+      await connector.close();
+      journal.close();
+    }
+  });
+
+  it('keyless starts retain fresh-session behavior without a recovery association', async () => {
+    const { boopy, journal } = testBoopy();
+    try {
+      const request = StartSessionRequest.parse({
+        cues: {},
+        speech: { text: 'Synthetic legacy nonvisual request.' },
+        attention: { source: 'unknown', scope: 'scene', evidence: 'none' },
+      });
+      const first = await boopy.start(request),
+        second = await boopy.start(request);
+      assert.notEqual(first.id, second.id);
+      assert.equal(journal.all().filter((event) => event.type === 'session.started').length, 2);
+      assert.equal(
+        journal.all().filter((event) => event.type === 'session.start.finished').length,
+        0,
+      );
+    } finally {
+      journal.close();
+    }
+  });
 });
