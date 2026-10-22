@@ -380,4 +380,384 @@ describe('containers', () => {
       assert.ok(performance.now() - start < 250);
     }
   });
+
+  it('measures the limit in UTF-8 bytes', () => {
+    const pad = (bytes: number) => `{"p":"${'a'.repeat(bytes - 8)}"}`;
+    assert.equal(Buffer.byteLength(pad(MAX_FILE_BYTES)), MAX_FILE_BYTES);
+    assert.ok(readContainer(pad(MAX_FILE_BYTES)));
+    assert.equal(readContainer(pad(MAX_FILE_BYTES + 1)), null);
+    const hangul = `{"p":"${'가'.repeat(MAX_FILE_BYTES / 3)}"}`;
+    assert.ok(hangul.length < MAX_FILE_BYTES);
+    assert.equal(readContainer(hangul), null);
+  });
+});
+
+describe('activity file envelope', () => {
+  it('reads a strict envelope and hashes the exact content', () => {
+    const content = JSON.stringify(envelope());
+    const read = readActivityFile(content);
+    assert.equal(read.kind, 'read');
+    if (read.kind !== 'read') return;
+    assert.equal(read.container, 'json');
+    assert.equal(read.artifactSha256, sha256(Buffer.from(content, 'utf8')));
+    assert.equal(read.file.author, 'Grok Bot');
+    assert.deepEqual(read.file.activity, korean());
+    const fenced = `Grok says:\n\`\`\`json\n${content}\n\`\`\``;
+    const again = readActivityFile(fenced);
+    assert.equal(again.kind === 'read' && again.container, 'fenced-json');
+    assert.equal(again.kind === 'read' && again.artifactSha256, sha256(fenced));
+  });
+
+  it('refuses unreadable content', () => {
+    assert.deepEqual(readActivityFile('not json'), { kind: 'unreadable' });
+    assert.deepEqual(readActivityFile(`{"pad":"${'a'.repeat(MAX_FILE_BYTES)}"}`), {
+      kind: 'unreadable',
+    });
+  });
+
+  it('reports up to eight path: message issues', () => {
+    const issues = (value: unknown) => {
+      const read = readActivityFile(JSON.stringify(value));
+      assert.equal(read.kind, 'invalid');
+      return read.kind === 'invalid' ? read.issues : [];
+    };
+    assert.deepEqual(issues({ ...envelope(), extra: true }), [
+      'file: Remove the unsupported field "extra".',
+    ]);
+    assert.deepEqual(issues({ ...envelope(), author: 'جروك' }), [`author: ${SCRIPT_MESSAGE}`]);
+    const { activity: _activity, ...missing } = envelope();
+    assert.deepEqual(issues(missing), ['activity: Required.']);
+    assert.match(issues({ ...envelope(), type: 'boopy.activity-reply' })[0] ?? '', /^type: /);
+    assert.match(
+      issues({ ...envelope(), binding: { requestId: 'arq_k1', packageId: 'ctx_x' } })[0] ?? '',
+      /^binding\.packetSha256: /,
+    );
+    const capped = issues({
+      type: 1,
+      version: 2,
+      binding: { requestId: 1, packageId: 2, packetSha256: 3 },
+      author: 4,
+      fallbackText: 5,
+      extra: 6,
+    });
+    assert.equal(capped.length, 8);
+    const long = issues({ ...envelope(), [`<${'x'.repeat(500)}`]: 1 });
+    assert.deepEqual(long, ['file: Remove the unsupported field (unprintable key).']);
+    for (const key of [
+      'https://evil.example/x',
+      'www.evil',
+      'javascript:x',
+      'a b',
+      'x'.repeat(41),
+      'caf\u00e9',
+    ])
+      assert.deepEqual(issues({ ...envelope(), [key]: 1 }), [
+        'file: Remove the unsupported field (unprintable key).',
+      ]);
+    assert.deepEqual(issues({ ...envelope(), ['x'.repeat(40)]: 1, 'b-2_c': 2, 'https://x': 3 }), [
+      `file: Remove the unsupported fields "${'x'.repeat(40)}", "b-2_c", (unprintable key).`,
+    ]);
+  });
+
+  it('keeps fallback text multiline and requires it', () => {
+    const read = readActivityFile(
+      JSON.stringify({ ...envelope(), fallbackText: 'Line one.\nLine two.' }),
+    );
+    assert.equal(read.kind === 'read' && read.file.fallbackText, 'Line one.\nLine two.');
+    const missing = readActivityFile(JSON.stringify({ ...envelope(), fallbackText: '' }));
+    assert.deepEqual(missing.kind === 'invalid' && missing.issues, [
+      'fallbackText: Must not be empty.',
+    ]);
+  });
+});
+
+describe('activity body', () => {
+  it('accepts the Korean, Morocco and scale examples', () => {
+    const activity = valid(korean());
+    assert.equal(arrangeOf(activity).tokens[0]?.label.gloss, 'camel');
+    assert.equal(sequenceOf(activity).tiles.length, 5);
+    assert.equal(valid(morocco(), NONE).components.length, 1);
+    assert.equal(valid(scale(), NONE).hints.length, 0);
+    const { hints: _hints, ...noHints } = scale();
+    assert.deepEqual(valid(noHints, NONE).hints, []);
+  });
+
+  it('marks unknown component and axis kinds unsupported', () => {
+    const body = korean();
+    (body.components as unknown[]).splice(1, 1, { type: 'map', pins: [] });
+    assert.deepEqual(issuesOf(body), [
+      'activity.components.1.type: Boopy does not support this component yet. Use arrange or sequence.',
+    ]);
+    const axis = morocco();
+    (axis.components as { axis: unknown }[])[0] = {
+      ...(axis.components as object[])[0],
+      axis: { kind: 'clock' },
+    } as { axis: unknown };
+    assert.deepEqual(issuesOf(axis, NONE), [
+      'activity.components.0.axis.kind: Boopy does not support this axis yet. Use viewer-left-right, scale or number.',
+    ]);
+  });
+
+  it('enforces component counts, kinds and keys', () => {
+    const none = { ...korean(), components: [] };
+    assert.match(issuesOf(none)[0] ?? '', /^activity\.components: /);
+    const both = korean();
+    const components = both.components as Record<string, unknown>[];
+    assert.match(
+      issuesOf({ ...both, components: [components[0], components[0]] })[0] ?? '',
+      /one of each/,
+    );
+    assert.match(
+      issuesOf({ ...both, components: [components[0], components[1], components[1]] })[0] ?? '',
+      /^activity\.components: /,
+    );
+    const swapped = korean();
+    const tokens = (swapped.components as { tokens: { key: string }[] }[])[0]?.tokens ?? [];
+    for (const token of tokens) token.key = token.key === 'a' ? 'b' : 'a';
+    assert.match(issuesOf(swapped).join('\n'), /Use token keys a to d in order/);
+    const extra = { ...korean(), layout: { x: 1 } };
+    assert.deepEqual(issuesOf(extra), ['activity: Remove the unsupported field "layout".']);
+  });
+
+  it('enforces axis rules', () => {
+    const leftRight = (count: number, target?: unknown) => {
+      const body = korean();
+      const arrange = (body.components as Record<string, unknown>[])[0] as Record<string, unknown>;
+      arrange.tokens = Array.from({ length: count }, (_, i) => ({
+        key: 'abcd'[i],
+        label: { text: `w${i}`, language: 'en' },
+        sourceId: null,
+      }));
+      if (target === undefined) delete arrange.target;
+      else arrange.target = target;
+      return body;
+    };
+    assert.ok(valid(leftRight(2)));
+    assert.ok(valid(leftRight(2, null)));
+    assert.match(issuesOf(leftRight(3)).join('\n'), /exactly two tokens/);
+    assert.match(
+      issuesOf(leftRight(2, { subject: 'a', relation: 'left-of', object: 'a' })).join('\n'),
+      /different tokens/,
+    );
+    assert.match(
+      issuesOf(leftRight(2, { subject: 'a', relation: 'above', object: 'b' })).join('\n'),
+      /target\.relation/,
+    );
+    const scaled = scale();
+    const arrange = (scaled.components as Record<string, unknown>[])[0] as Record<string, unknown>;
+    arrange.target = { subject: 'a', relation: 'left-of', object: 'b' };
+    assert.match(issuesOf(scaled, NONE).join('\n'), /no target/);
+    arrange.target = null;
+    arrange.tokens = (arrange.tokens as unknown[]).slice(0, 1);
+    assert.match(issuesOf(scaled, NONE).join('\n'), /two to four tokens/);
+    const number = (axis: Record<string, unknown>) => {
+      const body = morocco();
+      const entry = (body.components as Record<string, unknown>[])[0] as Record<string, unknown>;
+      entry.axis = { kind: 'number', ...axis };
+      return body;
+    };
+    assert.ok(valid(number({ min: 0, max: 1, step: 0.1 }), NONE));
+    assert.ok(valid(number({ min: 0, max: 0.3, step: 0.1 }), NONE));
+    assert.ok(valid(number({ min: -10, max: 10, step: 0.02 }), NONE));
+    assert.ok(valid(number({ min: 0, max: 1000, step: 1 }), NONE));
+    assert.ok(valid(number({ min: -1e9, max: 1e9, step: 2e6 }), NONE));
+    assert.ok(valid(number({ min: 0, max: 0.001, step: 0.000001 }), NONE));
+    for (const [axis, pattern] of [
+      [{ min: 5, max: 5, step: 1 }, /min below max/],
+      [{ min: 0, max: 10, step: 0 }, /step/],
+      [{ min: 0, max: 10, step: 3 }, /whole number/],
+      [{ min: 0, max: 1001, step: 1 }, /at most 1000/],
+      [{ min: 0, max: 10, step: 1, unit: 'dirhams per km!' }, /unit/],
+      [{ min: 0, max: 10 }, /step/],
+      [{ min: 0, max: 2e9, step: 2e6 }, /1000000000/],
+      [{ min: -1e308, max: 1e308, step: 1e306 }, /1000000000/],
+      [{ min: 0, max: 0.0005, step: 0.0000005 }, /0\.000001|6 decimal/],
+      [{ min: 0.1234567, max: 1.1234567, step: 0.5 }, /6 decimal/],
+      [{ min: 0, max: 1, step: 0.0000001 }, /0\.000001|6 decimal/],
+    ] as const)
+      assert.match(issuesOf(number(axis), NONE).join('\n'), pattern, JSON.stringify(axis));
+    const infinite = JSON.parse(
+      JSON.stringify(number({ min: 0, max: 10, step: 1 })).replace('"max":10', '"max":1e400'),
+    );
+    assert.match(issuesOf(infinite, NONE).join('\n'), /max/);
+  });
+
+  it('accepts decimal prices exactly in integer micro-units', () => {
+    const price = { kind: 'number' as const, min: 999999.99, max: 1000000.06, step: 0.01 };
+    const body = morocco();
+    (body.components as Record<string, unknown>[])[0] = {
+      type: 'arrange',
+      axis: { ...price, unit: 'MAD' },
+      tokens: [{ key: 'a', label: { text: 'Price', language: 'en' }, sourceId: null }],
+    };
+    const activity = valid(body, NONE);
+    assert.equal(snapValue(price, 1), 1000000.06);
+    assert.equal(snapValue(price, 0), 999999.99);
+    assert.equal(snapValue(price, 0.5), 1000000.03);
+    assert.equal(
+      digestOf(activity, { positions: { a: 0.5 }, chosen: [], hintsRevealed: 0 }),
+      'arrange: Price = 1000000.03 MAD | hints: 0 of 1',
+    );
+    const odd = morocco();
+    (odd.components as Record<string, unknown>[])[0] = {
+      type: 'arrange',
+      axis: { kind: 'number', min: 0, max: 1, step: 0.3 },
+      tokens: [{ key: 'a', label: { text: 'Price', language: 'en' }, sourceId: null }],
+    };
+    assert.match(issuesOf(odd, NONE).join('\n'), /whole number/);
+  });
+
+  it('enforces sequence rules', () => {
+    const sequence = (tiles: unknown, joiner = 'space') => {
+      const body = korean();
+      (body.components as Record<string, unknown>[])[1] = {
+        type: 'sequence',
+        joiner,
+        language: 'ko',
+        tiles,
+      };
+      return body;
+    };
+    const words = (texts: string[], keys = texts.map((_, i) => `t${i + 1}`)) =>
+      texts.map((text, i) => ({ key: keys[i], text }));
+    assert.ok(valid(sequence(words(['a', 'b', 'c']))));
+    assert.match(
+      issuesOf(sequence(words(['a', 'b', 'c'], ['t2', 't1', 't3']))).join('\n'),
+      /Use tile keys t1 to t8 in order/,
+    );
+    assert.match(issuesOf(sequence(words(['a', 'b']))).join('\n'), /tiles/);
+    assert.match(issuesOf(sequence(words('abcdefghi'.split('')))).join('\n'), /tiles/);
+    assert.match(issuesOf(sequence(words(['a', 'b', 'c'], ['t1', 't1', 't2']))).join('\n'), /keys/);
+    assert.match(
+      issuesOf(sequence(words(['\ub099\ud0c0', '\u1102\u1161\u11a8\u1110\u1161', 'c']))).join('\n'),
+      /unique/,
+    );
+    assert.match(issuesOf(sequence(words(['a', 'b', 'c'], ['t1', 't2', 't9']))).join('\n'), /key/);
+    assert.match(issuesOf(sequence(words(['a', 'a', 'c']))).join('\n'), /unique/);
+    assert.match(issuesOf(sequence(words(['two words', 'b', 'c']))).join('\n'), /one word/);
+    assert.match(issuesOf(sequence(words(['가'.repeat(25), 'b', 'c']))).join('\n'), /24/);
+    const step = 'Ask the driver to use the meter before you leave';
+    assert.equal(step.length, 48);
+    assert.ok(valid(sequence(words([step, 'Agree on a fare', 'Pay in cash']), 'list')));
+    assert.match(
+      issuesOf(sequence(words([`${step}!`, 'b', 'c']), 'list')).join('\n'),
+      /at most 48/,
+    );
+  });
+
+  it('allows only listed sources, and none for a legacy request', () => {
+    assert.ok(valid(korean(), SOURCES));
+    assert.match(
+      issuesOf(korean(), new Set(['ctx_synthetic1:itm_9'])).join('\n'),
+      /^activity\.components\.0\.tokens\.0\.sourceId: Use a source ID from the request, or null\.$/m,
+    );
+    assert.match(issuesOf(korean(), NONE).join('\n'), /sourceId/);
+  });
+
+  it('applies display rules inside the body', () => {
+    const body = korean();
+    (body as { title: string }).title = 'Camel <b>and</b> tent';
+    const labels = korean();
+    const token = (labels.components as { tokens: { label: { text: string } }[] }[])[0]?.tokens[1];
+    if (token) token.label.text = 'خيمة';
+    const hints = korean();
+    (hints.hints as { text: string; language: string }[]).push(
+      { text: 'Open https://example.test', language: 'en' },
+      { text: 'Fourth hint', language: 'en' },
+    );
+    assert.deepEqual(issuesOf(body), ['activity.title: Use plain text without markup.']);
+    assert.deepEqual(issuesOf(labels), [
+      `activity.components.0.tokens.1.label.text: ${SCRIPT_MESSAGE}`,
+    ]);
+    assert.match(issuesOf(hints).join('\n'), /^activity\.hints: Use at most 3 items\.$/m);
+  });
+});
+
+describe('derived values', () => {
+  it('relates two tokens only when both are placed and apart', () => {
+    assert.equal(relationOf({ a: null, b: 0.5 }, 'a', 'b'), null);
+    assert.equal(relationOf({ a: 0.22, b: 0.71 }, 'a', 'b'), 'left-of');
+    assert.equal(relationOf({ a: 0.22, b: 0.71 }, 'b', 'a'), 'right-of');
+    assert.equal(relationOf({ a: 0.5, b: 0.59 }, 'a', 'b'), 'unclear');
+    assert.equal(relationOf({ a: 0.2, b: 0.3 }, 'a', 'b'), 'left-of');
+    assert.equal(relationOf({ a: 0.7, b: 0.6 }, 'a', 'b'), 'right-of');
+    assert.equal(relationOf({ a: 0.8, b: 0.7 }, 'a', 'b'), 'right-of');
+    assert.equal(relationOf({ a: 0.7, b: 0.8 }, 'a', 'b'), 'left-of');
+    assert.equal(relationOf({ a: 0.5, b: 0.5999999994 }, 'a', 'b'), 'unclear');
+  });
+
+  it('orders placed tokens and reports ties', () => {
+    assert.deepEqual(orderOf({ a: 0.9, b: null, c: 0.1 }, ['a', 'b', 'c']), {
+      order: ['c', 'a'],
+      ties: false,
+    });
+    assert.deepEqual(orderOf({ a: 0.5, b: 0.5, c: 0.95 }, ['a', 'b', 'c']), {
+      order: ['a', 'b', 'c'],
+      ties: true,
+    });
+    assert.deepEqual(orderOf({ a: 0.3, b: 0.2 }, ['a', 'b']), { order: ['b', 'a'], ties: false });
+    assert.deepEqual(orderOf({ a: 0.8, b: 0.7 }, ['a', 'b']), { order: ['b', 'a'], ties: false });
+    assert.deepEqual(orderOf({ a: null }, ['a']), { order: [], ties: false });
+  });
+
+  it('snaps numbers to the step without floating noise', () => {
+    const fare = { kind: 'number' as const, min: 0, max: 200, step: 5, unit: 'MAD' };
+    assert.equal(snapValue(fare, 0.25), 50);
+    assert.equal(snapValue(fare, 0.26), 50);
+    assert.equal(snapValue(fare, 0.2625), 55);
+    assert.equal(snapValue(fare, 0), 0);
+    assert.equal(snapValue(fare, 1), 200);
+    assert.equal(snapValue(fare, null), null);
+    const tenths = { kind: 'number' as const, min: 0, max: 1, step: 0.1 };
+    assert.equal(snapValue(tenths, 0.3), 0.3);
+    assert.equal(snapValue(tenths, 0.7), 0.7);
+    const short = { kind: 'number' as const, min: 0, max: 0.3, step: 0.1 };
+    assert.equal(snapValue(short, 1), 0.3);
+    assert.equal(snapValue(short, 2 / 3), 0.2);
+    const signed = { kind: 'number' as const, min: -10, max: 10, step: 0.5 };
+    assert.equal(snapValue(signed, 0.5), 0);
+    assert.equal(snapValue(signed, 0.01), -10);
+    assert.equal(snapValue(signed, 0.03), -9.5);
+  });
+
+  it('derives relation, target match, order, ties and values per axis', () => {
+    const k = arrangeOf(valid(korean()));
+    assert.deepEqual(deriveArrangement(k, { a: 0.22, b: 0.71 }), {
+      relation: 'left-of',
+      matchesTarget: true,
+      order: ['a', 'b'],
+      ties: false,
+      values: null,
+    });
+    assert.equal(deriveArrangement(k, { a: 0.9, b: 0.1 }).matchesTarget, false);
+    assert.equal(deriveArrangement(k, { a: 0.5, b: 0.52 }).matchesTarget, false);
+    assert.equal(deriveArrangement(k, { a: null, b: 0.52 }).matchesTarget, false);
+    const untargeted = { ...k, target: null };
+    assert.equal(deriveArrangement(untargeted, { a: 0.9, b: 0.1 }).relation, 'right-of');
+    assert.equal(deriveArrangement(untargeted, { a: 0.9, b: 0.1 }).matchesTarget, null);
+    const m = arrangeOf(valid(morocco(), NONE));
+    assert.deepEqual(deriveArrangement(m, { a: 0.25 }), {
+      relation: null,
+      matchesTarget: null,
+      order: ['a'],
+      ties: false,
+      values: { a: 50 },
+    });
+    assert.deepEqual(deriveArrangement(m, { a: null }).values, { a: null });
+    const s = arrangeOf(valid(scale(), NONE));
+    assert.deepEqual(deriveArrangement(s, { a: 0.4, b: 0.45, c: null }), {
+      relation: null,
+      matchesTarget: null,
+      order: ['a', 'b'],
+      ties: true,
+      values: null,
+    });
+  });
+
+  it('joins sequence text per joiner', () => {
+    const tiles = sequenceOf(valid(korean()));
+    assert.equal(sequenceText(tiles, ['t2', 't4', 't3', 't1']), '낙타가 텐트 왼쪽에 있어요');
+    assert.equal(sequenceText(tiles, []), '');
+    assert.equal(sequenceText({ ...tiles, joiner: 'list' }, ['t2', 't1']), '낙타가; 있어요');
+  });
 });
