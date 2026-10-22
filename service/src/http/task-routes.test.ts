@@ -115,6 +115,7 @@ function setup(
     journal,
     tasks,
     speech: test.speech,
+    text: test.text,
     post,
     get,
     modelCalls: () => modelCalls,
@@ -984,6 +985,180 @@ describe('act on a task', () => {
       assert.equal(now.revision, task.revision);
       assert.deepEqual(now.components, task.components);
       assert.equal(ctx.transcriptions(), 0);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+/** A recorded interpretation of a device label: the model reads the label in its own case. */
+const LABEL_READ: ModelOutput = {
+  response: 'The label says PRESS TO RESET. Is the light still blinking?',
+  followUps: [],
+  scope: 'text',
+  referent: { key: 'label', basis: 'pointer', alternatives: [] },
+  intent: {
+    label: 'Reset the device',
+    statement: 'Find out how to reset this device.',
+    kind: 'task',
+    targetLanguage: null,
+    confidence: 0.7,
+  },
+  items: [
+    {
+      key: 'label',
+      kind: 'text',
+      label: 'Press to reset',
+      gloss: null,
+      statement: 'A printed label beside the button.',
+      box: [400, 500, 500, 600],
+      point: null,
+      scene: false,
+      confidence: 0.6,
+      why: 'It is under the pointer.',
+    },
+  ],
+  relations: [],
+  questions: [],
+};
+
+describe('a second kind of task through the same routes', () => {
+  it('consults a device label with the same parts, answers and actions, the label as OCR read it', async () => {
+    const ctx = setup(() => LABEL_READ);
+    try {
+      ctx.text.lines = [
+        {
+          text: 'PRESS TO RESET',
+          confidence: 0.9,
+          box: { x0: 0.41, y0: 0.53, x1: 0.49, y1: 0.57 },
+        },
+      ];
+      ctx.speech.heard = { text: 'It stopped blinking.', language: 'en' };
+      const session = await ctx.start(capture('What does this label say?'));
+      const referent = session.items.find((item) => item.id === session.referentId);
+      assert.ok(referent && session.dialogue);
+      assert.equal(referent.kind, 'text');
+      assert.equal(referent.label, 'PRESS TO RESET');
+      const before = ctx.journal.all().length;
+      const opened = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
+      assert.equal(opened.statusCode, 200, opened.body);
+      const task = opened.json();
+      const observed = ctx.journal.all().find((event) => event.type === 'observation.recorded');
+      if (observed?.type !== 'observation.recorded') throw new Error('No observation.');
+      const source = {
+        sourceId: `src_${observed.data.observationId}`,
+        sourceRevision: 1,
+        sha256: FRAME,
+      };
+      const parts = [
+        { type: 'subject', sourceId: source.sourceId, maskId: null },
+        { type: 'annotation', text: 'PRESS TO RESET', evidenceIds: [referent.id] },
+        {
+          type: 'dialogue',
+          text: 'The label says PRESS TO RESET. Is the light still blinking?',
+          evidenceIds: [referent.id],
+        },
+        { type: 'voice_reply', prompt: 'Answer aloud.' },
+      ];
+      assert.deepEqual(task.source, source);
+      assert.equal(task.intent, 'consult_source');
+      assert.equal(task.utterance, 'What does this label say?');
+      assert.equal(task.revision, 1);
+      assert.equal(task.continuity, 'local-only');
+      assert.equal(task.delivery, 'not-sent');
+      assert.deepEqual(task.components, [...parts, { type: 'status', code: 'not-sent' }]);
+      const added = ctx.journal.all().slice(before);
+      assert.deepEqual(
+        added.map((event) => [event.type, event.actor]),
+        [
+          ['task.opened', 'system'],
+          ['task.provider-accepted', 'system'],
+        ],
+      );
+      const result = added[1];
+      if (result?.type !== 'task.provider-accepted') throw new Error('No result.');
+      assert.equal(result.data.simulator, true);
+      const answered = await ctx.post(ANSWERS, answer(session.id, 1));
+      assert.equal(answered.statusCode, 200, answered.body);
+      const heard = answered.json();
+      assert.equal(heard.revision, 2);
+      // A report about the device is still kept as a practice attempt: the one attempt kind.
+      assert.deepEqual(heard.attempts, [
+        {
+          eventId: 'evt_answer_one',
+          text: 'It stopped blinking.',
+          recognitionUncertain: true,
+          kind: 'practice-attempt',
+        },
+      ]);
+      assert.deepEqual(heard.components, task.components);
+      assert.equal(heard.delivery, 'not-sent');
+      const retried = await ctx.post(ACTIONS, {
+        eventId: 'evt_label_retry',
+        sessionId: session.id,
+        expectedRevision: 2,
+        action: { type: 'retry' },
+      });
+      assert.equal(retried.statusCode, 200, retried.body);
+      assert.equal(retried.json().revision, 3);
+      assert.deepEqual(retried.json().components, [
+        ...parts,
+        { type: 'status', code: 'try-again' },
+      ]);
+      const wrong = await ctx.post(ACTIONS, {
+        eventId: 'evt_label_wrong',
+        sessionId: session.id,
+        expectedRevision: 3,
+        action: { type: 'wrong_subject' },
+      });
+      assert.equal(wrong.statusCode, 200, wrong.body);
+      const corrected = wrong.json();
+      assert.equal(corrected.revision, 4);
+      assert.equal(corrected.subjectCorrected, true);
+      assert.deepEqual(corrected.components, [{ type: 'status', code: 'wrong-item' }]);
+      assert.deepEqual(corrected.source, source);
+      assert.equal(corrected.utterance, 'What does this label say?');
+      assert.equal(corrected.continuity, 'local-only');
+      assert.equal(corrected.delivery, 'not-sent');
+      assert.deepEqual((await ctx.get(`/v1/sessions/${session.id}`)).json(), session);
+      assert.equal(ctx.modelCalls(), 1);
+      assert.equal(ctx.transcriptions(), 1);
+      assert.equal(ctx.requests(), 0);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('a label outside the display rules gets no annotation and keeps the line and Answer aloud', async () => {
+    const reply = 'The label names a reset setting. Is the light still blinking?';
+    const ctx = setup(() => ({
+      ...LABEL_READ,
+      response: reply,
+      items: LABEL_READ.items.map((item) => ({ ...item, label: 'RESET 10 kΩ' })),
+    }));
+    try {
+      ctx.text.lines = [
+        {
+          text: 'RESET 10 kΩ',
+          confidence: 0.9,
+          box: { x0: 0.41, y0: 0.53, x1: 0.49, y1: 0.57 },
+        },
+      ];
+      const session = await ctx.start(capture('What does this label say?'));
+      const referent = session.items.find((item) => item.id === session.referentId);
+      assert.ok(referent);
+      assert.equal(referent.label, 'RESET 10 kΩ');
+      const opened = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
+      assert.equal(opened.statusCode, 200, opened.body);
+      const task = opened.json();
+      assert.deepEqual(task.components, [
+        { type: 'subject', sourceId: task.source.sourceId, maskId: null },
+        { type: 'dialogue', text: reply, evidenceIds: [referent.id] },
+        { type: 'voice_reply', prompt: 'Answer aloud.' },
+        { type: 'status', code: 'not-sent' },
+      ]);
+      assert.equal(task.delivery, 'not-sent');
+      assert.deepEqual((await ctx.get(`/v1/sessions/${session.id}`)).json(), session);
     } finally {
       await ctx.close();
     }
