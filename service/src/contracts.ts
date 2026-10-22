@@ -288,3 +288,121 @@ export const InterpretationFailure = z.object({
   utteranceId: z.string(),
   message: z.string(),
 });
+export type InterpretationFailure = z.infer<typeof InterpretationFailure>;
+
+export const SessionView = z.object({
+  id: z.string(),
+  state: z.enum(['review', 'committed']),
+  scope: Scope,
+  referentId: z.string().nullable(),
+  intentId: z.string().nullable(),
+  items: z.array(Item),
+  relations: z.array(Relation),
+  observations: z.array(z.object({ id: z.string(), capturedAt: z.string() })),
+  utterances: z.array(
+    z.object({ id: z.string(), text: z.string(), language: z.string(), kind: UtteranceKind }),
+  ),
+  model: z.object({ provider: z.string(), id: z.string(), latencyMs: z.number() }).nullable(),
+  /** One line for the person: what was heard, what changed, or what Boopy needs. */
+  notice: z.string().nullable(),
+  interpretationFailure: InterpretationFailure.nullable().optional(),
+  attention: AttentionView.nullable().optional(),
+  dialogue: DialogueView.nullable().optional(),
+  speechOutputAvailable: z.boolean().optional(),
+  committed: z.object({ packageId: z.string(), at: z.string(), summary: z.string() }).nullable(),
+});
+export type SessionView = z.infer<typeof SessionView>;
+
+export const StartRecoveryView = z.object({
+  requestId: StartRequestId,
+  sessionId: z.string(),
+  status: z.enum(['pending', 'succeeded', 'failed', 'interrupted']),
+  failureCode: z.string().nullable(),
+  view: SessionView.nullable(),
+});
+export type StartRecoveryView = z.infer<typeof StartRecoveryView>;
+
+const PackageItem = z.object({
+  id: z.string(),
+  kind: z.string(),
+  label: z.string(),
+  gloss: z.string().optional(),
+  statement: z.string(),
+  /** How the person verified it. */
+  verification: z.enum(['confirmed', 'accepted', 'authored', 'corrected']),
+  emphasis: z.boolean(),
+  confidence: z.number().nullable(),
+  note: z.string().optional(),
+  proposedLabel: z.string().optional(),
+  text: z.array(z.string()).optional(),
+  grounding: Grounding,
+  proposedBy: z.string().optional(),
+});
+export type PackageItem = z.infer<typeof PackageItem>;
+
+/** What agents read: built deterministically from the journal, never written by a model. */
+const LegacyContextPackage = z.object({
+  type: z.literal('boopy.context-package'),
+  version: z.literal(1),
+  id: z.string(),
+  sessionId: z.string(),
+  committedAt: z.string(),
+  title: z.string(),
+  intent: z
+    .object({
+      said: z.string(),
+      reading: z.string(),
+      verification: z.enum(['confirmed', 'accepted', 'authored', 'corrected']),
+      confidence: z.number().nullable(),
+    })
+    .nullable(),
+  scope: Scope,
+  referent: z.string().nullable(),
+  items: z.array(PackageItem),
+  known: z.array(z.object({ id: z.string(), label: z.string(), gloss: z.string().optional() })),
+  rejected: z.array(z.object({ id: z.string(), label: z.string(), reason: z.string().optional() })),
+  questions: z.array(z.object({ text: z.string(), answer: z.string().optional() })),
+  relations: z.array(Relation),
+  provenance: z.object({
+    device: z.string().nullable(),
+    app: z.string().nullable(),
+    service: z.string(),
+    observations: z.array(
+      z.object({
+        id: z.string(),
+        capturedAt: z.string(),
+        frameSha256: z.string(),
+        source: AttentionSource.optional(),
+        timestampTrusted: z.boolean().optional(),
+      }),
+    ),
+    utterances: z.array(
+      z.object({
+        id: z.string(),
+        text: z.string(),
+        language: z.string(),
+        source: z.string(),
+        selection: ContextualActionSelection.optional(),
+        choiceSelection: ChoiceSelection.optional(),
+        observationId: z.string().nullable().optional(),
+        /** Explicit selected item; selection does not verify its interpretation. */
+        targetItemId: z.string().nullable().optional(),
+        /** Original source of the selected item, separate from this turn's captured view. */
+        targetObservationId: z.string().nullable().optional(),
+        evidenceSource: AttentionSource.optional(),
+      }),
+    ),
+    models: z.array(
+      z.object({ interpretationId: z.string(), provider: z.string(), id: z.string() }),
+    ),
+    textEngine: z.string().nullable(),
+    corrections: z.number().int(),
+  }),
+  /** The same content as plain text, for agents that read text only. */
+  text: z.string(),
+});
+export const ContextPackage = z.discriminatedUnion('version', [
+  LegacyContextPackage,
+  LegacyContextPackage.extend({ version: z.literal(2), evidence: EvidenceBundle }),
+]);
+export type ContextPackage = z.infer<typeof ContextPackage>;
