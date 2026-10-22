@@ -1,0 +1,107 @@
+{
+  "type": "boopy.activity-submission",
+  "version": 1,
+  "submissionId": "sub_tutor_ko1",
+  "activityId": "act_tutor_ko1",
+  "requestId": "arq_tutor_ko1",
+  "exportedAt": "1970-01-01T09:06:00.000Z",
+  "delivery": "not-sent-by-boopy",
+  "note": "The person exported this file from Boopy and chose to share it. Boopy did not send it.",
+  "activity": {
+    "claimedAuthor": "Synthetic fixture (hand-written)",
+    "authorship": "claimed-by-file",
+    "artifactSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+    "body": {
+      "title": "Camel and tent",
+      "purpose": "Practice saying where things are in Korean, using your desert camp.",
+      "instruction": {
+        "text": "낙타를 텐트 왼쪽에 놓고 한국어로 말해 보세요.",
+        "language": "ko",
+        "gloss": "Put the camel to the left of the tent, then say it in Korean."
+      },
+      "components": [
+        {
+          "type": "arrange",
+          "axis": { "kind": "viewer-left-right" },
+          "tokens": [
+            {
+              "key": "a",
+              "label": { "text": "낙타", "language": "ko", "gloss": "camel" },
+              "sourceId": "ctx_synthetic_tutor1:itm_1"
+            },
+            {
+              "key": "b",
+              "label": { "text": "텐트", "language": "ko", "gloss": "tent" },
+              "sourceId": "ctx_synthetic_tutor1:itm_2"
+            }
+          ],
+          "target": { "subject": "a", "relation": "left-of", "object": "b" }
+        },
+        {
+          "type": "sequence",
+          "joiner": "space",
+          "language": "ko",
+          "tiles": [
+            { "key": "t1", "text": "있어요" },
+            { "key": "t2", "text": "낙타가" },
+            { "key": "t3", "text": "왼쪽에" },
+            { "key": "t4", "text": "텐트" },
+            { "key": "t5", "text": "오른쪽에" }
+          ]
+        }
+      ],
+      "hints": [
+        { "text": "Start with the camel, then say where it is.", "language": "en", "gloss": null },
+        { "text": "The place word comes right before 있어요.", "language": "en", "gloss": null }
+      ]
+    }
+  },
+  "submission": {
+    "number": 1,
+    "submittedAt": "1970-01-01T09:04:00.000Z",
+    "revision": 4,
+    "arrange": {
+      "positions": { "a": 0.22, "b": 0.71 },
+      "relation": "left-of",
+      "matchesTarget": true,
+      "order": ["a", "b"],
+      "ties": false,
+      "values": null
+    },
+    "sequence": { "chosen": ["t2", "t4", "t3", "t1"], "text": "낙타가 텐트 왼쪽에 있어요" },
+    "hintsRevealed": [
+      {
+        "index": 0,
+        "text": "Start with the camel, then say where it is.",
+        "language": "en",
+        "gloss": null
+      }
+    ]
+  },
+  "boopyChecked": {
+    "arrangementRelation": {
+      "subject": "a",
+      "object": "b",
+      "requested": "left-of",
+      "arranged": "left-of",
+      "matches": true
+    }
+  },
+  "digest": "arrange: 낙타 left of 텐트 (your view); requested 낙타 left of 텐트; arrangement matches | sequence: \"낙타가 텐트 왼쪽에 있어요\" | hints: 1 of 2",
+  "instructions": [
+    "Return exactly one downloadable .json file whose whole content is one JSON object shaped like respondWith, adding author, reply and next.",
+    "Copy binding and echo exactly as given in respondWith.",
+    "reply has summary (a text item: text and gloss up to 300 characters) and one to four points; each point has about (overall, arrange, sequence or hints), text up to 300 characters, a language tag and an optional gloss up to 300 characters.",
+    "Respond to what the person did in this exact submission. Boopy checked only what boopyChecked shows; it never decides whether an answer is correct.",
+    "An arrangement is a practice construction, not an observation, and a sequence is the person's attempt, not a statement about their life.",
+    "Do not claim the person mastered anything, and do not invent their level, feelings, activities or dates.",
+    "next is null, or an object with fallbackText (up to 800 characters) and activity, a new activity with the same components and limits as the original, using only source IDs from this activity or null.",
+    "Use only Latin letters or Hangul, with no links, markup or emoji."
+  ],
+  "respondWith": {
+    "type": "boopy.activity-reply",
+    "version": 1,
+    "binding": { "submissionId": "sub_tutor_ko1", "activityId": "act_tutor_ko1" },
+    "echo": "arrange: 낙타 left of 텐트 (your view); requested 낙타 left of 텐트; arrangement matches | sequence: \"낙타가 텐트 왼쪽에 있어요\" | hints: 1 of 2"
+  }
+}

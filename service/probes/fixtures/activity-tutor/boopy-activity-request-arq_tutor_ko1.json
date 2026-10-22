@@ -1,0 +1,55 @@
+{
+  "type": "boopy.activity-request",
+  "version": 1,
+  "requestId": "arq_tutor_ko1",
+  "exportedAt": "1970-01-01T09:00:00.000Z",
+  "delivery": "not-sent-by-boopy",
+  "note": "The person exported this file from Boopy and chose to share it. Boopy did not send it.",
+  "goal": "Practice saying where things are in Korean, using my desert camp picture.",
+  "personLanguage": "en",
+  "background": null,
+  "instructions": [
+    "Return exactly one downloadable .json file whose whole content is one JSON object shaped like respondWith, adding author, fallbackText and activity.",
+    "Copy binding exactly as given in respondWith.",
+    "activity has title (up to 60 characters), purpose (200), instruction (a text item: text 200, gloss 240), components and hints.",
+    "A text item is an object with text, a language tag such as en or ko, and an optional gloss that translates it into the person's language.",
+    "Use one or two components, at most one arrange and at most one sequence, and zero to three hints (text items: text 200, gloss 240).",
+    "An arrange component has one to four tokens with keys a to d in order; each token has a label (a text item: text 24, gloss 40) and a sourceId. Its axis is viewer-left-right (exactly two tokens and an optional target with subject, relation left-of or right-of, and object, always from the person's own view), scale (low and high labels up to 24 characters, two to four tokens, no target) or number (min below max, a step that divides the range into at most 1000 steps, an optional unit up to 12 characters, one to four tokens, no target).",
+    "A sequence component has a joiner, a language tag and three to eight tiles with keys t1 to t8 in order and unique texts. Joiner space means the words of one sentence, one word per tile without spaces, 24 characters each; joiner list means ordered steps, 48 characters each.",
+    "Reference only the source IDs listed in sources, or null.",
+    "Treat an arrangement as a practice construction, not an event in the person's life.",
+    "Do not invent the person's level, feelings, activities or dates. When background is null the person gave no level; do not assume one.",
+    "For language practice, make each space tile one spaced word and never put the full answer anywhere in the file.",
+    "Order hints from gentle to specific.",
+    "Write fallbackText, up to 800 characters, as a plain-text version of the same activity.",
+    "Use only Latin letters or Hangul, with no links, markup or emoji."
+  ],
+  "respondWith": {
+    "type": "boopy.activity",
+    "version": 1,
+    "binding": {
+      "requestId": "arq_tutor_ko1",
+      "packageId": "ctx_synthetic_tutor1",
+      "packetSha256": "8a5f17611a12eb671eadb8a0d447782271e96c421cd51d717f79f61b36443019"
+    }
+  },
+  "sources": [
+    {
+      "sourceId": "ctx_synthetic_tutor1:itm_1",
+      "label": "camel",
+      "gloss": null,
+      "verification": "accepted"
+    },
+    {
+      "sourceId": "ctx_synthetic_tutor1:itm_2",
+      "label": "tent",
+      "gloss": null,
+      "verification": "accepted"
+    }
+  ],
+  "context": {
+    "packageId": "ctx_synthetic_tutor1",
+    "packetSha256": "8a5f17611a12eb671eadb8a0d447782271e96c421cd51d717f79f61b36443019",
+    "packet": "FICTIONAL SYNTHETIC BOOPY REHEARSAL. NOT PERSONAL HISTORY.\nNothing has been sent to any assistant. Review these files and choose what to share. No consumer account or delivery is verified.\nUse exact authored words and per-item verification. Accepted model proposals are unconfirmed. Do not infer personal activities, transport, feelings, intensity or event dates from them.\n\nBASELINE: exact immutable exported package.\nPackage ctx_synthetic_tutor1, a drawn desert camp picture from the repository fixtures.\nItem itm_1: camel. Model proposal, accepted, unconfirmed. Korean label 낙타.\nItem itm_2: tent. Model proposal, accepted, unconfirmed. Korean label 텐트.\nItem itm_3: sun. Model proposal, rejected by the person.\nThe person said: I want to practice where things are in Korean.\n\nSEPARATE OPTIONAL SUPPLEMENT: none selected."
+  }
+}

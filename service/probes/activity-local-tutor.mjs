@@ -380,3 +380,306 @@ function activityTask(value) {
     },
   };
 }
+
+function replyTask(value) {
+  if (value.type !== 'boopy.activity-submission' || value.version !== 1)
+    throw refuse(
+      'input-wrong-type',
+      'The input is not a version 1 Boopy activity submission file.',
+    );
+  const instructions = instructionsOf(value);
+  const template = value.respondWith;
+  if (!isRecord(template) || template.type !== 'boopy.activity-reply' || template.version !== 1)
+    throw refuse(
+      'input-malformed',
+      'The submission has no boopy.activity-reply respondWith template.',
+    );
+  const binding = bindingOf(template.binding, {
+    submissionId: SUBMISSION_ID,
+    activityId: ACTIVITY_ID,
+  });
+  const echo = template.echo;
+  if (typeof echo !== 'string' || echo.trim() === '' || [...echo].length > 800)
+    throw refuse('input-malformed', 'The respondWith template has no usable echo.');
+  if (
+    binding.submissionId !== value.submissionId ||
+    binding.activityId !== value.activityId ||
+    echo !== value.digest
+  )
+    throw refuse(
+      'binding-mismatch',
+      'The respondWith binding or echo does not match its own submission.',
+    );
+  return {
+    instructions,
+    system: REPLY_SYSTEM,
+    // A next activity may only use sources the submitted activity already used.
+    schema: replyAnswerSchema(sourceIdsOf(value.activity?.body)),
+    assemble(answer, author) {
+      const next = answer.next ?? null;
+      if (!isRecord(answer.reply) || (next !== null && !isRecord(next)))
+        throw fail('unparsed', 'missing-fields', 'The answer lacked a reply object.');
+      return {
+        type: 'boopy.activity-reply',
+        version: 1,
+        binding,
+        author,
+        echo,
+        reply: answer.reply,
+        next,
+      };
+    },
+  };
+}
+
+function sourceIdsOf(body) {
+  const ids = new Set();
+  const components = isRecord(body) && Array.isArray(body.components) ? body.components : [];
+  for (const component of components)
+    if (isRecord(component) && Array.isArray(component.tokens))
+      for (const token of component.tokens)
+        if (isRecord(token) && typeof token.sourceId === 'string') ids.add(token.sourceId);
+  return [...ids];
+}
+
+const DURATIONS = {
+  total_duration: 'totalMs',
+  load_duration: 'loadMs',
+  prompt_eval_duration: 'promptEvalMs',
+  eval_duration: 'evalMs',
+};
+const COUNTS = { prompt_eval_count: 'promptTokens', eval_count: 'outputTokens' };
+
+/** Ollama's numeric counters (nanoseconds become milliseconds); any other provider text is dropped. */
+function recordMetrics(response, summary) {
+  if (!isRecord(response)) return;
+  for (const [name, key] of Object.entries(DURATIONS))
+    if (Number.isFinite(response[name]) && response[name] >= 0)
+      summary[key] = Math.round(response[name] / 100_000) / 10;
+  for (const [name, key] of Object.entries(COUNTS))
+    if (Number.isSafeInteger(response[name]) && response[name] >= 0) summary[key] = response[name];
+  if (typeof response.done_reason === 'string' && /^[a-z_]{1,20}$/.test(response.done_reason))
+    summary.doneReason = response.done_reason;
+}
+
+/** One JSON object, alone or in one json or unlabelled fence; the file is always plain JSON. */
+function answerOf(content) {
+  const trimmed = content.trim();
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```$/.exec(trimmed);
+  try {
+    const value = JSON.parse(fenced === null ? trimmed : (fenced[1] ?? ''));
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The response body as text, read no further than MAX_RESPONSE_BYTES whether or not a length is
+ * declared. Leaving the loop early cancels the body, which closes the connection; the call's
+ * deadline still applies to every read.
+ */
+async function readCapped(response, summary) {
+  const chunks = [];
+  let total = 0;
+  if (response.body !== null)
+    for await (const chunk of response.body) {
+      total += chunk.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        summary.responseBytes = total;
+        throw fail(
+          'response-too-large',
+          null,
+          'Ollama sent more than 32 MiB, so the rest was not read. Nothing was retried or written.',
+        );
+      }
+      chunks.push(chunk);
+    }
+  summary.responseBytes = total;
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+/** The run's single model call. Every failure stops the run; nothing is ever retried. */
+async function chat(options, prompt, summary) {
+  const body = JSON.stringify({
+    model: options.model,
+    messages: [
+      { role: 'system', content: prompt.system },
+      { role: 'user', content: prompt.user },
+    ],
+    ...(!options.schemaInPrompt && { format: prompt.schema }),
+    stream: false,
+    think: false,
+    options: { temperature: TEMPERATURE, num_predict: NUM_PREDICT },
+  });
+  summary.requestBytes = bytes(body);
+  summary.modelCalls = 1;
+  const started = performance.now();
+  let response;
+  let received;
+  try {
+    response = await fetch(new URL('/api/chat', options.url), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      redirect: 'error',
+      signal: AbortSignal.timeout(options.deadlineMs),
+    });
+    summary.status = response.status;
+    received = await readCapped(response, summary);
+  } catch (error) {
+    if (error instanceof Stop) throw error;
+    if (error?.name === 'TimeoutError')
+      throw fail(
+        'deadline',
+        null,
+        'The model call passed its deadline and was stopped. Nothing was retried or written.',
+      );
+    if (error?.cause?.code === 'ECONNREFUSED')
+      throw fail(
+        'ollama-unreachable',
+        null,
+        'Ollama is not answering at that loopback address. Nothing was written.',
+      );
+    throw fail(
+      'ollama-error',
+      'transport',
+      'The model call failed in transport. Nothing was retried or written.',
+    );
+  } finally {
+    summary.wallMs = Math.round(performance.now() - started);
+  }
+  if (!response.ok) {
+    if (
+      !options.schemaInPrompt &&
+      response.status === 501 &&
+      received.includes(NO_STRUCTURED_OUTPUT)
+    )
+      throw fail(
+        'structured-output-unavailable',
+        null,
+        'Ollama says structured output is unavailable for this model (HTTP 501). Nothing was retried or written; run again with --schema-in-prompt to send the schema in the prompt only.',
+      );
+    throw fail(
+      'ollama-error',
+      null,
+      `Ollama answered HTTP ${response.status}. Nothing was retried or written.`,
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(received);
+  } catch {
+    throw fail(
+      'unparsed',
+      'not-ollama-json',
+      'Ollama sent a response that is not JSON. Nothing was written.',
+    );
+  }
+  recordMetrics(parsed, summary);
+  const content = isRecord(parsed) && isRecord(parsed.message) ? parsed.message.content : undefined;
+  if (typeof content !== 'string')
+    throw fail('unparsed', 'no-content', 'Ollama sent no message content. Nothing was written.');
+  summary.contentBytes = bytes(content);
+  const answer = answerOf(content);
+  if (answer === null)
+    throw fail('unparsed', 'not-json', 'The answer is not one JSON object. Nothing was written.');
+  return answer;
+}
+
+/** A new file only: never follows a link, never replaces anything, private to this account. */
+async function writeNew(path, content) {
+  let handle;
+  try {
+    handle = await open(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+  } catch (error) {
+    if (error?.code === 'EEXIST' || error?.code === 'ELOOP')
+      throw fail(
+        'output-exists',
+        'appeared-during-call',
+        'The output path appeared during the model call and was left untouched. Nothing was written.',
+      );
+    throw fail(
+      'output-unwritable',
+      null,
+      'The output file could not be created. Nothing was written.',
+    );
+  }
+  try {
+    await handle.chmod(0o600);
+    await handle.writeFile(content, 'utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+async function run(argv, summary) {
+  const options = parseOptions(argv);
+  Object.assign(summary, {
+    mode: options.mode,
+    model: options.model,
+    url: options.url,
+    schemaVia: options.schemaInPrompt ? 'prompt' : 'format',
+    deadlineMs: options.deadlineMs,
+    temperature: TEMPERATURE,
+    numPredict: NUM_PREDICT,
+    think: false,
+  });
+  const author = authorFor(options.model);
+  const input = await readInput(options.input);
+  summary.inputBytes = input.bytes;
+  summary.inputSha256 = input.sha256;
+  const task = options.mode === 'activity' ? activityTask(input.value) : replyTask(input.value);
+  summary.instructions = task.instructions.length;
+  await checkOutput(options.out);
+  const schemaText = JSON.stringify(task.schema);
+  // The prompt is the file's own instructions plus its exact content; the system line is ours.
+  const prompt = {
+    system: `${task.system}\n\n${SCHEMA_LEAD}\n${schemaText}`,
+    user: `${task.instructions.join('\n')}\n\n${input.text}`,
+    schema: task.schema,
+  };
+  summary.systemBytes = bytes(prompt.system);
+  summary.promptBytes = bytes(prompt.user);
+  summary.schemaBytes = bytes(schemaText);
+  const answer = await chat(options, prompt, summary);
+  const content = `${JSON.stringify(task.assemble(answer, author), null, 2)}\n`;
+  if (bytes(content) > MAX_FILE_BYTES)
+    throw fail(
+      'unparsed',
+      'too-large',
+      'The assembled file would exceed 64 KiB. Nothing was written.',
+    );
+  await writeNew(options.out, content);
+  summary.outputFile = basename(options.out);
+  summary.outputBytes = bytes(content);
+  summary.outputSha256 = sha256(content);
+  summary.outcome = 'written';
+}
+
+/** Runs one invocation; returns the exit code (0 written, 1 failed, 2 refused before any call). */
+export async function main(argv, io = process) {
+  const summary = { probe: 'activity-local-tutor', mode: null, outcome: null, modelCalls: 0 };
+  let code = 0;
+  try {
+    await run(argv, summary);
+  } catch (error) {
+    const stop =
+      error instanceof Stop
+        ? error
+        : fail('failed', null, 'The local tutor probe failed. No file or model content is shown.');
+    summary.outcome = stop.outcome;
+    if (stop.reason !== null) summary.reason = stop.reason;
+    code = stop.code;
+    io.stderr.write(`${stop.message}\n`);
+  }
+  io.stdout.write(`${JSON.stringify(summary)}\n`);
+  return code;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  process.exitCode = await main(process.argv.slice(2));
