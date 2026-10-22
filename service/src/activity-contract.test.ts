@@ -761,3 +761,303 @@ describe('derived values', () => {
     assert.equal(sequenceText({ ...tiles, joiner: 'list' }, ['t2', 't1']), '낙타가; 있어요');
   });
 });
+
+describe('tile display order', () => {
+  it('orders tiles by the SHA-256 of activityId:tileKey, never by the file order', () => {
+    const tiles = ['t1', 't2', 't3', 't4', 't5'].map((key) => ({ key, text: key }));
+    const ordered = tileDisplayOrder('act_k1', tiles);
+    assert.deepEqual(
+      ordered.map((tile) => tile.key),
+      [...tiles]
+        .map((tile) => tile.key)
+        .sort((a, b) => sha256(`act_k1:${a}`).localeCompare(sha256(`act_k1:${b}`))),
+    );
+    assert.deepEqual(tileDisplayOrder('act_k1', [...tiles].reverse()), ordered);
+    assert.notDeepEqual(
+      tileDisplayOrder('act_k2', tiles).map((tile) => tile.key),
+      ordered.map((tile) => tile.key),
+    );
+    assert.deepEqual(
+      tiles.map((tile) => tile.key),
+      ['t1', 't2', 't3', 't4', 't5'],
+    );
+  });
+});
+
+describe('digest', () => {
+  const k = valid(korean());
+  const digest = (positions: Record<string, number | null>, chosen: string[], hints = 0) =>
+    digestOf(k, { positions, chosen, hintsRevealed: hints });
+
+  it('matches the contract example and the other left-right forms', () => {
+    assert.equal(
+      digest({ a: 0.22, b: 0.71 }, ['t2', 't4', 't3', 't1'], 1),
+      'arrange: 낙타 left of 텐트 (your view); requested 낙타 left of 텐트; arrangement matches | sequence: "낙타가 텐트 왼쪽에 있어요" | hints: 1 of 2',
+    );
+    assert.equal(
+      digest({ a: 0.9, b: 0.2 }, []),
+      'arrange: 낙타 right of 텐트 (your view); requested 낙타 left of 텐트; arrangement does not match | sequence: (empty) | hints: 0 of 2',
+    );
+    assert.equal(
+      digest({ a: 0.5, b: 0.55 }, ['t1'], 2),
+      'arrange: 낙타 and 텐트 too close to tell; requested 낙타 left of 텐트; arrangement does not match | sequence: "있어요" | hints: 2 of 2',
+    );
+    assert.equal(
+      digest({ a: null, b: 0.55 }, ['t1']),
+      'arrange: not placed; requested 낙타 left of 텐트; arrangement does not match | sequence: "있어요" | hints: 0 of 2',
+    );
+    const untargeted = structuredClone(k);
+    const arrange = arrangeOf(untargeted);
+    arrange.target = null;
+    assert.equal(
+      digestOf(untargeted, { positions: { a: 0.1, b: 0.9 }, chosen: [], hintsRevealed: 0 }),
+      'arrange: 낙타 left of 텐트 (your view) | sequence: (empty) | hints: 0 of 2',
+    );
+  });
+
+  it('reports scale order, closeness and unplaced tokens', () => {
+    const s = valid(scale(), NONE);
+    const of = (positions: Record<string, number | null>) =>
+      digestOf(s, { positions, chosen: [], hintsRevealed: 0 });
+    assert.equal(
+      of({ a: 0.1, b: 0.6, c: null }),
+      'arrange: order from Cheaper to Pricier: scarf, lamp; not placed: tagine | hints: 0 of 0',
+    );
+    assert.equal(
+      of({ a: 0.5, b: 0.55, c: 0.9 }),
+      'arrange: order from Cheaper to Pricier: scarf, lamp, tagine (some too close to tell) | hints: 0 of 0',
+    );
+    assert.equal(
+      of({ a: null, b: null, c: null }),
+      'arrange: not placed: scarf, lamp, tagine | hints: 0 of 0',
+    );
+  });
+
+  it('reports snapped numbers with their unit', () => {
+    const m = valid(morocco(), NONE);
+    assert.equal(
+      digestOf(m, { positions: { a: 0.25 }, chosen: [], hintsRevealed: 1 }),
+      'arrange: My estimate = 50 MAD | hints: 1 of 1',
+    );
+    assert.equal(
+      digestOf(m, { positions: { a: null }, chosen: [], hintsRevealed: 0 }),
+      'arrange: My estimate not set | hints: 0 of 1',
+    );
+    const two = structuredClone(m);
+    const arrange = arrangeOf(two);
+    if (arrange.axis.kind === 'number') delete arrange.axis.unit;
+    arrange.tokens.push({ key: 'b', label: { text: 'Tea', language: 'en' }, sourceId: null });
+    assert.equal(
+      digestOf(two, { positions: { a: 0.25, b: 0.05 }, chosen: [], hintsRevealed: 0 }),
+      'arrange: My estimate = 50; Tea = 10 | hints: 0 of 1',
+    );
+    const halves = structuredClone(m);
+    const half = arrangeOf(halves);
+    half.axis = { kind: 'number', min: 0, max: 200, step: 0.5, unit: 'MAD' };
+    assert.equal(
+      digestOf(halves, { positions: { a: 0.5 }, chosen: [], hintsRevealed: 0 }),
+      'arrange: My estimate = 100 MAD | hints: 0 of 1',
+    );
+    assert.equal(
+      digestOf(halves, { positions: { a: 0.0025 }, chosen: [], hintsRevealed: 0 }),
+      'arrange: My estimate = 0.5 MAD | hints: 0 of 1',
+    );
+  });
+
+  it('stays one line within the limit by shortening the sequence quote', () => {
+    const long = korean();
+    const texts = Array.from({ length: 8 }, (_, i) => `${'Step'.padEnd(46, 'x')} ${i + 1}`);
+    (long.components as Record<string, unknown>[])[1] = {
+      type: 'sequence',
+      joiner: 'list',
+      language: 'en',
+      tiles: texts.map((text, i) => ({ key: `t${i + 1}`, text })),
+    };
+    const activity = valid(long);
+    const keys = texts.map((_, i) => `t${i + 1}`);
+    const line = digestOf(activity, {
+      positions: { a: 0.22, b: 0.71 },
+      chosen: keys,
+      hintsRevealed: 0,
+    });
+    assert.ok([...line].length <= DIGEST_LIMIT, String([...line].length));
+    assert.equal(line.includes('\n'), false);
+    assert.match(line, /^arrange: .+ \| sequence: "Step.+…" \| hints: 0 of 2$/);
+  });
+
+  it('compares echoes after whitespace normalization only', () => {
+    const line = digest({ a: 0.22, b: 0.71 }, ['t2', 't4', 't3', 't1'], 1);
+    assert.equal(normalizeEcho(` ${line.replaceAll(' | ', '\n|\t ')} `), normalizeEcho(line));
+    assert.notEqual(normalizeEcho(line.replace('matches', 'match')), normalizeEcho(line));
+    assert.notEqual(normalizeEcho(line.replace('arrange', 'arr\u200bange')), normalizeEcho(line));
+  });
+});
+
+describe('reply file', () => {
+  const reply = (extra: Record<string, unknown> = {}) => ({
+    type: 'boopy.activity-reply',
+    version: 1,
+    binding: { submissionId: 'sub_k1', activityId: 'act_k1' },
+    author: 'Grok Bot',
+    echo: 'arrange: x | hints: 0 of 0',
+    reply: {
+      summary: { text: 'Synthetic example reply for rendering tests.', language: 'en' },
+      points: [{ about: 'sequence', text: 'Synthetic point about the sentence.', language: 'en' }],
+    },
+    next: null,
+    ...extra,
+  });
+
+  it('reads the envelope and leaves the next activity body for later validation', () => {
+    const read = readReplyFile(
+      JSON.stringify(reply({ next: { fallbackText: 'Try again.', activity: { any: 1 } } })),
+    );
+    assert.equal(read.kind, 'read');
+    assert.deepEqual(read.kind === 'read' && read.file.next, {
+      fallbackText: 'Try again.',
+      activity: { any: 1 },
+    });
+    const none = readReplyFile(JSON.stringify(reply({ next: undefined })));
+    assert.equal(none.kind === 'read' && none.file.next, null);
+    for (const echo of ['arrange: x\n|\thints: 0 of 0', 'arr\u200bange: x | hints: 0 of 0']) {
+      const read = readReplyFile(JSON.stringify(reply({ echo })));
+      assert.equal(read.kind === 'read' && read.file.echo, echo);
+    }
+    const long = readReplyFile(JSON.stringify(reply({ echo: 'x'.repeat(2001) })));
+    assert.match(long.kind === 'invalid' ? (long.issues[0] ?? '') : '', /^echo: /);
+  });
+
+  it('applies the same container and envelope rules', () => {
+    assert.deepEqual(readReplyFile('```json\n[]\n```'), { kind: 'unreadable' });
+    const invalid = (extra: Record<string, unknown>) => {
+      const read = readReplyFile(JSON.stringify(reply(extra)));
+      return read.kind === 'invalid' ? read.issues.join('\n') : '';
+    };
+    assert.match(invalid({ binding: { submissionId: 'sub_k1' } }), /binding\.activityId/);
+    assert.match(
+      invalid({ reply: { summary: { text: 'ok', language: 'en' }, points: [] } }),
+      /reply\.points/,
+    );
+    assert.match(
+      invalid({
+        reply: {
+          summary: { text: 'ok', language: 'en' },
+          points: [{ about: 'grammar', text: 'x', language: 'en' }],
+        },
+      }),
+      /reply\.points\.0\.about/,
+    );
+    assert.match(
+      invalid({ reply: { summary: { text: 'مرحبا', language: 'ar' }, points: [] } }),
+      /reply\.summary\.text: Boopy cannot display/,
+    );
+    assert.match(invalid({ next: { activity: {} } }), /next\.fallbackText/);
+  });
+});
+
+describe('requests and views', () => {
+  it('parses headset requests', () => {
+    assert.deepEqual(ArrangementRequest.parse({ revision: 3, positions: { a: 0.22, b: null } }), {
+      revision: 3,
+      positions: { a: 0.22, b: null },
+    });
+    assert.equal(
+      ArrangementRequest.safeParse({ revision: 3, positions: { a: 1.2 } }).success,
+      false,
+    );
+    assert.equal(ArrangementRequest.safeParse({ revision: -1, positions: {} }).success, false);
+    assert.equal(SequenceRequest.safeParse({ revision: 0, chosen: ['t1', 't1'] }).success, false);
+    assert.equal(SequenceRequest.safeParse({ revision: 0, chosen: ['x'] }).success, false);
+    assert.ok(SequenceRequest.parse({ revision: 0, chosen: [] }));
+  });
+
+  it('describes the example views in section 10', () => {
+    const contract = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'activity-contract.md'),
+      'utf8',
+    );
+    const section = contract.slice(contract.indexOf('## 10.'), contract.indexOf('## 11.'));
+    const blocks = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) =>
+      JSON.parse(match[1] ?? ''),
+    );
+    assert.equal(blocks.length, 2);
+    for (const block of blocks) {
+      // Section 10a (which supersedes section 10) adds hintsRevealedSincePrevious; the examples
+      // predate it, so it is derived here by its rule before the shape is compared exactly.
+      let previous: number[] = [];
+      for (const submission of block.submissions) {
+        submission.hintsRevealedSincePrevious ??= submission.hintsRevealed.filter(
+          (index: number) => !previous.includes(index),
+        );
+        previous = submission.hintsRevealed;
+      }
+      const view = ActivityView.parse(block);
+      assert.deepEqual(view, block);
+    }
+    const korean = blocks[0];
+    const submission = korean.submissions[0];
+    const exported = { ...korean, submissions: [{ ...submission, export: null, reply: null }] };
+    assert.ok(ActivityView.parse(exported));
+    const notExported = { state: 'not-exported', fileSha256: null, exportedAt: null };
+    assert.equal(
+      ActivityView.safeParse({
+        ...korean,
+        submissions: [{ ...submission, export: notExported, reply: null }],
+      }).success,
+      false,
+    );
+    assert.ok(
+      ActivitySummary.parse({
+        activityId: 'act_k1',
+        title: 'Camel and tent',
+        status: 'active',
+        importedAt: '1970-01-01T09:00:00.000Z',
+        claimedAuthor: 'Grok Bot',
+        submissions: 1,
+        awaitingReply: false,
+        replyAvailable: true,
+        parentActivityId: null,
+      }),
+    );
+  });
+});
+
+describe('allowed sources', () => {
+  it('keeps baseline evidence except rejected and superseded records, and none for version 1', async () => {
+    const { boopy } = testBoopy();
+    const first = await boopy.start(startRequest('Synthetic camel and tent.'));
+    const photo = first.items.find((item) => item.label === 'Desert photo');
+    assert.ok(photo);
+    await boopy.act(first.id, { itemId: photo.id, action: 'reject' });
+    const packageId = boopy.commit(first.id).committed?.packageId;
+    const second = await boopy.start(startRequest('Synthetic correction.'));
+    const successorId = boopy.commit(second.id).committed?.packageId;
+    assert.ok(packageId && successorId);
+    const records = evidenceRecords(boopy.package(packageId));
+    const tents = records.find((record) => record.label === 'Tents');
+    const successor = evidenceRecords(boopy.package(successorId)).find(
+      (record) => record.label === 'Tents',
+    );
+    assert.ok(tents && successor);
+    boopy.supersede({ predecessor: tents, successor });
+    const sources = allowedSources(boopy.package(packageId), boopy.supersessions);
+    const ids = sources.map((source) => source.sourceId);
+    assert.deepEqual(
+      ids,
+      records
+        .filter((record) => record.disposition !== 'rejected' && record !== tents)
+        .map((record) => record.sourceId),
+    );
+    assert.equal(ids.includes(tents.sourceId), false);
+    const camels = sources.find((source) => source.label === 'Camels');
+    assert.deepEqual(camels, {
+      sourceId: records.find((record) => record.label === 'Camels')?.sourceId,
+      label: 'Camels',
+      gloss: '낙타',
+      verification: 'accepted',
+    });
+    assert.equal(sources.find((source) => source.label === 'How you got there')?.gloss, null);
+    const legacy = { ...boopy.package(packageId), version: 1 };
+    assert.deepEqual(allowedSources(legacy, []), []);
+  });
+});
