@@ -708,4 +708,162 @@ describe('a task opened together with its first result', () => {
     assert.deepEqual(tasks.openWithResult(opening, first, AT), finished);
     assert.equal(journal.all().length, 2);
   });
+
+  it('keeps an answer audio digest and recognizer in the journal, never in the attempt', () => {
+    const journal = Journal.open(':memory:');
+    const tasks = new TaskStore(journal);
+    assert.equal(kind(tasks.openWithResult(opening, first, AT)), 'accepted');
+    const audio = 'd'.repeat(64);
+    const action = {
+      type: 'voice_reply',
+      text: 'Two camels.',
+      recognitionUncertain: true,
+      audioSha256: audio,
+      recognizer: 'fake speech',
+    };
+    const answered = tasks.act(
+      {
+        eventId: 'evt_spoken',
+        sessionId: SESSION,
+        taskId: 'tsk_capture',
+        expectedRevision: 1,
+        action,
+      },
+      AT,
+    );
+    assert.equal(answered.status, 'accepted');
+    if (answered.status !== 'accepted') return;
+    assert.deepEqual(answered.task.attempts, [
+      {
+        eventId: 'evt_spoken',
+        text: 'Two camels.',
+        recognitionUncertain: true,
+        kind: 'practice-attempt',
+      },
+    ]);
+    const recorded = journal.all().at(-1);
+    assert.equal(recorded?.type, 'task.action-accepted');
+    if (recorded?.type !== 'task.action-accepted') return;
+    assert.deepEqual(recorded.data.action, action);
+    const unset = tasks.act(
+      {
+        eventId: 'evt_unset',
+        sessionId: SESSION,
+        taskId: 'tsk_capture',
+        expectedRevision: 2,
+        action: { ...action, text: 'No digest.', audioSha256: undefined, recognizer: undefined },
+      },
+      AT,
+    );
+    assert.equal(kind(unset), 'accepted');
+    assert.equal(new TaskStore(journal).get('tsk_capture')?.revision, 3);
+    for (const wrong of [
+      { audioSha256: 'not-a-digest' },
+      { recognizer: '' },
+      { recognizer: 'a\nb' },
+    ])
+      assert.throws(() =>
+        tasks.act(
+          {
+            eventId: 'evt_wrong',
+            sessionId: SESSION,
+            taskId: 'tsk_capture',
+            expectedRevision: 3,
+            action: { ...action, ...wrong },
+          },
+          AT,
+        ),
+      );
+    assert.equal(journal.all().length, 4);
+  });
+
+  it('checks a spoken answer before any transcription, appending nothing', () => {
+    const journal = Journal.open(':memory:');
+    journal.append(
+      { type: 'session.started', session: 'ses_boopy', actor: 'person', data: { device: null } },
+      'evt_boopy',
+      AT,
+    );
+    const tasks = new TaskStore(journal);
+    open(tasks);
+    tasks.receive(lesson, AT);
+    const audio = 'd'.repeat(64);
+    const answer = {
+      eventId: 'evt_spoken',
+      sessionId: SESSION,
+      taskId: 'tsk_sahara_later',
+      expectedRevision: 1,
+      audioSha256: audio,
+    };
+    assert.equal(tasks.checkAnswer(answer), undefined);
+    const before = journal.all().length;
+    assert.equal(kind(tasks.checkAnswer({ ...answer, taskId: 'tsk_missing' })), 'unknown_task');
+    assert.equal(
+      kind(tasks.checkAnswer({ ...answer, sessionId: 'sess_other' })),
+      'session_mismatch',
+    );
+    assert.equal(kind(tasks.checkAnswer({ ...answer, expectedRevision: 0 })), 'stale_revision');
+    assert.equal(kind(tasks.checkAnswer({ ...answer, expectedRevision: 5 })), 'stale_revision');
+    assert.equal(
+      kind(tasks.checkAnswer({ ...answer, eventId: 'evt_boopy' })),
+      'duplicate_conflict',
+    );
+    assert.equal(
+      kind(tasks.checkAnswer({ ...answer, eventId: 'evt_open_sahara' })),
+      'duplicate_conflict',
+    );
+    assert.equal(journal.all().length, before);
+    const recorded = tasks.act(
+      {
+        eventId: 'evt_spoken',
+        sessionId: SESSION,
+        taskId: 'tsk_sahara_later',
+        expectedRevision: 1,
+        action: {
+          type: 'voice_reply',
+          text: 'Two camels.',
+          recognitionUncertain: true,
+          audioSha256: audio,
+          recognizer: 'fake speech',
+        },
+      },
+      AT,
+    );
+    assert.equal(recorded.status, 'accepted');
+    assert.deepEqual(tasks.checkAnswer(answer), recorded);
+    for (const other of [
+      { ...answer, expectedRevision: 2 },
+      { ...answer, sessionId: 'sess_other' },
+      { ...answer, taskId: 'tsk_manual' },
+      { ...answer, audioSha256: 'e'.repeat(64) },
+    ])
+      assert.equal(kind(tasks.checkAnswer(other)), 'duplicate_conflict');
+    const retry = {
+      eventId: 'evt_retry_now',
+      sessionId: SESSION,
+      taskId: 'tsk_sahara_later',
+      expectedRevision: 2,
+      action: { type: 'retry' },
+    };
+    assert.equal(kind(tasks.act(retry, AT)), 'accepted');
+    assert.equal(
+      kind(tasks.checkAnswer({ ...answer, eventId: 'evt_retry_now', expectedRevision: 2 })),
+      'duplicate_conflict',
+    );
+    assert.equal(
+      kind(
+        tasks.act(
+          { ...retry, eventId: 'evt_cancel_now', expectedRevision: 3, action: { type: 'cancel' } },
+          AT,
+        ),
+      ),
+      'accepted',
+    );
+    const count = journal.all().length;
+    assert.equal(
+      kind(tasks.checkAnswer({ ...answer, eventId: 'evt_after', expectedRevision: 4 })),
+      'cancelled',
+    );
+    assert.equal(journal.all().length, count);
+  });
 });
