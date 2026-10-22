@@ -343,3 +343,356 @@ function clean(test: Setup, printed: string) {
   assert.equal(printed.includes(test.directory), false);
   assert.equal(printed.includes('Nothing has been sent to Muse'), false);
 }
+
+describe('pnpm activity', () => {
+  it('runs request, import, export and reply against the local connector', async () => {
+    const test = await setup();
+    try {
+      const { result, request } = await requested(test);
+      assert.equal(result.fileName, 'boopy-activity-request-arq_k1.json');
+      const written = await readFile(join(test.output, result.fileName));
+      assert.equal(sha256(written), result.fileSha256);
+      assert.equal((await stat(join(test.output, result.fileName))).mode & 0o777, 0o600);
+      assert.match(result.message, /boopy-activity-request-arq_k1\.json/);
+      assert.match(result.message, /Boopy did not send it/);
+      assert.match(result.message, /exactly one downloadable \.json file/);
+      clean(test, result.message);
+      assert.deepEqual(await readdir(test.output), [result.fileName]);
+
+      const input = join(test.directory, 'activity.json');
+      const content = `\u{FEFF}${activityFile(request)}`;
+      await writeFile(input, content);
+      const imported = await importActivity({
+        file: input,
+        dataDir: test.dataDir,
+        port: test.port,
+      });
+      assert.equal(imported.activityId, 'act_k1');
+      assert.equal(imported.status, 'active');
+      assert.match(imported.message, /act_k1/);
+      clean(test, imported.message);
+      const view = test.store.view('act_k1');
+      assert.equal(view.provenance.artifactSha256, sha256(await readFile(input)));
+      const again = await importActivity({ file: input, dataDir: test.dataDir, port: test.port });
+      assert.equal(again.duplicate, true);
+      assert.match(again.message, /before/);
+
+      test.store.arrange('act_k1', { revision: 0, positions: { a: 0.25 } });
+      const submitted = test.store.submit('act_k1', { revision: 1 });
+      const submissionId = submitted.submissions[0]?.submissionId ?? '';
+      const exported = await exportSubmission({
+        submissionId,
+        outDir: test.output,
+        dataDir: test.dataDir,
+        port: test.port,
+      });
+      assert.equal(exported.fileName, `boopy-activity-submission-${submissionId}.json`);
+      const submissionPath = join(test.output, exported.fileName);
+      assert.equal((await stat(submissionPath)).mode & 0o777, 0o600);
+      const submission = ActivitySubmissionFile.parse(
+        JSON.parse(await readFile(submissionPath, 'utf8')),
+      );
+      assert.equal(submission.digest, 'arrange: My estimate = 50 MAD | hints: 0 of 1');
+      assert.match(exported.message, /copy its echo exactly/);
+      clean(test, exported.message);
+
+      const replyPath = join(test.directory, 'reply.json');
+      await writeFile(
+        replyPath,
+        `Here is the reply.\n\n\`\`\`json\n${JSON.stringify({
+          ...submission.respondWith,
+          author: 'Grok Bot',
+          reply: {
+            summary: { text: 'Synthetic example reply for rendering tests.', language: 'en' },
+            points: [
+              { about: 'arrange', text: 'Synthetic point about the estimate.', language: 'en' },
+            ],
+          },
+          next: null,
+        })}\n\`\`\`\n`,
+      );
+      const reply = await importReply({ file: replyPath, dataDir: test.dataDir, port: test.port });
+      assert.equal(reply.replyId, 'rep_k1');
+      assert.equal(reply.nextActivityId, null);
+      assert.match(reply.message, /rep_k1/);
+      assert.match(reply.message, /not verified/);
+      clean(test, reply.message);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('writes outputs only as new private files, whatever the umask', async () => {
+    const test = await setup();
+    const previous = process.umask();
+    try {
+      for (const mask of [0o000, 0o077]) {
+        process.umask(mask);
+        const outDir = join(test.directory, `umask-${mask}`);
+        await mkdir(outDir);
+        const result = await requestActivity({
+          packageId: test.packageId,
+          goal: 'Practice.',
+          outDir,
+          dataDir: test.dataDir,
+          port: test.port,
+        });
+        assert.equal((await stat(join(outDir, result.fileName))).mode & 0o777, 0o600);
+        assert.deepEqual(await readdir(outDir), [result.fileName]);
+      }
+    } finally {
+      process.umask(previous);
+      await test.close();
+    }
+  });
+
+  it('refuses an existing output or a dangling symlink and never overwrites', async () => {
+    const test = await setup();
+    try {
+      const { request } = await requested(test);
+      const input = join(test.directory, 'activity.json');
+      await writeFile(input, activityFile(request));
+      await importActivity({ file: input, dataDir: test.dataDir, port: test.port });
+      test.store.arrange('act_k1', { revision: 0, positions: { a: 0.5 } });
+      const submissionId =
+        test.store.submit('act_k1', { revision: 1 }).submissions[0]?.submissionId ?? '';
+      const name = `boopy-activity-submission-${submissionId}.json`;
+      await writeFile(join(test.output, name), 'existing synthetic bytes');
+      const before = test.events();
+      await assert.rejects(
+        exportSubmission({
+          submissionId,
+          outDir: test.output,
+          dataDir: test.dataDir,
+          port: test.port,
+        }),
+        /never overwritten/,
+      );
+      assert.equal(await readFile(join(test.output, name), 'utf8'), 'existing synthetic bytes');
+      const linked = join(test.directory, 'linked');
+      await mkdir(linked);
+      await symlink(join(test.directory, 'missing-target'), join(linked, name));
+      await assert.rejects(
+        exportSubmission({ submissionId, outDir: linked, dataDir: test.dataDir, port: test.port }),
+        /never overwritten/,
+      );
+      await assert.rejects(readFile(join(test.directory, 'missing-target')));
+      // The export file is claimed before the service is asked, so a refusal records nothing.
+      assert.equal(test.events(), before);
+      assert.deepEqual(await readdir(test.output), [`boopy-activity-request-arq_k1.json`, name]);
+      const fresh = join(test.directory, 'fresh');
+      await mkdir(fresh);
+      const exported = await exportSubmission({
+        submissionId,
+        outDir: fresh,
+        dataDir: test.dataDir,
+        port: test.port,
+      });
+      assert.deepEqual(await readdir(fresh), [exported.fileName]);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('removes a partly written export and points to the recorded bytes', async () => {
+    const test = await setup();
+    try {
+      const submissionId = await submitted(test);
+      const name = `boopy-activity-submission-${submissionId}.json`;
+      const full = join(test.directory, 'full');
+      await mkdir(full);
+      const restore = await failWrites(test.directory);
+      try {
+        await assert.rejects(
+          exportSubmission({ submissionId, outDir: full, dataDir: test.dataDir, port: test.port }),
+          (error: Error) => {
+            assert.equal(
+              error.message,
+              `Could not finish writing ${name}, so it was removed. Boopy has recorded this export; exporting it into another folder gives exactly the recorded bytes.`,
+            );
+            clean(test, error.message);
+            return true;
+          },
+        );
+      } finally {
+        restore();
+      }
+      assert.deepEqual(await readdir(full), []);
+      assert.equal(exportEvents(test), 1);
+      const recorded = test.store.view('act_k1').submissions[0]?.export?.fileSha256;
+      const other = join(test.directory, 'other');
+      await mkdir(other);
+      const exported = await exportSubmission({
+        submissionId,
+        outDir: other,
+        dataDir: test.dataDir,
+        port: test.port,
+      });
+      assert.equal(exported.fileSha256, recorded);
+      assert.equal(sha256(await readFile(join(other, name))), recorded);
+      assert.equal(exportEvents(test), 1);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('removes a partly written request file and its probe, and a new request works', async () => {
+    const test = await setup();
+    try {
+      const full = join(test.directory, 'full');
+      await mkdir(full);
+      const ask = () =>
+        requestActivity({
+          packageId: test.packageId,
+          goal: 'Synthetic goal.',
+          outDir: full,
+          dataDir: test.dataDir,
+          port: test.port,
+        });
+      const restore = await failWrites(test.directory);
+      try {
+        await assert.rejects(ask(), (error: Error) => {
+          assert.equal(
+            error.message,
+            'Could not finish writing boopy-activity-request-arq_k1.json, so it was removed.',
+          );
+          clean(test, error.message);
+          return true;
+        });
+      } finally {
+        restore();
+      }
+      assert.deepEqual(await readdir(full), []);
+      const again = await ask();
+      assert.equal(again.fileName, 'boopy-activity-request-arq_k2.json');
+      assert.deepEqual(await readdir(full), [again.fileName]);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('keeps a file another process put at the name and never says it was removed', async () => {
+    const test = await setup();
+    try {
+      const submissionId = await submitted(test);
+      const outDir = join(test.directory, 'replaced');
+      await mkdir(outDir);
+      const exported = `boopy-activity-submission-${submissionId}.json`;
+      const requested = 'boopy-activity-request-arq_k2.json';
+      const replace = (name: string) => async () => {
+        await rm(join(outDir, name));
+        await writeFile(join(outDir, name), 'written by another process');
+      };
+      for (const [name, run, message] of [
+        [
+          exported,
+          () => exportSubmission({ submissionId, outDir, dataDir: test.dataDir, port: test.port }),
+          `Could not finish writing ${exported}, and ${exported} is no longer the file Boopy wrote. Boopy has recorded this export; exporting it into another folder gives exactly the recorded bytes.`,
+        ],
+        [
+          requested,
+          () =>
+            requestActivity({
+              packageId: test.packageId,
+              goal: 'Synthetic goal.',
+              outDir,
+              dataDir: test.dataDir,
+              port: test.port,
+            }),
+          `Could not finish writing ${requested}, and ${requested} is no longer the file Boopy wrote.`,
+        ],
+      ] as const) {
+        const restore = await failWrites(test.directory, replace(name));
+        try {
+          await assert.rejects(run(), (error: Error) => {
+            assert.equal(error.message, message);
+            return true;
+          });
+        } finally {
+          restore();
+        }
+        assert.equal(await readFile(join(outDir, name), 'utf8'), 'written by another process');
+      }
+      // Only the two files of the other process are left; the request's probe file is gone.
+      assert.deepEqual((await readdir(outDir)).sort(), [requested, exported].sort());
+    } finally {
+      await test.close();
+    }
+  });
+
+  it('never says it wrote a file whose name another program replaced or removed', async () => {
+    const test = await setup();
+    try {
+      const submissionId = await submitted(test);
+      const exported = `boopy-activity-submission-${submissionId}.json`;
+      for (const [change, said, request] of [
+        ['replaced', 'was replaced by another program while Boopy was writing it', 2],
+        ['removed', 'is no longer the file Boopy wrote', 3],
+      ] as const) {
+        const outDir = join(test.directory, change);
+        await mkdir(outDir);
+        const requested = `boopy-activity-request-arq_k${request}.json`;
+        for (const [name, run, advice] of [
+          [
+            exported,
+            () =>
+              exportSubmission({ submissionId, outDir, dataDir: test.dataDir, port: test.port }),
+            'The export is recorded; export it again into another folder to get the recorded bytes.',
+          ],
+          [
+            requested,
+            () =>
+              requestActivity({
+                packageId: test.packageId,
+                goal: 'Synthetic goal.',
+                outDir,
+                dataDir: test.dataDir,
+                port: test.port,
+              }),
+            'Request again to get a new request file.',
+          ],
+        ] as const) {
+          // Another program removes the name, and may put its own file there; Boopy's whole
+          // write then lands in the file it created, which no longer has that name.
+          const restore = await patchWrites(test.directory, async (asUsual, content) => {
+            await rm(join(outDir, name));
+            if (change === 'replaced')
+              await writeFile(join(outDir, name), 'written by another program');
+            await asUsual(content);
+          });
+          try {
+            await assert.rejects(run(), (error: Error) => {
+              assert.equal(error.message, `${name} ${said}. ${advice}`);
+              clean(test, error.message);
+              return true;
+            });
+          } finally {
+            restore();
+          }
+        }
+        assert.deepEqual(
+          (await readdir(outDir)).sort(),
+          change === 'replaced' ? [requested, exported].sort() : [],
+        );
+        if (change === 'replaced')
+          assert.equal(
+            await readFile(join(outDir, exported), 'utf8'),
+            'written by another program',
+          );
+      }
+      // The export is recorded, and exporting it into another folder gives the recorded bytes.
+      const other = join(test.directory, 'other');
+      await mkdir(other);
+      const again = await exportSubmission({
+        submissionId,
+        outDir: other,
+        dataDir: test.dataDir,
+        port: test.port,
+      });
+      assert.equal(again.fileSha256, test.store.view('act_k1').submissions[0]?.export?.fileSha256);
+      assert.equal(sha256(await readFile(join(other, exported))), again.fileSha256);
+    } finally {
+      await test.close();
+    }
+  });
+});
