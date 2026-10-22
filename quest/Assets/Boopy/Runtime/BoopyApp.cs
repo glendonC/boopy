@@ -1118,5 +1118,348 @@ namespace Boopy.Quest
 
             return console == null ? ConsoleAction.None : console.HitAction(ray, out point);
         }
+
+        private bool ReleaseControl(HandInput hand)
+        {
+            if (pendingControl == ConsoleAction.None) return false;
+            var control = pendingControl;
+            var releaseRay = pendingUsesHandRay ? hand.Ray : new Ray(head!.position, head.forward);
+            var stillTargeted = (!pendingUsesHandRay || hand.RayActive) && ControlHit(releaseRay, out _) == control;
+            pendingControl = ConsoleAction.None;
+            console?.SetPressed(false);
+            dialogue?.PressFallbackAction(false);
+
+            active = null;
+            if (!stillTargeted) { pendingTarget = null; console?.ClearFocus(); return true; }
+            if (control == ConsoleAction.Talk) BeginTalkInternal(hand, true);
+            else if (control == ConsoleAction.AnswerTask) BeginAnswer();
+            else if (control == ConsoleAction.FinishTalk) { if (buttonTalk.Recording) FinishRecording(); }
+            else if (control == ConsoleAction.Cancel)
+            {
+                if (buttonTalk.Recording)
+                {
+                    // A cancelled recording, an answer or a Talk turn, gives back the task's line.
+                    DiscardRecording(); marker?.Hide(); RestoreConsole();
+                    ShowTask();
+                }
+                else captureRequest?.Cancel();
+            }
+            else if(control==ConsoleAction.PauseScene) {
+                liveScenePaused=!liveScenePaused;
+                PlayerPrefs.SetInt("Boopy.LiveScenePaused",liveScenePaused?1:0);
+                liveHud?.SetPaused(liveScenePaused);
+                console?.SetScenePaused(liveScenePaused);
+                if(liveScenePaused)liveRequest?.Cancel();
+            }
+            else if (control == ConsoleAction.CheckCapture) _ = CheckCapture();
+            else if (control == ConsoleAction.DismissCapture) { if (console?.HandoffRecoveryVisible == true) DismissHandoffRecovery(); else DismissCapture(); }
+            else if (control == ConsoleAction.ChoiceOne || control == ConsoleAction.ChoiceTwo || control == ConsoleAction.ChoiceThree || control == ConsoleAction.SendChoice) _ = Choose(control);
+            else if (control == ConsoleAction.FollowUpOne || control == ConsoleAction.FollowUpTwo) _ = FollowUp(control);
+            else if (control == ConsoleAction.Save) _ = Commit();
+            else if (control == ConsoleAction.Back && handoffReturnSession != null) RestoreHandoffReturn();
+            else if (control == ConsoleAction.Handoff)
+            {
+                console?.Activate(control);
+                _ = handoffRecoveryOffered || handoffStorageFailed ? RecoverHandoff() : CheckHandoff();
+                if (console != null) scene?.PlaceConsole(console);
+            }
+            else if (control == ConsoleAction.Confirm && pendingTarget != null) _ = Act(pendingTarget);
+            else if (control == ConsoleAction.ToggleIncluded && pendingTarget != null)
+            {
+                var item = session?.Items.FirstOrDefault(value => value.Id == pendingTarget);
+                if (item != null) _ = Act(pendingTarget, ContextReview.InclusionAction(item));
+            }
+            else if (console != null)
+            {
+                console.Activate(control);
+                feedback?.SetEnabled(inputAllowed && console.SoundEnabled);
+                scene?.SetReducedMotion(console.ReducedMotion);
+                dialogue?.SetComfort(console.ComfortScale, console.ReducedMotion);
+                // Resizing or opening a reader is an explicit action. Re-reserve its measured
+                // extent before placing annotations; hover alone never rearranges the scene.
+                if (session != null && session.State != "committed") scene?.Render(session);
+                else scene?.PlaceConsole(console);
+                if (control == ConsoleAction.Options && console.ContextObstructed)
+                {
+                    dialogue?.SetFallback(scene?.ConsolePlaced == false);
+                    SayStatus("Look toward a clear space to open Context.", 4f);
+                }
+            }
+            return true;
+        }
+
+        private void RestoreConsole()
+        {
+            if (busy) return;
+            if (session == null) console?.ShowCapture();
+            else
+            {
+                console?.Render(session);
+                if (session.State != "committed" && scene != null && !scene.ConsolePlaced && console != null) console.ShowControlsOnly(console.transform.position);
+            }
+        }
+
+        private void RestoreCaptureRecovery()
+        {
+            try
+            {
+                unresolvedStartId = (recoveryStore ?? throw new InvalidOperationException("Recovery storage is unavailable.")).Load();
+                unresolvedSnapshot = null;
+                recoveryStorageFailed = false;
+                if (unresolvedStartId != null)
+                    cancelledWaitNotice = "An earlier capture needs checking. Its picture and room placement are not kept on the headset after a restart.";
+            }
+            catch (Exception)
+            {
+                recoveryStorageFailed = true;
+                cancelledWaitNotice = "Could not read capture recovery. Choose Start new to clear the local record. Earlier work may still exist on the Mac.";
+            }
+            console?.SetCaptureRecovery(NeedsCaptureRecovery);
+            if (NeedsCaptureRecovery && cancelledWaitNotice != null) ReportFailure(cancelledWaitNotice);
+        }
+
+        private bool TryPersistCapture(string identity)
+        {
+            try
+            {
+                (recoveryStore ?? throw new InvalidOperationException("Recovery storage is unavailable.")).Save(identity);
+                recoveryStorageFailed = false;
+                return true;
+            }
+            catch (Exception)
+            {
+                recoveryStorageFailed = true;
+                cancelledWaitNotice = "Could not keep capture recovery on the headset. No new capture was sent. Choose Start new, then try again.";
+                ReportFailure(cancelledWaitNotice);
+                console?.SetCaptureRecovery(true);
+                return false;
+            }
+        }
+
+        private bool ClearCaptureRecovery()
+        {
+            try { (recoveryStore ?? throw new InvalidOperationException("Recovery storage is unavailable.")).Clear(); }
+            catch (Exception)
+            {
+                recoveryStorageFailed = true;
+                cancelledWaitNotice = "Could not clear the headset recovery record. Check again or choose Start new; earlier work stays on the Mac.";
+                ReportFailure(cancelledWaitNotice);
+                console?.SetCaptureRecovery(true);
+                return false;
+            }
+            unresolvedStartId = null;
+            unresolvedSnapshot = null;
+            recoveryStorageFailed = false;
+            console?.SetCaptureRecovery(false);
+            return true;
+        }
+
+        private void DismissCapture()
+        {
+            if (busy || !NeedsCaptureRecovery || !ClearCaptureRecovery()) return;
+            cancelledWaitNotice = null;
+            console?.ShowCapture();
+            if (console != null) scene?.PlaceConsole(console);
+            SayStatus(null);
+            RequestPermissions();
+            dialogue?.Show(DialogueStage.Response, "Ready for a new capture. The earlier capture may still finish on the Mac.");
+        }
+
+        /// <summary>Explicitly check one uncertain start; never resubmit it or play an old response.</summary>
+        private async Task CheckCapture()
+        {
+            if (busy || !inputAllowed || !isActiveAndEnabled || client == null || !NeedsCaptureRecovery) return;
+            if (unresolvedStartId == null)
+            {
+                RestoreCaptureRecovery();
+                return;
+            }
+            StopSpeech();
+            var identity = unresolvedStartId;
+            var snapshot = unresolvedSnapshot;
+            busy = true;
+            SayStatus(null);
+            console?.ShowCheckingCapture();
+            dialogue?.Show(DialogueStage.Working, "Checking…");
+            using var request = new CancellationTokenSource();
+            captureRequest = request;
+            dialogue?.SetCancelableWait(true);
+            try
+            {
+                var receipt = await client.ReadStartAsync(identity, request.Token);
+                request.Token.ThrowIfCancellationRequested();
+                if (unresolvedStartId != identity || receipt.RequestId != identity || string.IsNullOrWhiteSpace(receipt.SessionId))
+                    throw new InvalidOperationException("Capture identity mismatch.");
+                if (receipt.Status == "succeeded" && !string.IsNullOrWhiteSpace(receipt.SessionId) &&
+                    receipt.View != null && receipt.View.Id == receipt.SessionId)
+                {
+                    var observation = receipt.View.Observations.FirstOrDefault();
+                    if (snapshot != null && observation != null) scene?.Remember(observation.Id, snapshot);
+                    if (!ClearCaptureRecovery()) return;
+                    Apply(receipt.View);
+                    if (snapshot == null && receipt.View.State != "committed") dialogue?.Show(DialogueStage.Response, "Your earlier conversation is back. Object positions are unavailable after restart.");
+                    return;
+                }
+                var words = receipt.Status == "pending" ? "The Mac is still working. Check again later, or choose Start new."
+                    : receipt.Status == "failed" ? "The earlier capture failed on the Mac. Choose Start new to capture again."
+                    : receipt.Status == "interrupted" ? "The Mac restarted before the capture finished. Choose Start new to capture again."
+                    : "Could not verify this capture. Reconnect USB and check again.";
+                cancelledWaitNotice = words;
+                ReportFailure(words);
+            }
+            catch (OperationCanceledException)
+            {
+                cancelledWaitNotice = "Stopped checking. The earlier capture may still finish on the Mac.";
+                ReportFailure(cancelledWaitNotice);
+            }
+            catch (ServiceException failure) when (failure.Status == 404)
+            {
+                cancelledWaitNotice = "The Mac returned no receipt for this capture. Check again later, or choose Start new.";
+                ReportFailure(cancelledWaitNotice);
+            }
+            catch (Exception)
+            {
+                cancelledWaitNotice = "Could not verify this capture. Reconnect USB and check again, or choose Start new.";
+                ReportFailure(cancelledWaitNotice);
+            }
+            finally
+            {
+                captureRequest = null;
+                dialogue?.SetCancelableWait(false);
+                busy = false;
+                console?.SetBusy(false);
+                console?.SetCaptureRecovery(NeedsCaptureRecovery);
+            }
+        }
+
+        private async Task Choose(ConsoleAction control)
+        {
+            if (client == null || session == null || console == null || busy || NeedsCaptureRecovery || !inputAllowed || !isActiveAndEnabled) return;
+            var selection = console.SelectedChoice(control);
+            if (selection == null) return;
+            var prior = session;
+            var submit = control == ConsoleAction.SendChoice;
+            if (submit) console.SuppressDispatchedChoice();
+            StopSpeech(); busy = true; console.SetBusy(true, !submit);
+            if (submit) { console.ShowProcessing(false); dialogue?.Show(DialogueStage.Working, "Sending your choice to Boopy…"); }
+            using var request = new CancellationTokenSource(); captureRequest = request;
+            dialogue?.SetCancelableWait(true);
+            SessionView? speechView = null;
+            try
+            {
+                var returned = submit
+                    ? await client.SubmitChoiceStreamingAsync(prior.Id, selection, TurnProgressFor(request, prior.Id), request.Token)
+                    : await client.SelectChoiceAsync(prior.Id, selection, request.Token);
+                request.Token.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(captureRequest, request) || !inputAllowed || !isActiveAndEnabled || !ReferenceEquals(session, prior)) return;
+                Apply(returned);
+                if (submit) speechView = returned;
+            }
+            catch (OperationCanceledException) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = "Stopped waiting. The Mac may still finish this choice."; ReportFailure(cancelledWaitNotice); }
+            catch (ServiceException failure) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = failure.Message; ReportFailure(failure.Message); }
+            catch (Exception) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = "Could not check this choice. Reconnect before choosing again."; ReportFailure(cancelledWaitNotice); }
+            catch (Exception) { /* A replaced request cannot change the current presentation. */ }
+            finally { if (ReferenceEquals(captureRequest, request)) { captureRequest = null; dialogue?.SetCancelableWait(false); busy = false; console.SetBusy(false); } }
+            if (speechView != null && ReferenceEquals(session, speechView) && inputAllowed && isActiveAndEnabled) _ = Speak(speechView);
+        }
+
+        private async Task FollowUp(ConsoleAction control)
+        {
+            if (client == null || session == null || console == null || busy || NeedsCaptureRecovery || !inputAllowed || !isActiveAndEnabled) return;
+            var suggestion = console.SuggestedAction(control);
+            var origin = session.Dialogue;
+            if (suggestion == null || origin == null) return;
+            var priorSession = session.Id;
+            console.SuppressSuggestions();
+            StopSpeech();
+            busy = true;
+            SayStatus(null);
+            console.ShowProcessing(suggestion.TargetItemId != null);
+            dialogue?.Show(DialogueStage.Working, "Sending…");
+            using var request = new CancellationTokenSource();
+            captureRequest = request;
+            dialogue?.SetCancelableWait(true);
+            SessionView? speechView = null;
+            try
+            {
+                var returned = await client.FollowUpStreamingAsync(priorSession, origin, suggestion, TurnProgressFor(request, priorSession), request.Token);
+                request.Token.ThrowIfCancellationRequested();
+                if (!inputAllowed || !isActiveAndEnabled || session?.Id != priorSession) return;
+                Apply(returned);
+                speechView = returned;
+            }
+            catch (OperationCanceledException)
+            {
+                cancelledWaitNotice = "Stopped waiting. The Mac may still finish this question.";
+                ReportFailure(cancelledWaitNotice);
+            }
+            catch (ServiceException failure) { cancelledWaitNotice = failure.Message; ReportFailure(failure.Message); }
+            catch (Exception)
+            {
+                cancelledWaitNotice = "The reply is unavailable. The Mac may still finish this question. Reconnect before asking again.";
+                ReportFailure(cancelledWaitNotice);
+            }
+            finally
+            {
+                captureRequest = null;
+                dialogue?.SetCancelableWait(false);
+                busy = false;
+                console.SetBusy(false);
+            }
+            if (speechView != null) _ = Speak(speechView);
+        }
+
+        private void UpdateHandoffRecoveryPresentation() => console?.SetHandoffRecovery(
+            handoffRecoveryRecord != null || handoffStorageFailed, handoffRecoveryOffered,
+            handoffRecoveryRecord?.PackageId, handoffRecoveryRecord?.RequestId, handoffStorageFailed);
+        private void RestoreHandoffRecovery()
+        {
+            try
+            {
+                handoffRecoveryRecord = (handoffRecoveryStore ?? throw new InvalidOperationException()).Load();
+                handoffStorageFailed = false; handoffRecoveryOffered = handoffRecoveryRecord != null;
+            }
+            catch (Exception) { handoffStorageFailed = true; handoffRecoveryOffered = true; }
+            UpdateHandoffRecoveryPresentation();
+            if (!NeedsCaptureRecovery && (handoffRecoveryOffered || handoffStorageFailed))
+                dialogue?.Show(DialogueStage.Clarification, handoffStorageFailed
+                    ? "Could not read preparation recovery. Open Context to dismiss only this headset record. Context stays on your Mac."
+                    : "An earlier preparation needs checking. Open Context. Nothing has been sent.");
+        }
+        private bool TryPersistHandoff(HandoffRecoveryRecord record)
+        {
+            if (handoffStorageFailed) { ShowHandoffStorageError(); return false; }
+            try
+            {
+                (handoffRecoveryStore ?? throw new InvalidOperationException()).Save(record);
+                handoffRecoveryRecord = record; UpdateHandoffRecoveryPresentation(); return true;
+            }
+            catch (Exception) { handoffStorageFailed = true; handoffRecoveryOffered = true; ShowHandoffStorageError(); return false; }
+        }
+        private void ShowHandoffStorageError()
+        {
+            handoffState = "interrupted";
+            console?.SetHandoffState(handoffState, handoffRecoveryRecord?.RequestId);
+            UpdateHandoffRecoveryPresentation();
+            if (inputAllowed && isActiveAndEnabled)
+                dialogue?.Show(DialogueStage.Error, "Could not keep preparation recovery. No new preparation was sent. Open Context to dismiss only this headset record; context stays on your Mac.");
+        }
+        private void DismissHandoffRecovery()
+        {
+            if (busy) return;
+            try { (handoffRecoveryStore ?? throw new InvalidOperationException()).Clear(); }
+            catch (Exception) { handoffStorageFailed = true; ShowHandoffStorageError(); return; }
+            handoffRecoveryRecord = null; handoffStorageFailed = false; handoffRecoveryOffered = false;
+            UpdateHandoffRecoveryPresentation(); console?.Activate(ConsoleAction.Back);
+            RestoreHandoffReturn();
+            dialogue?.Show(DialogueStage.LocalSave, "Only this headset recovery record was cleared. Context stays on your Mac. Nothing has been sent.");
+        }
+        private void RestoreHandoffReturn()
+        {
+            if (busy || handoffReturnSession == null) return;
+            var prior = handoffReturnSession; handoffReturnSession = null;
+            handoffRecoveryOffered = handoffRecoveryRecord != null && handoffRecoveryRecord.SessionId != prior.Id;
+            scene?.Clear(); Apply(prior); UpdateHandoffRecoveryPresentation();
+        }
     }
 }
