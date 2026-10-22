@@ -1135,4 +1135,390 @@ export class Boopy {
     }
     this.#respond(sessionId, heard.utteranceId);
   }
+
+  async #interpret(
+    sessionId: string,
+    observationId: string,
+    heard: Heard,
+    scope: 'auto' | 'scene',
+    work?: { ocr: boolean; segmentation: boolean; reason: string },
+    selectedTarget?: Item,
+  ): Promise<void> {
+    const session = this.#projection.session(sessionId);
+    const observation = session?.observations.find((o) => o.id === observationId);
+    if (session === undefined || observation === undefined) {
+      throw new BoopyError(404, 'no_observation', 'No such observation.');
+    }
+    const jpeg = this.#deps.media.get(observation.frameSha256, 'jpg');
+    // T marks the selected record, not fabricated hand/head input or a box in a new frame.
+    const targetBox =
+      selectedTarget?.grounding.observationId === observationId
+        ? (selectedTarget.grounding.box ?? null)
+        : null;
+    const targetPoint =
+      targetBox === null
+        ? null
+        : { x: (targetBox.x0 + targetBox.x1) / 2, y: (targetBox.y0 + targetBox.y1) / 2 };
+    const gaze = selectedTarget === undefined ? (observation.cues.gaze?.point ?? null) : null;
+    const pointer = selectedTarget === undefined ? (observation.cues.pointer?.point ?? null) : null;
+    const [lines, evidence] = await Promise.all([
+      work?.ocr === false
+        ? Promise.resolve([] as TextLine[])
+        : this.#readText(sessionId, observationId, jpeg, heard.utteranceId),
+      prepareEvidence(jpeg, { gaze, pointer }, targetPoint),
+    ]);
+    const focus: Point = targetPoint ?? pointer ?? gaze ?? { x: 0.5, y: 0.5 };
+    const interpreter = this.#deps.interpreter;
+    const interpretationId = this.#newId('int');
+    const started = performance.now();
+    try {
+      this.#processing(sessionId, 'interpreting', heard.utteranceId, observationId);
+      const result = await interpreter.interpret({
+        inputSource: session.utterances.find((utterance) => utterance.id === heard.utteranceId)
+          ?.source,
+        conversation: session.conversation
+          .filter((turn) => turn.utteranceId !== heard.utteranceId)
+          .slice(-6),
+        contextualItems: session.items
+          .filter((item) => item.status !== 'ignored' && item.status !== 'rejected')
+          .slice(-8)
+          .map(({ id, kind, label, statement, status, origin, confidence, note }) => ({
+            id,
+            kind,
+            label,
+            statement,
+            status,
+            origin,
+            confidence,
+            ...(note === undefined ? {} : { note }),
+          })),
+        said: heard.text === '' ? 'What is this?' : heard.text,
+        language: heard.language,
+        ...(selectedTarget === undefined
+          ? {}
+          : {
+              selectedReference: {
+                itemId: selectedTarget.id,
+                observationId,
+                label: selectedTarget.label,
+                statement: selectedTarget.statement,
+                verification: verificationOf(selectedTarget),
+                disposition: selectedTarget.status,
+                confidence: selectedTarget.confidence,
+                box: targetBox,
+                text: selectedTarget.text ?? [],
+                ...(selectedTarget.note === undefined ? {} : { note: selectedTarget.note }),
+              },
+            }),
+        sourceContext: {
+          source: observation.source,
+          capturedAt: observation.capturedAt,
+          timestampTrusted: observation.timestampTrusted,
+          selectionReason:
+            work?.reason ?? 'Legacy selected view; current scene/time not established.',
+        },
+        scope,
+        gaze,
+        pointer,
+        image: evidence.marked,
+        crop: evidence.crop,
+        text: nearest(lines, focus.x, focus.y, PROMPT_LINES),
+        decisions: session.items.filter(touched).map((item) => ({
+          label: item.label,
+          status: item.status,
+          ...(item.note !== undefined && { note: item.note }),
+        })),
+      });
+      const latencyMs = Math.round(performance.now() - started);
+      const normalized = normalize(result.output, {
+        interpretationId,
+        observationId,
+        scope,
+        text: lines,
+      });
+      const answer = result.output.response?.trim() ?? '';
+      if (answer !== '') {
+        const answerId = `${interpretationId}.__reply`;
+        normalized.items.push({
+          id: answerId,
+          kind: 'note',
+          label: 'Suggested answer',
+          statement: answer,
+          grounding: { kind: 'scene', observationId },
+          confidence: null,
+          origin: 'model',
+          status: 'proposed',
+          emphasis: false,
+          interpretationId,
+        });
+        const answeredReferent = selectedTarget?.id ?? normalized.referentId;
+        if (answeredReferent != null)
+          normalized.relations.push({
+            id: `${interpretationId}.__reply-about`,
+            from: answerId,
+            to: answeredReferent,
+            kind: 'about',
+          });
+      }
+      const actionTarget = selectedTarget?.id ?? normalized.referentId;
+      const actions: ContextualAction[] =
+        answer === ''
+          ? []
+          : [...new Set((result.output.followUps ?? []).map((s) => s.question.trim()))]
+              .filter(
+                (question) =>
+                  question.length > 0 &&
+                  question.length <= 120 &&
+                  readUtterance(question, false).kind === 'ask',
+              )
+              .slice(0, 2)
+              .map((question, index) => ({
+                id: `${interpretationId}.followup-${index + 1}`,
+                question,
+                targetItemId: actionTarget,
+                observationId,
+              }));
+      const proposedChoice = choiceForResponse(result.output);
+      const choice: ChoiceCard | undefined =
+        proposedChoice !== undefined
+          ? {
+              id: `${interpretationId}.choice`,
+              kind: 'choice',
+              prompt: proposedChoice.prompt,
+              options: proposedChoice.options.map((option, index) => ({
+                id: `${interpretationId}.choice-option-${index + 1}`,
+                label: option.label,
+                value: option.value,
+              })),
+              selectedOptionId: null,
+            }
+          : undefined;
+      this.#record({
+        type: 'interpretation.proposed',
+        session: sessionId,
+        actor: `model:${interpreter.provider}:${interpreter.model}`,
+        data: {
+          interpretationId,
+          observationId,
+          utteranceId: heard.utteranceId,
+          provider: interpreter.provider,
+          model: interpreter.model,
+          latencyMs,
+          ...normalized,
+          ...(selectedTarget === undefined ? {} : { referentId: selectedTarget.id }),
+          raw: result.raw,
+          actions,
+          ...(choice === undefined ? {} : { choice }),
+        },
+      });
+      this.#notices.set(
+        sessionId,
+        answer !== ''
+          ? answer
+          : selectedTarget !== undefined
+            ? "I couldn't answer that from the recorded view. Could you rephrase your question?"
+            : "I couldn't tell what you meant from this view. Point at one thing and ask again.",
+      );
+      if (work?.segmentation !== false)
+        await this.#refineGrounding(
+          sessionId,
+          observationId,
+          interpretationId,
+          heard.utteranceId,
+          jpeg,
+          pointer ?? gaze,
+        );
+    } catch (failure) {
+      // Provider exceptions may echo private inputs or credentials; never persist or speak them.
+      const code =
+        interpreter.provider === 'ollama' && failure instanceof InterpreterUnavailableError
+          ? 'interpreter_unavailable'
+          : 'interpreter_failed';
+      const message =
+        code === 'interpreter_unavailable'
+          ? 'I can’t reach the model on your Mac. Try again once it’s running.'
+          : 'Could not interpret that. Please try again.';
+      this.#record({
+        type: 'interpretation.failed',
+        session: sessionId,
+        actor: 'system',
+        data: {
+          observationId,
+          utteranceId: heard.utteranceId,
+          provider: interpreter.provider,
+          model: interpreter.model,
+          message,
+          code,
+        },
+      });
+      this.#notices.set(sessionId, message);
+    }
+  }
+
+  async #refineGrounding(
+    sessionId: string,
+    observationId: string,
+    interpretationId: string,
+    utteranceId: string,
+    jpeg: Buffer,
+    focus: Point | null,
+  ): Promise<void> {
+    const segmenter = this.#deps.segmenter;
+    if (segmenter === undefined || segmenter === null) return;
+    const session = this.#projection.session(sessionId);
+    const observation = session?.observations.find((candidate) => candidate.id === observationId);
+    if (session === undefined || observation === undefined) return;
+    const eligible = session.items.filter(
+      (item) =>
+        item.origin === 'model' &&
+        item.status === 'proposed' &&
+        item.interpretationId === interpretationId &&
+        item.grounding.observationId === observationId &&
+        item.grounding.box !== undefined &&
+        item.label.trim() !== '' &&
+        (item.id === session.referentId || item.kind === 'object' || item.kind === 'text'),
+    );
+    const ordered = [
+      ...eligible.filter((item) => item.id === session.referentId),
+      ...eligible.filter((item) => item.id !== session.referentId),
+    ].slice(0, MAX_SEGMENT_ITEMS);
+    if (ordered.length === 0) return;
+    this.#processing(sessionId, 'refining-geometry', utteranceId, observation.id);
+    const started = performance.now();
+    const answers = await segmentItems(
+      segmenter,
+      ordered.map((item) => ({
+        image: jpeg,
+        width: observation.width,
+        height: observation.height,
+        concept: item.label.trim().slice(0, 120),
+        box: item.grounding.box as Box,
+        // The capture point refers to the primary object; it must not suppress other scene objects.
+        focus: item.id === session.referentId ? focus : null,
+      })),
+    );
+    let unavailable = 0;
+    ordered.forEach((item, index) => {
+      const result = answers[index] ?? {
+        outcome: 'failed' as const,
+        latencyMs: Math.round(performance.now() - started),
+        confidence: null,
+      };
+      if (
+        !this.#recordRefinement(
+          sessionId,
+          item,
+          observation,
+          interpretationId,
+          utteranceId,
+          result,
+          segmenter,
+        )
+      )
+        unavailable++;
+    });
+    if (unavailable > 0)
+      this.#notices.set(
+        sessionId,
+        `${this.#notices.get(sessionId) ?? ''} ${unavailable} outline${unavailable === 1 ? '' : 's'} unavailable, shown as ${unavailable === 1 ? 'an approximate box' : 'approximate boxes'}.`.trim(),
+      );
+    if (eligible.length > ordered.length)
+      this.#notices.set(
+        sessionId,
+        `${this.#notices.get(sessionId) ?? ''} ${eligible.length - ordered.length} more object${eligible.length - ordered.length === 1 ? '' : 's'} kept as approximate boxes (capture limit).`.trim(),
+      );
+  }
+
+  #recordRefinement(
+    sessionId: string,
+    item: Item,
+    observation: Observation,
+    interpretationId: string,
+    utteranceId: string,
+    result: SegmentResult,
+    segmenter: Segmenter,
+  ): boolean {
+    const requestedConcept = item.label.trim().slice(0, 120);
+    const concept = result.concept ?? requestedConcept;
+    let spatial: SpatialEvidence = {
+      provider: segmenter.provider,
+      model: segmenter.model,
+      concept,
+      latencyMs: result.latencyMs,
+      confidence: result.confidence,
+      verification: 'proposed' as const,
+      outcome: result.outcome,
+      frameSha256: observation.frameSha256,
+      utteranceId,
+    };
+    const candidate = Grounding.safeParse({
+      ...item.grounding,
+      ...(result.contour !== undefined && { contour: result.contour }),
+      spatial,
+    });
+    let contour = candidate.success ? candidate.data.contour : undefined;
+    const failed = () => {
+      contour = undefined;
+      spatial = {
+        provider: segmenter.provider,
+        model: segmenter.model,
+        concept: requestedConcept,
+        latencyMs:
+          Number.isFinite(result.latencyMs) && result.latencyMs >= 0 ? result.latencyMs : 0,
+        confidence: null,
+        verification: 'proposed',
+        outcome: 'failed',
+        frameSha256: observation.frameSha256,
+        utteranceId,
+      };
+    };
+    if (
+      !candidate.success ||
+      (result.outcome === 'contour') !== (contour !== undefined) ||
+      (result.outcome !== 'contour' && result.mask !== undefined)
+    )
+      failed();
+    else if (result.mask !== undefined) {
+      try {
+        if (!Buffer.isBuffer(result.mask)) throw new Error('Invalid mask artifact.');
+        spatial.maskSha256 = this.#deps.media.put(result.mask, 'mask');
+      } catch {
+        failed();
+      }
+    }
+    this.#record({
+      type: 'grounding.refined',
+      session: sessionId,
+      actor: `model:${segmenter.provider}:${segmenter.model}`,
+      data: {
+        itemId: item.id,
+        observationId: observation.id,
+        interpretationId,
+        ...(contour !== undefined && { contour }),
+        spatial,
+      },
+    });
+    return spatial.outcome === 'contour';
+  }
+
+  async #readText(
+    session: string,
+    observationId: string,
+    jpeg: Buffer,
+    utteranceId: string,
+  ): Promise<TextLine[]> {
+    const reader = this.#deps.text;
+    if (reader === null) return [];
+    this.#processing(session, 'reading-text', utteranceId, observationId);
+    const lines = await reader.read(jpeg).catch(() => [] as TextLine[]);
+    if (lines.length > 0) {
+      this.#record({
+        type: 'text.read',
+        session,
+        actor: 'system',
+        data: { observationId, engine: reader.name, region: null, lines },
+      });
+    }
+    return lines;
+  }
 }
