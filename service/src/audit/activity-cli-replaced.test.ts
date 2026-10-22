@@ -299,4 +299,116 @@ async function numberedLikeFat() {
       info.ino = typeof info.ino === 'bigint' ? -info.ino : -info.ino;
     return stats;
   };
+  const wrap = (owner: Record<string, unknown>, key: string) => {
+    const usual = owner[key] as (...args: unknown[]) => unknown;
+    owner[key] = function (this: unknown, ...args: unknown[]) {
+      const result = usual.apply(this, args);
+      return result instanceof Promise ? result.then(renumber) : renumber(result);
+    };
+    return () => {
+      owner[key] = usual;
+    };
+  };
+  const restores = [
+    wrap(handles, 'stat'),
+    wrap(fs, 'lstatSync'),
+    wrap(fs, 'fstatSync'),
+    wrap(fs, 'statSync'),
+    wrap(fs.promises, 'lstat'),
+    wrap(fs.promises, 'stat'),
+  ];
+  syncBuiltinESMExports();
+  return () => {
+    for (const restore of restores) restore();
+    syncBuiltinESMExports();
+  };
 }
+
+/** Until the returned function is called, every file write puts its first 16 bytes and fails. */
+async function failWritesAfter16Bytes() {
+  const probe = await open(process.execPath, 'r');
+  const handles = Object.getPrototypeOf(probe);
+  await probe.close();
+  const writeFileAsUsual = handles.writeFile;
+  handles.writeFile = async function (this: FileHandle, content: string) {
+    await writeFileAsUsual.call(this, content.slice(0, 16), 'utf8');
+    throw Object.assign(new Error('synthetic full disk'), { code: 'ENOSPC' });
+  };
+  return () => {
+    handles.writeFile = writeFileAsUsual;
+  };
+}
+
+/** Runs export or request in this process against a connector that answers once asked. */
+async function inProcess(name: string, dataDir: string, out: string) {
+  const service = await connector();
+  try {
+    const running =
+      name === EXPORTED
+        ? exportSubmission({ dataDir, port: service.port, submissionId: SUBMISSION, outDir: out })
+        : requestActivity({
+            dataDir,
+            port: service.port,
+            packageId: 'ctx_auditreplaced1',
+            goal: 'Synthetic goal.',
+            outDir: out,
+          });
+    await Promise.race([
+      service.asked,
+      running.then(
+        () => {},
+        () => {},
+      ),
+    ]);
+    service.answer();
+    return await running;
+  } finally {
+    await service.close();
+  }
+}
+
+test('audit U15e: where a file is renumbered once it holds data, a finished file says Wrote', async () => {
+  const { directory, dataDir, out } = await folders();
+  const restore = await numberedLikeFat();
+  try {
+    const empty = join(directory, 'empty.json');
+    await writeFile(empty, '');
+    assert.ok(lstatSync(empty, { bigint: true }).ino < 0n, 'the stand-in numbering is not in use');
+    for (const name of [EXPORTED, REQUESTED]) {
+      const result = await inProcess(name, dataDir, out).catch((error: Error) =>
+        assert.fail(`${name}: ${error.message}`),
+      );
+      assert.ok(result.message.startsWith(`Wrote ${name} in the folder you chose`), name);
+      assert.equal(await readFile(join(out, name), 'utf8'), CONTENT, name);
+    }
+    // Both files are there, and the request's probe file is gone.
+    assert.deepEqual((await readdir(out)).sort(), [EXPORTED, REQUESTED].sort());
+  } finally {
+    restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('audit U15d and U15e: where a file is renumbered once it holds data, a partial file is removed', async () => {
+  const { directory, dataDir, out } = await folders();
+  const restoreNumbers = await numberedLikeFat();
+  const restoreWrites = await failWritesAfter16Bytes();
+  try {
+    for (const name of [EXPORTED, REQUESTED]) {
+      const failure = await inProcess(name, dataDir, out).then(
+        () => assert.fail(`${name}: a failed write reported success`),
+        (error: Error) => error.message,
+      );
+      assert.ok(
+        failure.startsWith(`Could not finish writing ${name}, so it was removed.`),
+        `${name}: ${failure}`,
+      );
+    }
+    // Neither partial file nor the request's probe file is left.
+    assert.deepEqual(await readdir(out), []);
+  } finally {
+    restoreWrites();
+    restoreNumbers();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
