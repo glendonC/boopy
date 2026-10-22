@@ -767,3 +767,331 @@ export function digestOf(
     DIGEST_LIMIT,
   );
 }
+
+function arrangeDigest(component: ArrangeComponent, positions: Positions): string {
+  const derived = deriveArrangement(component, positions);
+  const label = (key: string) =>
+    component.tokens.find((token) => token.key === key)?.label.text ?? key;
+  const axis = component.axis;
+  if (axis.kind === 'viewer-left-right') {
+    const target = component.target ?? null;
+    const subject = target?.subject ?? 'a';
+    const object = target?.object ?? 'b';
+    const words = (relation: 'left-of' | 'right-of') =>
+      relation === 'left-of' ? 'left of' : 'right of';
+    let text =
+      derived.relation === null
+        ? 'not placed'
+        : derived.relation === 'unclear'
+          ? `${label(subject)} and ${label(object)} too close to tell`
+          : `${label(subject)} ${words(derived.relation)} ${label(object)} (your view)`;
+    if (target !== null)
+      text += `; requested ${label(target.subject)} ${words(target.relation)} ${label(target.object)}; arrangement ${derived.matchesTarget ? 'matches' : 'does not match'}`;
+    return `arrange: ${text}`;
+  }
+  if (axis.kind === 'scale') {
+    const unplaced = component.tokens
+      .filter((token) => !derived.order.includes(token.key))
+      .map((token) => token.label.text);
+    const parts = [];
+    if (derived.order.length > 0)
+      parts.push(
+        `order from ${axis.low} to ${axis.high}: ${derived.order.map(label).join(', ')}${derived.ties ? ' (some too close to tell)' : ''}`,
+      );
+    if (unplaced.length > 0) parts.push(`not placed: ${unplaced.join(', ')}`);
+    return `arrange: ${parts.join('; ')}`;
+  }
+  const unit = axis.unit ? ` ${axis.unit}` : '';
+  const values = component.tokens.map((token) => {
+    const value = derived.values?.[token.key] ?? null;
+    return value === null
+      ? `${token.label.text} not set`
+      : `${token.label.text} = ${formatNumber(value)}${unit}`;
+  });
+  return `arrange: ${values.join('; ')}`;
+}
+
+/** Echo comparison tolerates whitespace only. */
+export function normalizeEcho(value: string): string {
+  return value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+}
+
+const Revision = z.number().int().min(0);
+export const ArrangementRequest = z.strictObject({
+  revision: Revision,
+  positions: z.record(z.string(), z.number().min(0).max(1).nullable()),
+});
+export type ArrangementRequest = z.output<typeof ArrangementRequest>;
+export const SequenceRequest = z.strictObject({
+  revision: Revision,
+  chosen: z
+    .array(TileKey)
+    .max(8)
+    .refine((keys) => new Set(keys).size === keys.length, 'Choose each tile at most once.'),
+});
+export type SequenceRequest = z.output<typeof SequenceRequest>;
+export const RevisionRequest = z.strictObject({ revision: Revision });
+
+export const ActivityRequestInput = z.strictObject({
+  packageId: PackageId,
+  preparationRequestId: PreparationRequestId.optional(),
+  goal: personText(300),
+  personLanguage: LanguageTag.default('en'),
+  background: personText(200).optional(),
+});
+export type ActivityRequestInput = z.input<typeof ActivityRequestInput>;
+export const ContentInput = z.strictObject({ content: z.string() });
+
+const RelationView = z.enum(['left-of', 'right-of', 'unclear']);
+const TextItemView = z.strictObject({
+  text: z.string(),
+  language: z.string(),
+  gloss: z.string().nullable(),
+});
+const Target = z.strictObject({ subject: TokenKey, relation: Direction, object: TokenKey });
+const DerivedFields = {
+  relation: RelationView.nullable(),
+  matchesTarget: z.boolean().nullable(),
+  order: z.array(TokenKey),
+  ties: z.boolean(),
+  values: z.record(z.string(), z.number().nullable()).nullable(),
+};
+const PositionsView = z.record(z.string(), z.number().nullable());
+const ArrangeResult = z.strictObject({ positions: PositionsView, ...DerivedFields });
+const SequenceResult = z.strictObject({ chosen: z.array(z.string()), text: z.string() });
+const RevealedHint = z.strictObject({
+  index: z.number().int().min(0),
+  text: z.string(),
+  language: z.string(),
+  gloss: z.string().nullable(),
+});
+
+const CallModel = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,44}$/)
+  .refine((model) => !/grok/i.test(model) && !LINK.test(model));
+
+export const CallProvenance = z.strictObject({
+  callId: CallId,
+  provider: z.literal('ollama'),
+  model: CallModel,
+  durationMs: z.number().int().nonnegative(),
+});
+export type CallProvenance = z.output<typeof CallProvenance>;
+export const CallFailure = z.strictObject({
+  code: z.enum([
+    'assistant_unreachable',
+    'assistant_timeout',
+    'assistant_error',
+    'answer_unreadable',
+    'answer_invalid',
+    'assistant_busy',
+    'interrupted',
+  ]),
+  message: z.string(),
+});
+export type CallFailure = z.output<typeof CallFailure>;
+export const CallState = z.enum(['running', 'imported', 'failed', 'interrupted']);
+export const ActivityCallView = z.strictObject({
+  callId: CallId,
+  kind: z.enum(['activity', 'reply']),
+  state: CallState,
+  provider: z.literal('ollama'),
+  model: CallModel,
+  askedAt: z.string(),
+  finishedAt: z.string().nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  packageId: PackageId,
+  requestId: RequestId,
+  submissionId: SubmissionId.nullable(),
+  activityId: ActivityId.nullable(),
+  replyId: ReplyId.nullable(),
+  nextActivityId: ActivityId.nullable(),
+  failure: CallFailure.nullable(),
+  issues: z.array(displayText(200).refine((issue) => /^[^:]+: \S/.test(issue))).max(MAX_ISSUES),
+});
+export type ActivityCallView = z.output<typeof ActivityCallView>;
+export const CallMetrics = z.strictObject({
+  totalMs: z.number().nonnegative().optional(),
+  loadMs: z.number().nonnegative().optional(),
+  promptEvalMs: z.number().nonnegative().optional(),
+  evalMs: z.number().nonnegative().optional(),
+  promptTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+});
+export type CallMetrics = z.output<typeof CallMetrics>;
+const ReplyCall = z.strictObject({
+  callId: CallId,
+  state: CallState,
+  failure: CallFailure.nullable(),
+});
+
+const ReplyView = z.strictObject({
+  call: CallProvenance.optional(),
+  replyId: ReplyId,
+  importedAt: z.string(),
+  claimedAuthor: z.string().nullable(),
+  artifactSha256: Sha256,
+  summary: TextItemView,
+  points: z.array(
+    z.strictObject({
+      about: About,
+      text: z.string(),
+      language: z.string(),
+      gloss: z.string().nullable(),
+    }),
+  ),
+  nextActivityId: ActivityId.nullable(),
+});
+
+export const ActivityView = z.strictObject({
+  activityId: ActivityId,
+  revision: z.number().int().min(0),
+  status: z.enum(['active', 'fallback-only']),
+  /** Null when the body was invalid or unsupported: only the fallback text is shown then. */
+  title: z.string().nullable(),
+  purpose: z.string().nullable(),
+  instruction: TextItemView.nullable(),
+  fallbackText: z.string(),
+  issues: z.array(z.string()).max(MAX_ISSUES),
+  provenance: z.strictObject({
+    call: CallProvenance.optional(),
+    requestId: RequestId,
+    packageId: PackageId,
+    packetSha256: Sha256,
+    artifactSha256: Sha256,
+    claimedAuthor: z.string().nullable(),
+    authorship: z.enum(['claimed-by-file', 'called-by-boopy']),
+    importedAt: z.string(),
+    parent: z
+      .strictObject({ activityId: ActivityId, submissionId: SubmissionId, replyId: ReplyId })
+      .nullable(),
+  }),
+  components: z.array(
+    z.discriminatedUnion('type', [
+      z.strictObject({
+        type: z.literal('arrange'),
+        axis: z.discriminatedUnion('kind', [
+          z.strictObject({ kind: z.literal('viewer-left-right') }),
+          z.strictObject({ kind: z.literal('scale'), low: z.string(), high: z.string() }),
+          z.strictObject({
+            kind: z.literal('number'),
+            min: z.number(),
+            max: z.number(),
+            step: z.number(),
+            unit: z.string().nullable(),
+          }),
+        ]),
+        tokens: z.array(
+          z.strictObject({
+            key: TokenKey,
+            label: TextItemView,
+            source: z.strictObject({ sourceId: z.string(), label: z.string() }).nullable(),
+            position: z.number().nullable(),
+            value: z.number().nullable(),
+          }),
+        ),
+        target: Target.nullable(),
+        derived: z.strictObject(DerivedFields),
+      }),
+      z.strictObject({
+        type: z.literal('sequence'),
+        joiner: z.enum(['space', 'list']),
+        language: z.string(),
+        tiles: z.array(z.strictObject({ key: z.string(), text: z.string(), used: z.boolean() })),
+        chosen: z.array(z.string()),
+        text: z.string(),
+      }),
+    ]),
+  ),
+  hints: z.strictObject({ total: z.number().int().min(0), revealed: z.array(RevealedHint) }),
+  canSubmit: z.boolean(),
+  submissions: z.array(
+    z.strictObject({
+      submissionId: SubmissionId,
+      number: z.number().int().min(1),
+      submittedAt: z.string(),
+      revision: z.number().int().min(1),
+      digest: z.string(),
+      arrange: ArrangeResult.nullable(),
+      sequence: SequenceResult.nullable(),
+      hintsRevealed: z.array(z.number().int().min(0)),
+      /** Opened after the previous submission of this activity; all of them for the first. */
+      hintsRevealedSincePrevious: z.array(z.number().int().min(0)),
+      /** Null until exported. */
+      export: z
+        .strictObject({
+          state: z.literal('exported-not-sent'),
+          fileSha256: Sha256,
+          exportedAt: z.string(),
+        })
+        .nullable(),
+      reply: ReplyView.nullable(),
+      replyCall: ReplyCall.nullable().optional(),
+    }),
+  ),
+});
+export type ActivityView = z.output<typeof ActivityView>;
+
+export const ActivitySummary = z.strictObject({
+  call: z.strictObject({ provider: z.literal('ollama'), model: CallModel }).optional(),
+  activityId: ActivityId,
+  title: z.string().nullable(),
+  status: z.enum(['active', 'fallback-only']),
+  importedAt: z.string(),
+  claimedAuthor: z.string().nullable(),
+  submissions: z.number().int().min(0),
+  awaitingReply: z.boolean(),
+  replyAvailable: z.boolean(),
+  parentActivityId: ActivityId.nullable(),
+});
+export type ActivitySummary = z.output<typeof ActivitySummary>;
+
+export const SourceEntry = z.strictObject({
+  sourceId: z.string(),
+  label: z.string(),
+  gloss: z.string().nullable(),
+  verification: z.string(),
+});
+export type SourceEntry = z.output<typeof SourceEntry>;
+
+/**
+ * Sources an activity may name: the baseline package's evidence records except rejected ones and
+ * ones a later correction superseded. A legacy version 1 package allows none.
+ */
+export function allowedSources(
+  pkg: unknown,
+  supersessions: readonly Supersession[],
+): SourceEntry[] {
+  if ((pkg as { version?: unknown } | null | undefined)?.version !== 2) return [];
+  const superseded = new Set(supersessions.map((link) => evidenceSourceId(link.predecessor)));
+  return evidenceRecords(pkg)
+    .filter((record) => record.disposition !== 'rejected' && !superseded.has(record.sourceId))
+    .map((record) => ({
+      sourceId: record.sourceId,
+      label: record.label,
+      gloss: record.gloss ?? null,
+      verification: record.verification,
+    }));
+}
+
+/** Section 1, written by Boopy. */
+export const ActivityRequestFile = z.strictObject({
+  type: z.literal('boopy.activity-request'),
+  version: z.literal(1),
+  requestId: RequestId,
+  exportedAt: z.string(),
+  delivery: z.enum(['not-sent-by-boopy', 'sent-by-boopy-to-local-model']),
+  note: z.string(),
+  goal: z.string(),
+  personLanguage: LanguageTag,
+  background: z.string().nullable(),
+  instructions: z.array(z.string()).min(1),
+  respondWith: z.strictObject({
+    type: z.literal('boopy.activity'),
+    version: z.literal(1),
+    binding: z.strictObject({ requestId: RequestId, packageId: PackageId, packetSha256: Sha256 }),
+  }),
+  sources: z.array(SourceEntry),
+  context: z.strictObject({ packageId: PackageId, packetSha256: Sha256, packet: z.string() }),
+});
