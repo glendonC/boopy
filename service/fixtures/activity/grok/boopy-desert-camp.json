@@ -1,0 +1,44 @@
+{
+  "type": "boopy.activity",
+  "version": 1,
+  "binding": {
+    "requestId": "arq_yqUSl_PlLXbzQx_o",
+    "packageId": "ctx_mvazxf42cm2el2",
+    "packetSha256": "9c21d882c49d0ef9e47728f481234dbf0bb16fcb6625134ff7f60ed1aa5f9c54"
+  },
+  "author": "Grok Bot",
+  "fallbackText": "Desert camp: left and right\nPractice saying where things are in Korean.\nPlace the camels to the left of the tents, from your own view. Then say in Korean where the camels are.\nTiles: 낙타 (camels), 텐트 (tents)\nHint 1: Left is 왼쪽 and right is 오른쪽.\nHint 2: To say something is somewhere, use 있어요 (is there).\nHint 3: Pattern: A가 B ___에 있어요. Fill in the side.",
+  "activity": {
+    "title": "Desert camp: left and right",
+    "purpose": "Practice saying where things are in Korean, using camels and tents at a desert camp.",
+    "instruction": {
+      "text": "낙타를 텐트 왼쪽에 놓고 한국어로 말해 보세요.",
+      "language": "ko",
+      "gloss": "Place the camels to the left of the tents, then say where they are in Korean."
+    },
+    "components": [
+      {
+        "type": "arrange",
+        "axis": { "kind": "viewer-left-right" },
+        "tokens": [
+          {
+            "key": "a",
+            "label": { "text": "낙타", "language": "ko", "gloss": "camels" },
+            "sourceId": "ctx_mvazxf42cm2el2:int_mvazxf3siuvntq.camels"
+          },
+          {
+            "key": "b",
+            "label": { "text": "텐트", "language": "ko", "gloss": "tents" },
+            "sourceId": "ctx_mvazxf42cm2el2:int_mvazxf3siuvntq.tents"
+          }
+        ],
+        "target": { "subject": "a", "relation": "left-of", "object": "b" }
+      }
+    ],
+    "hints": [
+      { "text": "왼쪽, 오른쪽", "language": "ko", "gloss": "left, right" },
+      { "text": "있어요", "language": "ko", "gloss": "is there, used to say where something is" },
+      { "text": "A가 B ___에 있어요.", "language": "ko", "gloss": "A is to the ___ of B. Fill in the side." }
+    ]
+  }
+}

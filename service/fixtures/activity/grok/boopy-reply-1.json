@@ -1,0 +1,70 @@
+{
+  "type": "boopy.activity-reply",
+  "version": 1,
+  "binding": {
+    "submissionId": "sub_3qhcYCq4Dz2ZHDrc",
+    "activityId": "act_ONgZ-Wk6WCsN6Erk"
+  },
+  "echo": "arrange: 낙타 right of 텐트 (your view); requested 낙타 left of 텐트; arrangement does not match | hints: 2 of 3",
+  "author": "Grok Bot",
+  "reply": {
+    "summary": {
+      "text": "낙타를 텐트 오른쪽에 놓았어요. 요청은 왼쪽이었어요.",
+      "language": "ko",
+      "gloss": "You put the camels to the right of the tents. The request was the left."
+    },
+    "points": [
+      {
+        "about": "arrange",
+        "text": "Your tray had 텐트 on the left and 낙타 on the right, so 낙타 ended up right of 텐트 from your view. The activity asked for 왼쪽, the left side.",
+        "language": "en"
+      },
+      {
+        "about": "hints",
+        "text": "You opened two of three hints: 왼쪽 and 오른쪽, then 있어요. The sentence pattern hint was still unopened.",
+        "language": "en"
+      },
+      {
+        "about": "overall",
+        "text": "왼쪽 means left and 오른쪽 means right. The next activity practices 오른쪽 by itself.",
+        "language": "en"
+      }
+    ]
+  },
+  "next": {
+    "fallbackText": "Tents on the right\nPractice the word for right in Korean.\nPlace the tents to the right of the camels, from your own view. Then say in Korean where the tents are.\nTiles: 텐트 (tents), 낙타 (camels)\nHint 1: 오른쪽 means right.\nHint 2: The thing you are locating comes first, with 이 or 가 after it.\nHint 3: Pattern: A가 B ___에 있어요. Fill in the side.",
+    "activity": {
+      "title": "Tents on the right",
+      "purpose": "Practice the word for right, 오른쪽, by placing tents and camels at a desert camp.",
+      "instruction": {
+        "text": "텐트를 낙타 오른쪽에 놓고 한국어로 말해 보세요.",
+        "language": "ko",
+        "gloss": "Place the tents to the right of the camels, then say where they are in Korean."
+      },
+      "components": [
+        {
+          "type": "arrange",
+          "axis": { "kind": "viewer-left-right" },
+          "tokens": [
+            {
+              "key": "a",
+              "label": { "text": "텐트", "language": "ko", "gloss": "tents" },
+              "sourceId": "ctx_mvazxf42cm2el2:int_mvazxf3siuvntq.tents"
+            },
+            {
+              "key": "b",
+              "label": { "text": "낙타", "language": "ko", "gloss": "camels" },
+              "sourceId": "ctx_mvazxf42cm2el2:int_mvazxf3siuvntq.camels"
+            }
+          ],
+          "target": { "subject": "a", "relation": "right-of", "object": "b" }
+        }
+      ],
+      "hints": [
+        { "text": "오른쪽", "language": "ko", "gloss": "right" },
+        { "text": "이, 가", "language": "ko", "gloss": "subject markers placed after the thing you are locating" },
+        { "text": "A가 B ___에 있어요.", "language": "ko", "gloss": "A is to the ___ of B. Fill in the side." }
+      ]
+    }
+  }
+}
