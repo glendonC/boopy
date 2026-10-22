@@ -366,4 +366,389 @@ export class Boopy {
     });
     return this.view(sessionId);
   }
+
+  /** Explicit submission sends the server-bound choice as informational input. */
+  async submitChoice(
+    sessionId: string,
+    input: ChoiceSelection,
+    progress?: (stage: TurnStage) => void,
+  ): Promise<SessionView> {
+    if (progress)
+      return this.#turnProgress.run(progress, () => this.submitChoice(sessionId, input));
+    await this.#exclusive(sessionId, async () => {
+      const { card, option, observationId } = this.#currentChoice(sessionId, input);
+      if (card.selectedOptionId !== option.id)
+        throw new BoopyError(409, 'choice_not_selected', 'Select an option before sending it.');
+      const heard = await this.#hear(
+        sessionId,
+        { text: `${card.prompt}\nSelected: ${option.value}` },
+        observationId,
+        null,
+        'unknown',
+        undefined,
+        input,
+      );
+      const reason =
+        'The person submitted a selected choice as informational input; no new capture or evidence verification.';
+      this.#record({
+        type: 'attention.decided',
+        session: sessionId,
+        actor: 'system',
+        data: {
+          utteranceId: heard.utteranceId,
+          source:
+            this.#open(sessionId).observations.find(
+              (observation) => observation.id === observationId,
+            )?.source ?? 'unknown',
+          action: 'reuse',
+          reason,
+          observationId,
+          work: { ocr: true, segmentation: false },
+        },
+      });
+      await this.#interpret(sessionId, observationId, heard, 'auto', {
+        ocr: true,
+        segmentation: false,
+        reason,
+      });
+      this.#respond(sessionId, heard.utteranceId);
+    });
+    return this.view(sessionId);
+  }
+
+  /** Something said during a session: a correction, a new question, a rescope or a commit. */
+  async utter(
+    sessionId: string,
+    request: UtteranceRequest,
+    progress?: (stage: TurnStage) => void,
+  ): Promise<SessionView> {
+    if (progress) return this.#turnProgress.run(progress, () => this.utter(sessionId, request));
+    this.#open(sessionId);
+    return this.#exclusive(sessionId, async () => {
+      const session = this.#open(sessionId);
+      const selected =
+        request.selection === undefined
+          ? undefined
+          : session.dialogue?.actions?.find(
+              (action) =>
+                action.id === request.selection?.actionId &&
+                session.dialogue?.utteranceId === request.selection.utteranceId &&
+                session.dialogue.at === request.selection.responseAt,
+            );
+      if (
+        request.selection !== undefined &&
+        (selected === undefined ||
+          request.frame !== undefined ||
+          request.attention !== undefined ||
+          !('text' in request.speech) ||
+          request.speech.text !== selected.question ||
+          (request.cues?.targetItemId ?? null) !== selected.targetItemId ||
+          request.cues?.gaze !== undefined ||
+          request.cues?.pointer !== undefined ||
+          selected.observationId === null ||
+          !session.observations.some((observation) => observation.id === selected.observationId))
+      )
+        throw new BoopyError(
+          409,
+          'stale_suggestion',
+          'That suggestion is no longer available. Ask your question again.',
+        );
+      const cues = request.cues ?? {};
+      const target = cues.targetItemId ?? null;
+      const targetItem = target === null ? null : session.items.find((item) => item.id === target);
+      if (target !== null && targetItem == null)
+        throw new BoopyError(404, 'no_item', 'That card is not in this session.');
+      if (targetItem?.status === 'ignored' || targetItem?.status === 'rejected')
+        throw new BoopyError(
+          409,
+          'inactive_item',
+          'That card is excluded. Include it before referring to it.',
+        );
+      const targetObservationId =
+        targetItem == null
+          ? null
+          : (targetItem.grounding.observationId ??
+            session.interpretations.find(
+              (interpretation) => interpretation.id === targetItem.interpretationId,
+            )?.observationId ??
+            null);
+      const suppliedObservationId =
+        request.frame === undefined ? null : await this.#observe(sessionId, request.frame, cues);
+      const observationId =
+        selected?.observationId ??
+        (suppliedObservationId === null && targetItem != null
+          ? targetObservationId
+          : request.attention === undefined
+            ? (suppliedObservationId ?? session.observations.at(-1)?.id ?? null)
+            : this.#attentionObservation(session, request.attention, suppliedObservationId));
+      const heard = await this.#hear(
+        sessionId,
+        request.speech,
+        observationId,
+        target,
+        selected === undefined
+          ? request.attention?.source
+          : session.observations.find((observation) => observation.id === selected.observationId)
+              ?.source,
+        request.selection,
+      );
+      const reading = heard.reading;
+      if (selected !== undefined && observationId !== null) {
+        const reason =
+          'The person selected a proposed follow-up about this recorded view; no new capture or confirmation.';
+        this.#record({
+          type: 'attention.decided',
+          session: sessionId,
+          actor: 'system',
+          data: {
+            utteranceId: heard.utteranceId,
+            source: session.observations.find((o) => o.id === observationId)?.source ?? 'unknown',
+            action: 'reuse',
+            reason,
+            observationId,
+            work: { ocr: true, segmentation: false },
+          },
+        });
+        await this.#interpret(
+          sessionId,
+          observationId,
+          heard,
+          'auto',
+          { ocr: true, segmentation: false, reason },
+          targetItem ?? undefined,
+        );
+        this.#respond(sessionId, heard.utteranceId);
+        return;
+      }
+      if (reading.kind === 'refocus' && targetItem != null) {
+        this.#record({
+          type: 'interaction.focused',
+          session: sessionId,
+          actor: 'person',
+          data: { utteranceId: heard.utteranceId, itemId: targetItem.id },
+        });
+        this.#notices.set(sessionId, `Now talking about "${targetItem.label}".`);
+        this.#respond(sessionId, heard.utteranceId);
+        return;
+      }
+      if (reading.kind === 'ask' && targetItem != null) {
+        await this.#askTarget(sessionId, targetItem, targetObservationId, heard, request.attention);
+        return;
+      }
+      switch (reading.kind) {
+        case 'commit':
+          this.#commit(sessionId);
+          if (request.attention !== undefined) this.#respond(sessionId, heard.utteranceId);
+          return;
+        case 'refocus':
+        case 'ask':
+          if (observationId === null && request.attention === undefined)
+            throw new BoopyError(409, 'no_frame', 'No frame to look at.');
+          await this.#attend(
+            sessionId,
+            observationId,
+            heard,
+            'auto',
+            request.attention,
+            suppliedObservationId,
+          );
+          return;
+        case 'rescope':
+          if (observationId === null && request.attention === undefined)
+            throw new BoopyError(409, 'no_frame', 'No frame to look at.');
+          this.#correct(sessionId, {
+            op: 'rescope',
+            scope: 'scene',
+            via: 'voice',
+            utteranceId: heard.utteranceId,
+          });
+          await this.#attend(
+            sessionId,
+            observationId,
+            heard,
+            'scene',
+            request.attention,
+            suppliedObservationId,
+          );
+          return;
+        case 'add':
+          this.#add(sessionId, reading.text, cues, observationId, heard.utteranceId);
+          if (request.attention !== undefined) this.#respond(sessionId, heard.utteranceId);
+          return;
+        default:
+          this.#voiceCorrection(sessionId, reading, heard, target);
+          if (request.attention !== undefined) this.#respond(sessionId, heard.utteranceId);
+      }
+    });
+  }
+
+  /** A pinch on a card. */
+  act(sessionId: string, request: ActionRequest): SessionView {
+    const session = this.#open(sessionId);
+    if (this.#busy.has(sessionId))
+      throw new BoopyError(409, 'busy', 'Still working on the last request.');
+    const item = session.items.find((candidate) => candidate.id === request.itemId);
+    if (item === undefined) throw new BoopyError(404, 'no_item', 'That card is gone.');
+    this.#correct(sessionId, {
+      op: request.action,
+      itemId: item.id,
+      via: 'pinch',
+      utteranceId: null,
+    });
+    this.#notices.set(sessionId, actionNotice(request.action, item.label));
+    return this.view(sessionId);
+  }
+
+  commit(sessionId: string): SessionView {
+    this.#open(sessionId);
+    if (this.#busy.has(sessionId))
+      throw new BoopyError(409, 'busy', 'Still working on the last request.');
+    this.#commit(sessionId);
+    return this.view(sessionId);
+  }
+
+  view(sessionId: string): SessionView {
+    const session = this.#projection.session(sessionId);
+    if (session === undefined) throw new BoopyError(404, 'no_session', 'No such session.');
+    const last = session.interpretations.at(-1);
+    const pkg =
+      session.committed === null
+        ? undefined
+        : this.#projection.packages.get(session.committed.packageId);
+    return {
+      id: session.id,
+      speechOutputAvailable: this.#deps.speechOutput != null,
+      state: session.state,
+      scope: session.scope,
+      referentId: session.referentId,
+      intentId: session.intentId,
+      items: session.items,
+      relations: session.relations,
+      observations: session.observations.map((o) => ({ id: o.id, capturedAt: o.capturedAt })),
+      utterances: session.utterances.map((u) => ({
+        id: u.id,
+        text: u.text,
+        language: u.language,
+        kind: utteranceKind(u.reading),
+      })),
+      model:
+        last === undefined
+          ? null
+          : { provider: last.provider, id: last.model, latencyMs: last.latencyMs },
+      notice: this.#notices.get(sessionId) ?? session.dialogue?.text ?? null,
+      interpretationFailure:
+        session.interpretationFailure?.utteranceId === session.utterances.at(-1)?.id
+          ? session.interpretationFailure
+          : null,
+      ...(session.attention !== null && { attention: session.attention }),
+      ...(session.dialogue !== null && { dialogue: session.dialogue }),
+      committed:
+        session.committed === null || pkg === undefined
+          ? null
+          : {
+              packageId: session.committed.packageId,
+              at: session.committed.at,
+              summary: summarize(pkg),
+            },
+    };
+  }
+
+  /** Generate only the actual current journaled Boopy reply; capture/commit never waits for speech. */
+  async speak(
+    sessionId: string,
+    request: SpeechOutputRequest,
+    signal?: AbortSignal,
+  ): Promise<SpeechOutputResponse> {
+    const output = this.#deps.speechOutput;
+    if (output == null)
+      throw new BoopyError(503, 'speech_unavailable', 'Boopy voice is not enabled on this Mac.');
+    const response = this.#speechResponse(sessionId, request);
+    if (this.#speechBusy)
+      throw new BoopyError(
+        409,
+        'speech_busy',
+        'Boopy voice is busy. Captions are still available.',
+      );
+    if (signal?.aborted) throw new BoopyError(409, 'speech_cancelled', 'Boopy voice was stopped.');
+    this.#speechBusy = true;
+    const attemptId = this.#newId('spk');
+    this.#record({
+      type: 'speech.requested',
+      session: sessionId,
+      actor: 'person',
+      data: { attemptId, ...request },
+    });
+    try {
+      // Select between the two configured local voices from the actual reply, not the
+      // language of the person's question. This is a script heuristic, not language ID.
+      const result = await output.synthesize(
+        response.text,
+        /\p{Script=Hangul}/u.test(response.text) ? 'ko' : 'en',
+        signal,
+      );
+      if (signal?.aborted)
+        throw new BoopyError(409, 'speech_cancelled', 'Boopy voice was stopped.');
+      this.#speechResponse(sessionId, request);
+      this.#record({
+        type: 'speech.finished',
+        session: sessionId,
+        actor: 'system',
+        data: {
+          attemptId,
+          ...request,
+          outcome: 'generated',
+          voice: result.voice,
+          language: result.language,
+          latencyMs: result.latencyMs,
+          bytes: result.wav.length,
+        },
+      });
+      return {
+        sessionId,
+        ...request,
+        speaker: 'boopy',
+        mimeType: 'audio/wav',
+        wav: result.wav.toString('base64'),
+        voice: result.voice,
+        language: result.language,
+        latencyMs: result.latencyMs,
+      };
+    } catch (error) {
+      const cancelled = signal?.aborted === true;
+      const stale = error instanceof BoopyError && error.code === 'stale_response';
+      this.#record({
+        type: 'speech.finished',
+        session: sessionId,
+        actor: 'system',
+        data: {
+          attemptId,
+          ...request,
+          outcome: cancelled ? 'cancelled' : stale ? 'stale' : 'failed',
+        },
+      });
+      if (cancelled) throw new BoopyError(409, 'speech_cancelled', 'Boopy voice was stopped.');
+      if (stale) throw error;
+      throw new BoopyError(
+        502,
+        'speech_failed',
+        'Boopy voice is unavailable. The response remains in captions.',
+      );
+    } finally {
+      this.#speechBusy = false;
+    }
+  }
+
+  #speechResponse(sessionId: string, request: SpeechOutputRequest) {
+    const session = this.#projection.session(sessionId);
+    if (session === undefined) throw new BoopyError(404, 'no_session', 'No such session.');
+    const response = session.dialogue;
+    if (
+      this.#busy.has(sessionId) ||
+      response == null ||
+      response.utteranceId !== request.utteranceId ||
+      response.at !== request.responseAt
+    )
+      throw new BoopyError(409, 'stale_response', 'That Boopy response is no longer current.');
+    return response;
+  }
 }
