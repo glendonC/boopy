@@ -1461,5 +1461,292 @@ namespace Boopy.Quest
             handoffRecoveryOffered = handoffRecoveryRecord != null && handoffRecoveryRecord.SessionId != prior.Id;
             scene?.Clear(); Apply(prior); UpdateHandoffRecoveryPresentation();
         }
+        private async Task RecoverHandoff()
+        {
+            if (client == null || busy || !inputAllowed || !isActiveAndEnabled || NeedsCaptureRecovery) return;
+            if (handoffStorageFailed || handoffRecoveryRecord == null) { ShowHandoffStorageError(); return; }
+            StopSpeech(); var anchor = handoffRecoveryRecord; var generation = ++handoffGeneration;
+            using var wait = new CancellationTokenSource(); wait.CancelAfter(TimeSpan.FromSeconds(45));
+            handoffWait = wait; captureRequest = wait; busy = true;
+            handoffState = "checking"; console?.SetHandoffState(handoffState, anchor.RequestId);
+            console?.SetBusy(true); dialogue?.Show(DialogueStage.Working, "Checking earlier preparation…"); dialogue?.SetCancelableWait(true);
+            try
+            {
+                var restored = await client.ReadSessionAsync(anchor.SessionId, wait.Token);
+                wait.Token.ThrowIfCancellationRequested();
+                if (generation != handoffGeneration || !inputAllowed || !isActiveAndEnabled || handoffRecoveryRecord != anchor) return;
+                if (restored.Id != anchor.SessionId || (anchor.PackageId != null && restored.Committed?.PackageId != anchor.PackageId))
+                    throw new InvalidOperationException("Recovery identity mismatch.");
+                // Explicit checking restores the exact conversation without any room pose or microphone replay.
+                if (session != null && session.Id != restored.Id && handoffReturnSession == null) handoffReturnSession = session;
+                scene?.Clear(); session = restored; console?.Render(restored); scene?.Render(restored);
+                console?.Activate(ConsoleAction.Handoff); console?.SetHandoffState("checking", anchor.RequestId); console?.SetBusy(true);
+                var packageId = restored.Committed?.PackageId;
+                if (packageId == null)
+                {
+                    handoffRecoveryOffered = false; handoffState = "not-prepared"; UpdateHandoffRecoveryPresentation();
+                    Apply(restored);
+                    if (restored.InterpretationFailure == null) dialogue?.Show(DialogueStage.Response, "Your earlier context is back. Object positions are unavailable after restart. Use this context only when you are ready.");
+                    return;
+                }
+                if (!TryPersistHandoff(new HandoffRecoveryRecord { SessionId = anchor.SessionId, RequestId = anchor.RequestId, PackageId = packageId })) return;
+                handoffSelection = new HandoffRequest { RequestId = anchor.RequestId, PackageId = packageId };
+                HandoffStatus receipt;
+                try { receipt = await client.ReadHandoffAsync(anchor.SessionId, handoffSelection, wait.Token); }
+                catch (ServiceException missing) when (missing.Status == 404)
+                {
+                    wait.Token.ThrowIfCancellationRequested();
+                    if (!CurrentHandoff(generation, anchor.SessionId) || handoffRecoveryRecord?.RequestId != anchor.RequestId) return;
+                    handoffSubmitted = false; handoffRecoveryOffered = false;
+                    ShowHandoff("missing", generation, anchor.SessionId); UpdateHandoffRecoveryPresentation(); return;
+                }
+                wait.Token.ThrowIfCancellationRequested();
+                if (!CurrentHandoff(generation, anchor.SessionId) || handoffRecoveryRecord?.RequestId != anchor.RequestId) return;
+                handoffSubmitted = true; handoffRecoveryOffered = false; UpdateHandoffRecoveryPresentation();
+                if (receipt.State == "preparing-local") ShowHandoff("preparing-local", generation, anchor.SessionId);
+                while (receipt.State == "preparing-local")
+                {
+                    await Task.Delay(handoffPollMilliseconds, wait.Token);
+                    receipt = await client.ReadHandoffAsync(anchor.SessionId, handoffSelection, wait.Token);
+                    wait.Token.ThrowIfCancellationRequested();
+                    if (!CurrentHandoff(generation, anchor.SessionId) || handoffRecoveryRecord?.RequestId != anchor.RequestId) return;
+                }
+                wait.Token.ThrowIfCancellationRequested();
+                ShowHandoff(receipt.State == "prepared-local" ? receipt.SourceState == "changed" ? "changed" : "prepared-local" : "failed", generation, anchor.SessionId);
+            }
+            catch (OperationCanceledException)
+            {
+                // A check can end before the earlier session becomes current. Do not gate
+                // its terminal presentation on CurrentHandoff, or leave a finished GET shimmering.
+                if (generation == handoffGeneration && inputAllowed && isActiveAndEnabled)
+                {
+                    handoffState = "interrupted";
+                    console?.SetHandoffState(handoffState, anchor.RequestId);
+                    UpdateHandoffRecoveryPresentation();
+                    dialogue?.Show(DialogueStage.Error, "Preparation status unknown. Check again. Nothing has been sent.");
+                }
+            }
+            catch (Exception)
+            {
+                if (generation == handoffGeneration && inputAllowed && isActiveAndEnabled)
+                {
+                    handoffRecoveryOffered = true; handoffState = "interrupted";
+                    console?.SetHandoffState(handoffState, anchor.RequestId);
+                    UpdateHandoffRecoveryPresentation();
+                    dialogue?.Show(DialogueStage.Error, "Could not verify the earlier preparation. Context stays on your Mac. Check again or dismiss only this headset record.");
+                }
+            }
+            finally
+            {
+                if (ReferenceEquals(handoffWait, wait))
+                {
+                    handoffWait = null; if (ReferenceEquals(captureRequest, wait)) captureRequest = null; busy = false;
+                    if (generation == handoffGeneration && inputAllowed && isActiveAndEnabled) { console?.SetBusy(false); dialogue?.SetCancelableWait(false); }
+                }
+            }
+        }
+
+        private Task Commit() => PrepareContext(true);
+        private Task CheckHandoff() => PrepareContext(false);
+
+        private async Task PrepareContext(bool commit)
+        {
+            StopSpeech();
+            if (client == null || session == null || busy || NeedsCaptureRecovery || !inputAllowed || !isActiveAndEnabled
+                || (commit ? !ContextReview.CanSave(session) : session.Committed == null)) return;
+            var sessionId = session.Id;
+            var replaceChangedSelection = !commit && handoffState == "changed";
+            var explicitPreparation = commit || handoffState == "not-prepared" || handoffState == "missing"
+                || handoffState == "failed" || handoffState == "changed";
+            if (handoffStorageFailed) { ShowHandoffStorageError(); return; }
+            var identity = !replaceChangedSelection && handoffRecoveryRecord?.SessionId == sessionId
+                ? handoffRecoveryRecord.RequestId : Guid.NewGuid().ToString("D");
+            var anchor = new HandoffRecoveryRecord { SessionId = sessionId, RequestId = identity,
+                PackageId = commit ? null : session.Committed?.PackageId };
+            if (!TryPersistHandoff(anchor)) return;
+            var generation = ++handoffGeneration;
+            using var wait = new CancellationTokenSource(); wait.CancelAfter(TimeSpan.FromSeconds(45));
+            handoffWait = wait; captureRequest = wait; busy = true;
+            handoffState = "preparing-local"; console?.SetHandoffState(handoffState, handoffSelection?.RequestId);
+            console?.SetBusy(true); SayStatus(null); dialogue?.SetCancelableWait(true);
+            if (commit) dialogue?.Show(DialogueStage.Working, "Preparing context…");
+            try
+            {
+                if (commit)
+                {
+                    var committed = await client.CommitAsync(sessionId, wait.Token);
+                    wait.Token.ThrowIfCancellationRequested();
+                    if (!CurrentHandoff(generation, sessionId)) return;
+                    Apply(committed);
+                    // Rendering the committed package must not unlock interaction during preparation.
+                    console?.SetBusy(true);
+                }
+                var packageId = session?.Committed?.PackageId;
+                if (string.IsNullOrEmpty(packageId)) throw new InvalidOperationException("Missing committed context.");
+                if (replaceChangedSelection || handoffSelection == null || handoffSelection.PackageId != packageId)
+                {
+                    handoffSelection = new HandoffRequest { RequestId = identity, PackageId = packageId };
+                    handoffSubmitted = false;
+                }
+                var selection = handoffSelection;
+                if (!TryPersistHandoff(new HandoffRecoveryRecord { SessionId = sessionId, RequestId = selection.RequestId, PackageId = packageId })) return;
+                handoffRecoveryOffered = false; UpdateHandoffRecoveryPresentation();
+                ShowHandoff("preparing-local", generation, sessionId);
+                HandoffStatus receipt;
+                if (handoffSubmitted)
+                {
+                    var readExistingStatus = false;
+                    try { receipt = await client.ReadHandoffAsync(sessionId, selection, wait.Token); readExistingStatus = true; }
+                    catch (ServiceException missing) when (missing.Status == 404)
+                    {
+                        wait.Token.ThrowIfCancellationRequested();
+                        if (!CurrentHandoff(generation, sessionId)) return;
+                        if (!explicitPreparation) { ShowHandoff("missing", generation, sessionId); return; }
+                        receipt = await client.PrepareHandoffAsync(sessionId, selection, wait.Token);
+                    }
+                    wait.Token.ThrowIfCancellationRequested();
+                    if (!CurrentHandoff(generation, sessionId) || session?.Committed?.PackageId != selection.PackageId) return;
+                    if (readExistingStatus && receipt.State == "failed" && explicitPreparation) receipt = await client.PrepareHandoffAsync(sessionId, selection, wait.Token);
+                }
+                else
+                {
+                    if (!explicitPreparation) { ShowHandoff("missing", generation, sessionId); return; }
+                    handoffSubmitted = true;
+                    receipt = await client.PrepareHandoffAsync(sessionId, selection, wait.Token);
+                }
+                while (receipt.State == "preparing-local")
+                {
+                    wait.Token.ThrowIfCancellationRequested();
+                    if (!CurrentHandoff(generation, sessionId)) return;
+                    await Task.Delay(handoffPollMilliseconds, wait.Token);
+                    receipt = await client.ReadHandoffAsync(sessionId, selection, wait.Token);
+                }
+                wait.Token.ThrowIfCancellationRequested();
+                if (!CurrentHandoff(generation, sessionId) || session?.Committed?.PackageId != selection.PackageId) return;
+                ShowHandoff(receipt.State == "prepared-local" ? receipt.SourceState == "changed" ? "changed" : "prepared-local" : "failed", generation, sessionId);
+            }
+            catch (OperationCanceledException)
+            {
+                ShowHandoff("interrupted", generation, sessionId);
+            }
+            catch (ServiceException failure)
+            {
+                ShowHandoff(failure.Code == "connection_lost" || failure.Code == "request_timeout" ? "interrupted" : "failed", generation, sessionId);
+            }
+            catch (Exception) { ShowHandoff("failed", generation, sessionId); }
+            finally
+            {
+                if (ReferenceEquals(handoffWait, wait))
+                {
+                    handoffWait = null;
+                    if (ReferenceEquals(captureRequest, wait)) captureRequest = null;
+                    busy = false;
+                    if (CurrentHandoff(generation, sessionId)) { console?.SetBusy(false); dialogue?.SetCancelableWait(false); }
+                }
+            }
+        }
+        private bool CurrentHandoff(int generation, string sessionId) => generation == handoffGeneration
+            && session?.Id == sessionId && inputAllowed && isActiveAndEnabled;
+        private void ShowHandoff(string state, int generation, string sessionId)
+        {
+            if (!CurrentHandoff(generation, sessionId)) return;
+            handoffState = state; console?.SetHandoffState(state, handoffSelection?.RequestId);
+            dialogue?.Show((state == "preparing-local" || state == "checking") ? DialogueStage.Working : DialogueStage.LocalSave, console?.HandoffStatusWords ?? "Context kept on your Mac. Not sent yet.");
+            if (console != null) scene?.PlaceConsole(console);
+        }
+        private void StopHandoffWait()
+        {
+            if (handoffWait == null) return;
+            handoffGeneration++; handoffWait.Cancel();
+            if (ReferenceEquals(captureRequest, handoffWait)) captureRequest = null;
+            handoffWait = null; busy = false; handoffState = "interrupted";
+            console?.SetHandoffState(handoffState, handoffSelection?.RequestId); console?.SetBusy(false);
+        }
+
+        private void DiscardRecording()
+        {
+            captureScan?.Hide();
+            answeringTask = false;
+            buttonTalk.End(); console?.SetButtonRecording(false);
+            captureGeneration++; captureReady = false; capturePreparation?.Cancel();
+            voice.Discard();
+            pendingEvidence = null; console?.InputPolicy.End();
+            if (dialogue?.Stage == DialogueStage.Listening) dialogue.Hide();
+            feedback?.SetRecording(false);
+        }
+
+        private void ReportFailure(string words)
+        {
+            captureScan?.Hide();
+            if (!inputAllowed || !isActiveAndEnabled) return;
+            dialogue?.Show(DialogueStage.Error, words);
+            console?.ShowError(words);
+            feedback?.Play(AudioCue.Failure);
+            if (session != null && session.State == "review") scene?.Render(session);
+            else if (console != null) scene?.PlaceConsole(console);
+            SayStatus(scene?.ConsolePlaced == true ? null : words, 6f);
+        }
+
+        private void StopSpeech()
+        {
+            speechGeneration++;
+            speechRequest?.Cancel();
+            speechPlayback?.Stop();
+            console?.SetSpeaking(0f);
+            console?.SetVoicePreparing(false);
+        }
+        private void OnDisable()
+        {
+            StopHandoffWait();
+            healthCheck?.Cancel(); healthGeneration++;
+            liveRequest?.Cancel(); liveHud?.SetActive(false, console?.ReducedMotion ?? false);
+            captureRequest?.Cancel(); StopSpeech(); DiscardRecording(); dialogue?.Hide();
+        }
+        private void OnEnable()
+        {
+            if (!busy && inputAllowed && cancelledWaitNotice != null) ReportFailure(cancelledWaitNotice);
+            else if (!busy && inputAllowed && session != null) Apply(session);
+        }
+        private async Task Speak(SessionView returned)
+        {
+            var response = returned.Dialogue;
+            if (!isActiveAndEnabled || client == null || response == null || response.Speaker != "boopy" ||
+                !returned.SpeechOutputAvailable || console?.VoiceEnabled != true || busy || voice.Recording || !inputAllowed)
+                return;
+            var generation = speechGeneration;
+            using var request = new CancellationTokenSource();
+            speechRequest = request;
+            console?.SetVoicePreparing(true);
+            try
+            {
+                var audio = await client.SpeechAsync(returned.Id, new SpeechOutputRequest
+                { UtteranceId = response.UtteranceId, ResponseAt = response.At }, request.Token);
+                request.Token.ThrowIfCancellationRequested();
+                if (!isActiveAndEnabled || generation != speechGeneration || busy || voice.Recording || !inputAllowed || console?.VoiceEnabled != true ||
+                    session?.Id != returned.Id || session.Dialogue?.At != response.At ||
+                    session.Dialogue?.UtteranceId != response.UtteranceId ||
+                    audio.SessionId != returned.Id || audio.UtteranceId != response.UtteranceId ||
+                    audio.ResponseAt != response.At || audio.Speaker != "boopy" || audio.MimeType != "audio/wav") return;
+                if (audio.Wav.Length > ((SpeechPlayback.MaxBytes + 2) / 3) * 4) throw new FormatException();
+                console?.SetVoicePreparing(false);
+                speechPlayback?.Play(Convert.FromBase64String(audio.Wav));
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception)
+            {
+                if (isActiveAndEnabled && generation == speechGeneration && inputAllowed)
+                    SayStatus("Voice unavailable. The text response is still here.", 5f);
+            }
+            finally
+            {
+                if (ReferenceEquals(speechRequest, request))
+                {
+                    speechRequest = null;
+                    console?.SetVoicePreparing(false);
+                }
+            }
+        }
+
+        private static float[] World(Vector3 point) => new[] { point.x, point.y, point.z };
     }
 }
