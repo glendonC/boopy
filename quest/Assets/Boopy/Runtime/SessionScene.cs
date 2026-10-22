@@ -373,5 +373,268 @@ namespace Boopy.Quest
                 Vector3.Dot(relative, layoutUp) / forward);
             return true;
         }
+
+        private Vector3 WorldAt(N.Vector2 point) => layoutEyes
+            + (layoutForward + layoutRight * point.X + layoutUp * point.Y).normalized * LabelDistance;
+
+        private void ProtectObjects(SessionView view)
+        {
+            protectedAreas.Clear();
+            protectedWorld.Clear();
+            if (room == null) return;
+            foreach (var item in view.Items)
+            {
+                var observation = item.Grounding.ObservationId;
+                if (observation == null || !snapshots.TryGetValue(observation, out var snapshot)) continue;
+                // Protect both the returned contour and its original box: a partial contour must
+                // never free the rest of a grounded object for a label to cover.
+                var points = room.PlaceBoundary(item.Grounding, snapshot, out _).ToList();
+                if (points.Count > 0) protectedWorld.Add(points.Select(ToNumerics).ToArray());
+                if (item.Grounding.Box != null)
+                {
+                    var box = room.PlaceBoundary(new Grounding { Kind = "box", Box = item.Grounding.Box }, snapshot, out _);
+                    protectedWorld.Add(box.Select(ToNumerics).ToArray());
+                    points.AddRange(box);
+                }
+                var projected = new List<N.Vector2>();
+                foreach (var point in points)
+                    if (Project(point, out var at)) projected.Add(at);
+                if (projected.Count > 0)
+                    protectedAreas.Add(LabelRect.Envelope(projected));
+                else if (AnchorOf(item) is Vector3 anchor && Project(anchor, out var at))
+                {
+                    protectedAreas.Add(LabelRect.Around(at, new N.Vector2(0.05f, 0.05f)));
+                    // A point has unknown extent; retain the same small explicit footprint used
+                    // for initial placement rather than inventing a full object reconstruction.
+                    var offsets = new[] { new N.Vector2(-0.025f, -0.025f), new N.Vector2(0.025f, -0.025f),
+                        new N.Vector2(0.025f, 0.025f), new N.Vector2(-0.025f, 0.025f) };
+                    var depth = Vector3.Dot(anchor - layoutEyes, layoutForward);
+                    protectedWorld.Add(offsets.Select(offset => ToNumerics(layoutEyes +
+                        (layoutForward + layoutRight * (at.X + offset.X) + layoutUp * (at.Y + offset.Y)) * depth)).ToArray());
+                }
+            }
+        }
+
+        private bool BillboardBounds(Vector3 home, Vector2 dimensions, out LabelRect envelope)
+        {
+            envelope = default;
+            var direction = home - layoutEyes;
+            var distance = direction.magnitude;
+            if (distance < 0.05f) return false;
+            direction /= distance;
+            var right = Vector3.Cross(Vector3.up, direction).normalized;
+            if (right.sqrMagnitude < 0.01f) right = layoutRight;
+            var up = Vector3.Cross(direction, right).normalized;
+            var half = dimensions * (Layout.ApparentScale(distance) * 0.5f);
+            var corners = new List<N.Vector2>(4);
+            foreach (var x in new[] { -1f, 1f })
+                foreach (var y in new[] { -1f, 1f })
+                {
+                    if (!Project(home + right * (half.x * x) + up * (half.y * y), out var point)) return false;
+                    corners.Add(point);
+                }
+            envelope = LabelRect.Envelope(corners);
+            return true;
+        }
+
+        private bool ClearOfObjectsAndLabels(LabelRect candidate, List<LabelRect> occupied, LabelRect bounds)
+        {
+            if (!bounds.Contains(candidate)) return false;
+            return !protectedAreas.Any(area => candidate.Intersects(area, LabelGap))
+                && !occupied.Any(area => candidate.Intersects(area, LabelGap));
+        }
+
+        private bool TryPlaceElement(Vector2 dimensions, N.Vector2 preferred, List<LabelRect> occupied,
+            LabelRect bounds, out Vector3 home, out LabelRect envelope)
+        {
+            home = default;
+            envelope = default;
+            var size = new N.Vector2(dimensions.x, dimensions.y);
+            for (var attempt = 0; attempt < 8; attempt++)
+            {
+                if (!SpatialLabelLayout.TryPlace(preferred, size, protectedAreas, occupied,
+                    bounds, out var candidate, LabelGap)) return false;
+                var world = WorldAt(candidate.Center);
+                if (!BillboardBounds(world, dimensions, out var actual)) return false;
+                if (ClearOfObjectsAndLabels(actual, occupied, bounds))
+                {
+                    home = world;
+                    envelope = actual;
+                    return true;
+                }
+                // Perspective can make a billboard wider than its local dimensions off-axis.
+                // Reserve its complete projected envelope, then search again; never accept an
+                // approximate rectangle that clips the protected object or another label.
+                var center = candidate.Center;
+                size = new N.Vector2(
+                    MathF.Max(size.X, 2f * MathF.Max(center.X - actual.MinX, actual.MaxX - center.X)) * 1.05f,
+                    MathF.Max(size.Y, 2f * MathF.Max(center.Y - actual.MinY, actual.MaxY - center.Y)) * 1.05f);
+            }
+            return false;
+        }
+
+        private bool ReserveConsole(List<LabelRect> occupied)
+        {
+            ConsolePlaced = false;
+            if (console == null) return false;
+            if (followingConsole)
+            {
+                if (!FollowFootprintClear(console, console.transform.position))
+                {
+                    followingConsole = false;
+                }
+                else
+                {
+                    console.Place(console.transform.position);
+                    ConsolePlaced = true;
+                    if (ConsoleBounds(console, out var current)) occupied.Add(current);
+                    return true;
+                }
+            }
+            var preferred = new N.Vector2(0.55f, -0.05f);
+            if (TryPlaceElement(console.LayoutSize, preferred, occupied, ViewBounds, out var home, out var bounds)
+                && FollowFootprintClear(console, ConsoleAnchor(home)))
+            {
+                console.Place(ConsoleAnchor(home));
+                if (ConsoleBounds(console, out var actual)) occupied.Add(actual);
+                ConsolePlaced = true;
+                return true;
+            }
+            // Controls remain reachable beside a large subject, even if looking toward the edge
+            // of the initial view is necessary. Only annotation chips are capped for overflow.
+            var extent = protectedAreas.Count == 0 ? ViewBounds : new LabelRect(
+                MathF.Min(ViewBounds.MinX, protectedAreas.Min(area => area.MinX)),
+                MathF.Min(ViewBounds.MinY, protectedAreas.Min(area => area.MinY)),
+                MathF.Max(ViewBounds.MaxX, protectedAreas.Max(area => area.MaxX)),
+                MathF.Max(ViewBounds.MaxY, protectedAreas.Max(area => area.MaxY)));
+            var expanded = new LabelRect(extent.MinX - 1.2f, extent.MinY - 0.8f,
+                extent.MaxX + 1.2f, extent.MaxY + 0.8f);
+            if (TryPlaceElement(console.LayoutSize, preferred, occupied, expanded, out home, out bounds)
+                && FollowFootprintClear(console, ConsoleAnchor(home)))
+            {
+                console.Place(ConsoleAnchor(home));
+                if (ConsoleBounds(console, out var actual)) occupied.Add(actual);
+                ConsolePlaced = true;
+                return true;
+            }
+            // An extreme envelope may leave no valid forward placement. Do not silently keep
+            // stale controls across the subject. The caller can report the lack of room.
+            console.ShowControlsOnly(console.transform.position);
+            return false;
+        }
+
+        // Layout searches place the entire sheet's center; the interaction anchor is the
+        // stable caption above it. Opening actions must not move the speaker/caption.
+        private Vector3 ConsoleAnchor(Vector3 center)
+        {
+            if (console == null || head == null) return center;
+            var direction = (center - head.position).normalized;
+            var right = Vector3.Cross(Vector3.up, direction).normalized;
+            var up = right.sqrMagnitude > 1e-8f ? Vector3.Cross(direction, right).normalized : head.up;
+            return center - up * console.LayoutCenterOffset;
+        }
+
+        private bool ConsoleBounds(ContextConsole controls, out LabelRect bounds)
+        {
+            var center = controls.transform.position + controls.transform.up * controls.LayoutCenterOffset;
+            var half = controls.LayoutSize * .5f;
+            var right = controls.transform.right * half.x;
+            var up = controls.transform.up * half.y;
+            var projected = new List<N.Vector2>();
+            foreach (var corner in new[] { center - right - up, center + right - up, center + right + up, center - right + up })
+            {
+                if (!Project(corner, out var point)) { bounds = default; return false; }
+                projected.Add(point);
+            }
+            bounds = LabelRect.Envelope(projected);
+            return true;
+        }
+
+        public void Focus(Chip? focused)
+        {
+            FocusItem(focused?.ItemId);
+        }
+
+        /// <summary>Hover or explicit reader selection emphasizes identity, never verification.</summary>
+        public int? AccentFor(string? id) => id != null && accents.TryGet(id, out var slot) ? slot : (int?)null;
+
+        public void FocusItem(string? itemId)
+        {
+            var next = itemId != null && groundedItems.Contains(itemId) ? itemId : null;
+            if (next == focusedItemId) return;
+            focusedItemId = next;
+            // Reader focus is an explicit presentation choice. Stable per-frame focus calls
+            // never rebuild annotations, and never mutate the evidence or service referent.
+            if (renderedView != null) Render(renderedView);
+            foreach (var chip in chips.Values)
+            {
+                chip.Focus(chip.ItemId == focusedItemId);
+                chip.SetPeerFocused(focusedItemId != null && chip.ItemId != focusedItemId);
+            }
+            foreach (var pair in overlays) pair.Value.SetFocus(pair.Key == focusedItemId, focusedItemId != null);
+        }
+
+        private void LateUpdate()
+        {
+            if (head == null) return;
+            foreach (var chip in chips.Values)
+                if (chip.gameObject.activeSelf) chip.Face(head);
+        }
+
+        /// <summary>The commit: every chip gathers into the wrist, and the room is clear again.</summary>
+        public void Boop(Transform pocket, Action done)
+        {
+            if (booping) return;
+            StartCoroutine(Gather(pocket, done));
+        }
+
+        private IEnumerator Gather(Transform pocket, Action done)
+        {
+            booping = true;
+            foreach (var overlay in overlays.Values) overlay.gameObject.SetActive(false);
+            var starts = chips.Values.Where(chip => chip.gameObject.activeSelf)
+                .ToDictionary(chip => chip, chip => chip.transform.position);
+            const float seconds = 0.6f;
+            for (var t = 0f; t < seconds; t += Time.unscaledDeltaTime)
+            {
+                var k = Mathf.SmoothStep(0f, 1f, t / seconds);
+                foreach (var pair in starts)
+                {
+                    if (pair.Key == null) continue;
+                    pair.Key.transform.position = Vector3.Lerp(pair.Value, pocket.position, k);
+                    pair.Key.Shrink = 1f - 0.85f * k;
+                }
+                yield return null;
+            }
+            Clear();
+            booping = false;
+            done();
+        }
+
+        public void Clear()
+        {
+            foreach (var chip in chips.Values) { chip.gameObject.SetActive(false); if (Application.isPlaying) Destroy(chip.gameObject); else DestroyImmediate(chip.gameObject); }
+            chips.Clear();
+            snapshots.Clear();
+            protectedAreas.Clear();
+            protectedWorld.Clear();
+            layoutReady = false;
+            ConsolePlaced = false;
+            referentPoint = null;
+            foreach (var overlay in overlays.Values) { overlay.gameObject.SetActive(false); if (Application.isPlaying) Destroy(overlay.gameObject); else DestroyImmediate(overlay.gameObject); }
+            overlays.Clear();
+            accents.Clear(); focusedItemId = null; renderedView = null; renderedSessionId = null; renderedReferentId = null; groundedItems.Clear();
+            task = null;
+        }
+
+        private static N.Vector3 ToNumerics(Vector3 value) => new N.Vector3(value.x, value.y, value.z);
+
+        // Editor checks render outside play mode, where only DestroyImmediate is allowed.
+        private static void Discard(GameObject gone)
+        {
+            if (Application.isPlaying) Destroy(gone);
+            else DestroyImmediate(gone);
+        }
+
     }
 }
