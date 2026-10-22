@@ -379,4 +379,373 @@ describe('activity import', () => {
     const respaced = test.store.importActivity(`${content}\n`);
     assert.equal(respaced.duplicate, false);
   });
+
+  it('keeps unsupported or invalid bodies as fallback-only with their issues', async () => {
+    const test = await setup();
+    const cases: [Record<string, unknown>, string][] = [
+      [{ ...korean(null), components: [{ type: 'map', pins: [] }] }, 'component'],
+      [
+        {
+          ...morocco(),
+          components: [
+            {
+              type: 'arrange',
+              axis: { kind: 'clock' },
+              tokens: [{ key: 'a', label: { text: 'Noon', language: 'en' }, sourceId: null }],
+            },
+          ],
+        },
+        'axis',
+      ],
+      [korean('ctx_elsewhere:itm_1'), 'sourceId'],
+      [{ ...korean(null), title: 'خيمة' }, SCRIPT_MESSAGE],
+      [{ ...korean(null), purpose: 'Read <b>this</b>' }, 'markup'],
+      [{ ...korean(null), purpose: 'See www.example.test' }, 'Links'],
+    ];
+    for (const [body, issue] of cases) {
+      const result = test.store.importActivity(file(test, body));
+      assert.equal(result.status, 'fallback-only');
+      assert.match(result.issues.join('\n'), new RegExp(issue.replace(/[.]/g, '\\.')));
+      const view = ActivityView.parse(test.store.view(result.activityId));
+      assert.equal(view.title, null);
+      assert.equal(view.purpose, null);
+      assert.equal(view.instruction, null);
+      assert.deepEqual(view.components, []);
+      assert.deepEqual(view.hints, { total: 0, revealed: [] });
+      assert.equal(view.canSubmit, false);
+      assert.equal(
+        view.fallbackText,
+        'Picture the camel to the left of the tent and say it in Korean.',
+      );
+      for (const change of [
+        () => test.store.arrange(result.activityId, { revision: 0, positions: { a: 0.1 } }),
+        () => test.store.sequence(result.activityId, { revision: 0, chosen: [] }),
+        () => test.store.revealHint(result.activityId, { revision: 0 }),
+        () => test.store.submit(result.activityId, { revision: 0 }),
+      ])
+        refuses(test, change, 409, 'activity_unavailable');
+    }
+  });
+});
+
+describe('headset changes', () => {
+  it('arranges with exactly the token keys and derives the relation', async () => {
+    const test = await setup();
+    const { activityId } = test.store.importActivity(file(test, korean(test.camel)));
+    for (const positions of [
+      { a: 0.2 },
+      { a: 0.2, b: 0.3, c: 0.4 },
+      { a: 0.2, c: 0.4 },
+      JSON.parse('{"a":0.2,"b":0.3,"__proto__":0.4}'),
+      { a: 0.2, b: 0.3, constructor: 0.4 },
+    ])
+      zodRefuses(test, () => test.store.arrange(activityId, { revision: 0, positions }));
+    for (const positions of [
+      { a: -0.0001, b: 0.3 },
+      { a: 1.0001, b: 0.3 },
+      { a: '0.5', b: 0.3 },
+    ])
+      zodRefuses(test, () => test.store.arrange(activityId, { revision: 0, positions }));
+    for (const revision of ['0', -1, 1.5, 2 ** 53 + 1])
+      zodRefuses(test, () =>
+        test.store.arrange(activityId, { revision, positions: { a: 0.2, b: 0.3 } }),
+      );
+    let view = test.store.arrange(activityId, { revision: 0, positions: { a: 0.22, b: null } });
+    assert.equal(view.revision, 1);
+    assert.equal(view.canSubmit, true);
+    const arrange = () => {
+      const component = view.components[0];
+      assert.ok(component?.type === 'arrange');
+      return component;
+    };
+    assert.equal(arrange().derived.relation, null);
+    view = test.store.arrange(activityId, { revision: 1, positions: { a: 0.22, b: 0.71 } });
+    assert.deepEqual(arrange().derived, {
+      relation: 'left-of',
+      matchesTarget: true,
+      order: ['a', 'b'],
+      ties: false,
+      values: null,
+    });
+    assert.deepEqual(
+      arrange().tokens.map((token) => token.position),
+      [0.22, 0.71],
+    );
+    view = test.store.arrange(activityId, { revision: 2, positions: { a: 0.7, b: 0.8 } });
+    assert.equal(arrange().derived.relation, 'left-of');
+    view = test.store.arrange(activityId, { revision: 3, positions: { a: 0.55, b: 0.5 } });
+    assert.equal(arrange().derived.relation, 'unclear');
+    assert.equal(arrange().derived.ties, true);
+    assert.equal(arrange().derived.matchesTarget, false);
+  });
+
+  it('refuses a stale revision with nothing journaled, and only one of two equal changes', async () => {
+    const test = await setup();
+    const { activityId } = test.store.importActivity(file(test, korean(null)));
+    refuses(
+      test,
+      () => test.store.arrange(activityId, { revision: 1, positions: { a: 0.1, b: 0.9 } }),
+      409,
+      'stale_activity',
+    );
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() =>
+        test.store.arrange(activityId, { revision: 0, positions: { a: 0.1, b: 0.9 } }),
+      ),
+      Promise.resolve().then(() =>
+        test.store.sequence(activityId, { revision: 0, chosen: ['t1'] }),
+      ),
+    ]);
+    assert.deepEqual(results.map((result) => result.status).sort(), ['fulfilled', 'rejected']);
+    const rejected = results.find((result) => result.status === 'rejected');
+    assert.ok(rejected?.status === 'rejected');
+    assert.equal((rejected.reason as BoopyError).code, 'stale_activity');
+    const revisions = activityEvents(test.journal)
+      .map((event) => ('revision' in event.data ? event.data.revision : null))
+      .filter((revision) => revision !== null);
+    assert.deepEqual(revisions, [1]);
+  });
+
+  it('builds a sequence from distinct tiles of this activity', async () => {
+    const test = await setup();
+    const { activityId } = test.store.importActivity(file(test, korean(null)));
+    for (const chosen of [
+      ['t1', 't1'],
+      ['t9'],
+      ['t6'],
+      ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8', 't1'],
+    ])
+      zodRefuses(test, () => test.store.sequence(activityId, { revision: 0, chosen }));
+    const view = test.store.sequence(activityId, { revision: 0, chosen: ['t2', 't4', 't3', 't1'] });
+    const sequence = view.components[1];
+    assert.ok(sequence?.type === 'sequence');
+    assert.equal(sequence.text, '낙타가 텐트 왼쪽에 있어요');
+    assert.deepEqual(sequence.chosen, ['t2', 't4', 't3', 't1']);
+    const shown = ['t1', 't2', 't3', 't4', 't5'].sort((a, b) =>
+      sha256(`${activityId}:${a}`).localeCompare(sha256(`${activityId}:${b}`)),
+    );
+    assert.deepEqual(
+      sequence.tiles.map((tile) => [tile.key, tile.used]),
+      shown.map((key) => [key, key !== 't5']),
+    );
+    assert.deepEqual(test.restart().view(activityId).components[1], sequence);
+    const cleared = test.store.sequence(activityId, { revision: 1, chosen: [] });
+    const empty = cleared.components[1];
+    assert.equal(empty?.type === 'sequence' && empty.text, '');
+  });
+
+  it('refuses a change to a component the activity does not have', async () => {
+    const test = await setup();
+    const { activityId } = test.store.importActivity(file(test, morocco()));
+    refuses(
+      test,
+      () => test.store.sequence(activityId, { revision: 0, chosen: [] }),
+      400,
+      'invalid_request',
+    );
+    const words = test.store.importActivity(
+      file(test, { ...korean(null), components: [korean(null).components].flat().slice(1) }),
+    );
+    refuses(
+      test,
+      () => test.store.arrange(words.activityId, { revision: 0, positions: {} }),
+      400,
+      'invalid_request',
+    );
+  });
+
+  it('reveals hints in order until none are left', async () => {
+    const test = await setup();
+    const { activityId } = test.store.importActivity(file(test, korean(null)));
+    let view = test.store.revealHint(activityId, { revision: 0 });
+    assert.deepEqual(view.hints.revealed, [
+      {
+        index: 0,
+        text: 'Start with the camel, then say where it is.',
+        language: 'en',
+        gloss: null,
+      },
+    ]);
+    view = test.store.revealHint(activityId, { revision: 1 });
+    assert.equal(view.hints.revealed.length, 2);
+    refuses(test, () => test.store.revealHint(activityId, { revision: 2 }), 409, 'no_more_hints');
+    const none = test.store.importActivity(file(test, { ...korean(null), hints: [] }));
+    refuses(
+      test,
+      () => test.store.revealHint(none.activityId, { revision: 0 }),
+      409,
+      'no_more_hints',
+    );
+  });
+
+  it('submits only something placed or chosen, freezing what the person did', async () => {
+    const test = await setup();
+    const { activityId } = test.store.importActivity(file(test, korean(null)));
+    refuses(test, () => test.store.submit(activityId, { revision: 0 }), 409, 'nothing_to_submit');
+    test.store.revealHint(activityId, { revision: 0 });
+    refuses(test, () => test.store.submit(activityId, { revision: 1 }), 409, 'nothing_to_submit');
+    const view = playKorean(test);
+    const [first] = view.submissions;
+    assert.ok(first);
+    assert.deepEqual(first, {
+      submissionId: 'sub_k1',
+      number: 1,
+      submittedAt: first.submittedAt,
+      revision: 4,
+      digest:
+        'arrange: 낙타 left of 텐트 (your view); requested 낙타 left of 텐트; arrangement matches | sequence: "낙타가 텐트 왼쪽에 있어요" | hints: 1 of 2',
+      arrange: {
+        positions: { a: 0.22, b: 0.71 },
+        relation: 'left-of',
+        matchesTarget: true,
+        order: ['a', 'b'],
+        ties: false,
+        values: null,
+      },
+      sequence: { chosen: ['t2', 't4', 't3', 't1'], text: '낙타가 텐트 왼쪽에 있어요' },
+      hintsRevealed: [0],
+      hintsRevealedSincePrevious: [0],
+      export: null,
+      reply: null,
+    });
+    const id = view.activityId;
+    const moved = test.store.arrange(id, { revision: 4, positions: { a: 0.9, b: 0.1 } });
+    assert.equal(moved.submissions[0]?.arrange?.relation, 'left-of');
+    const again = test.store.submit(id, { revision: 5 });
+    assert.equal(again.submissions.length, 2);
+    assert.equal(again.submissions[1]?.number, 2);
+    assert.equal(again.submissions[1]?.revision, 6);
+    assert.match(again.submissions[1]?.digest ?? '', /^arrange: 낙타 right of 텐트 \(your view\)/);
+    const submitted = activityEvents(test.journal).filter(
+      (event) => event.type === 'activity.submitted',
+    );
+    assert.equal(submitted.length, 2);
+    assert.equal(
+      submitted[0]?.type === 'activity.submitted' && submitted[0].data.digest,
+      first.digest,
+    );
+  });
+
+  it('snaps number positions in the view, the submission and the digest', async () => {
+    const test = await setup();
+    const { activityId } = test.store.importActivity(file(test, morocco()));
+    let view = test.store.arrange(activityId, { revision: 0, positions: { a: 0.25 } });
+    const arrange = view.components[0];
+    assert.ok(arrange?.type === 'arrange');
+    assert.deepEqual(
+      [arrange.tokens[0]?.position, arrange.tokens[0]?.value, arrange.derived.values],
+      [0.25, 50, { a: 50 }],
+    );
+    view = test.store.submit(activityId, { revision: 1 });
+    assert.equal(view.submissions[0]?.digest, 'arrange: My estimate = 50 MAD | hints: 0 of 1');
+    assert.deepEqual(view.submissions[0]?.arrange?.values, { a: 50 });
+    assert.equal(view.submissions[0]?.sequence, null);
+  });
+});
+
+describe('replies', () => {
+  it('requires an exported submission of that activity, with nothing journaled otherwise', async () => {
+    const test = await setup();
+    const view = playKorean(test);
+    const digest = view.submissions[0]?.digest ?? '';
+    refuses(
+      test,
+      () => test.store.importReply(reply('sub_k1', 'act_k1', digest)),
+      409,
+      'reply_binding_mismatch',
+    );
+    const store = recordExport(test, 'sub_k1', 'act_k1');
+    const other = store.importActivity(file(test, morocco()));
+    for (const content of [
+      reply('sub_unknown', 'act_k1', digest),
+      reply('sub_k1', other.activityId, digest),
+    ])
+      refuses({ ...test, store }, () => store.importReply(content), 409, 'reply_binding_mismatch');
+    refuses({ ...test, store }, () => store.importReply('[]'), 400, 'activity_unreadable');
+    refuses(
+      { ...test, store },
+      () => store.importReply(reply('sub_k1', 'act_k1', digest, { extra: true })),
+      400,
+      'activity_invalid',
+    );
+  });
+
+  it('requires the echo to match the digest apart from whitespace', async () => {
+    const test = await setup();
+    const digest = playKorean(test).submissions[0]?.digest ?? '';
+    const store = recordExport(test, 'sub_k1', 'act_k1');
+    const changed = { ...test, store };
+    for (const echo of [
+      digest.replace('matches', 'match'),
+      digest.replace('arrange', 'arr\u{200B}ange'),
+      'arrange: My estimate = 50 MAD | hints: 0 of 1',
+    ])
+      refuses(
+        changed,
+        () => store.importReply(reply('sub_k1', 'act_k1', echo)),
+        409,
+        'reply_not_matched',
+      );
+    const spaced = `  ${digest.replaceAll(' | ', '\n|\t  ')}\n`;
+    const result = store.importReply(reply('sub_k1', 'act_k1', spaced));
+    assert.deepEqual(result, {
+      replyId: 'rep_k1',
+      submissionId: 'sub_k1',
+      activityId: 'act_k1',
+      nextActivityId: null,
+      nextStatus: null,
+      duplicate: false,
+    });
+    const view = ActivityView.parse(store.view('act_k1'));
+    assert.deepEqual(view.submissions[0]?.reply, {
+      replyId: 'rep_k1',
+      importedAt: view.submissions[0]?.reply?.importedAt,
+      claimedAuthor: 'Grok Bot',
+      artifactSha256: view.submissions[0]?.reply?.artifactSha256,
+      summary: {
+        text: 'Synthetic example reply for rendering tests.',
+        language: 'en',
+        gloss: null,
+      },
+      points: [
+        {
+          about: 'sequence',
+          text: 'Synthetic point about the sentence.',
+          language: 'en',
+          gloss: null,
+        },
+      ],
+      nextActivityId: null,
+    });
+    const summary = ActivitySummary.parse(
+      store.list().find((entry) => entry.activityId === 'act_k1'),
+    );
+    assert.equal(summary.awaitingReply, false);
+    assert.equal(summary.replyAvailable, true);
+  });
+
+  it('keeps one reply per submission: identical bytes are idempotent, another reply is refused', async () => {
+    const test = await setup();
+    const digest = playKorean(test).submissions[0]?.digest ?? '';
+    const store = recordExport(test, 'sub_k1', 'act_k1');
+    const content = reply('sub_k1', 'act_k1', digest, {
+      next: { fallbackText: 'Now say where the tent is.', activity: korean(test.camel) },
+    });
+    const first = store.importReply(content);
+    const again = store.importReply(content);
+    assert.deepEqual(again, { ...first, duplicate: true });
+    refuses(
+      { ...test, store },
+      () => store.importReply(reply('sub_k1', 'act_k1', digest)),
+      409,
+      'reply_exists',
+    );
+    const events = activityEvents(test.journal);
+    assert.equal(events.filter((event) => event.type === 'activity.reply-imported').length, 1);
+    assert.equal(
+      events.filter((event) => event.type === 'activity.imported' && event.data.parent !== null)
+        .length,
+      1,
+    );
+  });
 });
