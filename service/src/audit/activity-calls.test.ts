@@ -372,3 +372,279 @@ for (const [name, type, mutate] of malformed) {
     }
   });
 }
+
+for (const [name, model] of [
+  ['empty', ''],
+  ['Grok', 'grok-local'],
+  ['overlong', 'q'.repeat(46)],
+  ['URL and bidi', 'https://synthetic.invalid/\u{202e}'],
+]) {
+  test(`audit calls: replay rejects invalid known model provenance (${name})`, async () => {
+    const s = await setup();
+    try {
+      await s.calls.finished((await s.ask()).callId);
+      const copy = replay(
+        changed(
+          changed(s.journal.all(), 'activity.call-asked', (row) => {
+            row.data.model = model;
+          }),
+          'activity.imported',
+          (row) => {
+            const call = row.data.call;
+            assert.ok(call && typeof call === 'object');
+            (call as Record<string, unknown>).model = model;
+          },
+        ),
+      );
+      try {
+        assert.throws(copy.store, /does not fit|invalid|Invalid/, 'invalid model was trusted');
+      } finally {
+        copy.journal.close();
+      }
+    } finally {
+      await s.close();
+    }
+  });
+}
+
+for (const kind of ['activity', 'reply', 'reply next']) {
+  test(`audit calls: replay rejects ${kind} timing inconsistent with successful call provenance`, async () => {
+    const s = await setup();
+    try {
+      const id = await called(s);
+      if (kind !== 'activity') {
+        s.setOutput(reply(answer()));
+        const submission = s.calls.submit(id, { revision: 1 }).submissions.at(-1);
+        assert.ok(submission?.replyCall);
+        await s.calls.finished(submission.replyCall.callId);
+      }
+      const target = s.journal.all().findLast((event) => event.type === 'activity.call-finished');
+      assert.ok(target);
+      const rows = s.journal.all().map((event) => {
+        const row = structuredClone(event);
+        if (
+          kind === 'reply next' &&
+          row.type === 'activity.imported' &&
+          row.data.parent !== null &&
+          row.data.call
+        )
+          row.data.call.durationMs += 1000;
+        else if (
+          kind !== 'reply next' &&
+          row.id === target.id &&
+          row.type === 'activity.call-finished'
+        )
+          row.data.durationMs = (row.data.durationMs ?? 0) + 1000;
+        return row;
+      });
+      const copy = replay(rows);
+      try {
+        assert.throws(copy.store, /does not fit|invalid|Invalid/, 'conflicting timing was trusted');
+      } finally {
+        copy.journal.close();
+      }
+    } finally {
+      await s.close();
+    }
+  });
+}
+
+test('audit calls: valid failed and busy calls retain their views on replay', async () => {
+  const s = await setup();
+  try {
+    for (const value of [{}, 'Synthetic unreadable answer.']) {
+      s.setOutput(value);
+      const done = await s.calls.finished((await s.ask()).callId);
+      assert.equal(done.state, 'failed');
+      const copy = replay(s.journal.all());
+      try {
+        assert.deepEqual(copy.store().call(done.callId), done);
+      } finally {
+        copy.journal.close();
+      }
+    }
+    s.setOutput(answer());
+    const id = await called(s);
+    const release = s.hold();
+    const running = await s.ask();
+    const busy = s.calls.submit(id, { revision: 1 }).submissions.at(-1)?.replyCall;
+    assert.equal(busy?.failure?.code, 'assistant_busy');
+    release();
+    await s.calls.finished(running.callId);
+    const copy = replay(s.journal.all());
+    try {
+      assert.deepEqual(copy.store().view(id), s.store.view(id));
+      assert.deepEqual(copy.store().calls(), s.store.calls());
+    } finally {
+      copy.journal.close();
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test('audit calls: replay rejects issues whose parsed normalization differs from stored text', async () => {
+  const s = await setup();
+  try {
+    s.setOutput({});
+    await s.calls.finished((await s.ask()).callId);
+    for (const issue of [' synthetic: Invalid answer.', 'synthetic: Cafe\u{0301}.']) {
+      const copy = replay(
+        changed(s.journal.all(), 'activity.call-finished', (row) => {
+          row.data.issues = [issue];
+        }),
+      );
+      try {
+        assert.throws(copy.store, /does not fit|invalid|Invalid/);
+      } finally {
+        copy.journal.close();
+      }
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test('audit calls: the generated headset fixture retains separate call provenance', () => {
+  const fixture = ActivityView.parse(
+    JSON.parse(
+      readFileSync(
+        new URL('../../fixtures/activity/called-with-reply.json', import.meta.url),
+        'utf8',
+      ),
+    ),
+  );
+  assert.equal(fixture.provenance.authorship, 'called-by-boopy');
+  assert.equal(fixture.provenance.claimedAuthor, null);
+  assert.equal(fixture.provenance.call?.provider, 'ollama');
+  assert.equal(fixture.submissions[0]?.replyCall?.state, 'imported');
+  assert.equal(fixture.submissions[0]?.reply?.claimedAuthor, null);
+  assert.equal(fixture.submissions[0]?.reply?.call?.model, MODEL);
+});
+
+type Handler = (path: string, response: ServerResponse) => void;
+async function server(handler: Handler) {
+  const requests: { path: string; body: string }[] = [];
+  const http = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      requests.push({ path: request.url ?? '', body: Buffer.concat(chunks).toString() });
+      handler(request.url ?? '', response);
+    });
+  });
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+  return {
+    url: `http://127.0.0.1:${(http.address() as AddressInfo).port}`,
+    requests,
+    close: async () => {
+      http.closeAllConnections();
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+    },
+  };
+}
+
+function json(response: ServerResponse, value: unknown) {
+  response.end(JSON.stringify(value));
+}
+
+test('audit calls: missing and malformed metadata send zero prompt bytes', async () => {
+  let tags: unknown = {};
+  let show: unknown = {};
+  const fake = await server((path, response) => json(response, path === '/api/tags' ? tags : show));
+  try {
+    const assistant = new OllamaActivityAssistant({ url: fake.url });
+    for (const value of [
+      null,
+      [],
+      { models: [null] },
+      { models: [LOCAL, null] },
+      { models: [{ ...LOCAL, remote_host: 'https://synthetic.invalid' }] },
+    ]) {
+      tags = value;
+      show = {};
+      await assert.rejects(
+        assistant.ask(
+          { system: 'Synthetic.', user: 'Synthetic packet.' },
+          AbortSignal.timeout(1000),
+        ),
+      );
+    }
+    tags = { models: [LOCAL] };
+    for (const value of [null, [], {}, { ...SHOW, cloud: true }]) {
+      show = value;
+      await assert.rejects(
+        assistant.ask(
+          { system: 'Synthetic.', user: 'Synthetic packet.' },
+          AbortSignal.timeout(1000),
+        ),
+      );
+    }
+    assert.equal(
+      fake.requests.some((request) => request.path === '/api/chat'),
+      false,
+    );
+    assert.equal(
+      fake.requests.some((request) => request.body.includes('Synthetic packet.')),
+      false,
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
+test('audit calls: redirects at every phase never forward metadata or prompt', async () => {
+  const target = await server((_, response) => json(response, {}));
+  let redirected = '/api/tags';
+  const fake = await server((path, response) => {
+    if (path === redirected) {
+      response.writeHead(307, { location: target.url });
+      response.end();
+    } else json(response, path === '/api/tags' ? { models: [LOCAL] } : SHOW);
+  });
+  try {
+    const assistant = new OllamaActivityAssistant({ url: fake.url });
+    for (const path of ['/api/tags', '/api/show', '/api/chat']) {
+      redirected = path;
+      await assert.rejects(
+        assistant.ask(
+          { system: 'Synthetic.', user: 'Synthetic packet.' },
+          AbortSignal.timeout(1000),
+        ),
+      );
+    }
+    assert.equal(target.requests.length, 0);
+  } finally {
+    await fake.close();
+    await target.close();
+  }
+});
+
+test('audit calls: metadata body reads share the total timeout and cancellation budget', async () => {
+  const fake = await server((path, response) => {
+    if (path === '/api/tags') json(response, { models: [LOCAL] });
+    else response.write('{"details":');
+  });
+  try {
+    const assistant = new OllamaActivityAssistant({ url: fake.url });
+    for (const stop of [false, true]) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), stop ? 40 : 80);
+      const start = performance.now();
+      try {
+        await assert.rejects(
+          assistant.ask({ system: 'Synthetic.', user: 'Synthetic packet.' }, controller.signal),
+        );
+        assert.ok(performance.now() - start < 1000);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    assert.equal(
+      fake.requests.some((request) => request.path === '/api/chat'),
+      false,
+    );
+  } finally {
+    await fake.close();
+  }
+});
