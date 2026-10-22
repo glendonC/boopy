@@ -1,26 +1,19 @@
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import type { BoopyEvent } from './events.ts';
 
 /** An event as stored: its position in the journal and when it was written. */
-export type Recorded = {
+export type Recorded = BoopyEvent & {
   readonly seq: number;
   readonly id: string;
-  readonly type: string;
-  readonly session: string;
-  readonly actor: string;
   readonly at: string;
-  readonly data: unknown;
-};
-
-export type JournalEvent = {
-  readonly type: string;
-  readonly session: string;
-  readonly actor: string;
-  readonly data: unknown;
 };
 
 /**
  * The append-only record every state change goes through. Nothing is updated or deleted; current
- * state is a projection of these rows.
+ * state is a projection of these rows (see `session.ts`).
  */
 export class Journal {
   readonly #db: DatabaseSync;
@@ -50,7 +43,7 @@ export class Journal {
     return new Journal(new DatabaseSync(path));
   }
 
-  append(event: JournalEvent, id: string, at: string): Recorded {
+  append(event: BoopyEvent, id: string, at: string): Recorded {
     const result = this.#insert.run(
       id,
       event.type,
@@ -66,19 +59,68 @@ export class Journal {
     const rows = this.#db
       .prepare('SELECT seq, id, type, session, actor, at, data FROM events ORDER BY seq')
       .all() as unknown as Row[];
-    return rows.map((row) => ({
-      seq: row.seq,
-      id: row.id,
-      type: row.type,
-      session: row.session,
-      actor: row.actor,
-      at: row.at,
-      data: JSON.parse(row.data) as unknown,
-    }));
+    return rows.map(
+      (row) =>
+        ({
+          seq: row.seq,
+          id: row.id,
+          type: row.type,
+          session: row.session,
+          actor: row.actor,
+          at: row.at,
+          data: JSON.parse(row.data),
+        }) as Recorded,
+    );
   }
 
   close(): void {
     this.#db.close();
+  }
+
+  /** Whether any event already has this id. Ids are unique across every event type. */
+  has(id: string): boolean {
+    return this.#db.prepare('SELECT 1 FROM events WHERE id = ? LIMIT 1').get(id) !== undefined;
+  }
+
+  /** The events whose type starts with this prefix, exactly and case-sensitively, in order. */
+  withTypePrefix(prefix: string): Recorded[] {
+    const rows = this.#db
+      .prepare(
+        'SELECT seq, id, type, session, actor, at, data FROM events WHERE substr(type, 1, ?) = ? ORDER BY seq',
+      )
+      .all(prefix.length, prefix) as unknown as Row[];
+    return rows.map(
+      (row) =>
+        ({
+          seq: row.seq,
+          id: row.id,
+          type: row.type,
+          session: row.session,
+          actor: row.actor,
+          at: row.at,
+          data: JSON.parse(row.data),
+        }) as Recorded,
+    );
+  }
+
+  /**
+   * Runs `work` in one SQLite transaction: every append it makes is kept, or none is. The work
+   * must be synchronous, because a transaction cannot wait across an await.
+   */
+  transaction<T>(work: () => T): T {
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = work();
+      if (result instanceof Promise) {
+        result.catch(() => {});
+        throw new Error('A journal transaction must be synchronous.');
+      }
+      this.#db.exec('COMMIT');
+      return result;
+    } catch (failure) {
+      if (this.#db.isTransaction) this.#db.exec('ROLLBACK');
+      throw failure;
+    }
   }
 }
 
@@ -90,4 +132,34 @@ interface Row {
   actor: string;
   at: string;
   data: string;
+}
+
+/** Frames and audio, stored once each under their SHA-256. */
+export class MediaStore {
+  readonly #directory: string | null;
+  readonly #memory = new Map<string, Buffer>();
+
+  /** A directory on disk, or null to keep media in memory (tests). */
+  constructor(directory: string | null) {
+    this.#directory = directory;
+    if (directory !== null) mkdirSync(directory, { recursive: true, mode: 0o700 });
+  }
+
+  put(bytes: Buffer, extension: 'jpg' | 'wav' | 'mask'): string {
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const name = `${hash}.${extension}`;
+    if (this.#directory === null) this.#memory.set(name, bytes);
+    else writeFileSync(join(this.#directory, name), bytes, { mode: 0o600 });
+    return hash;
+  }
+
+  get(hash: string, extension: 'jpg' | 'wav' | 'mask'): Buffer {
+    const name = `${hash}.${extension}`;
+    if (this.#directory === null) {
+      const bytes = this.#memory.get(name);
+      if (bytes === undefined) throw new Error(`No media ${name}.`);
+      return bytes;
+    }
+    return readFileSync(join(this.#directory, name));
+  }
 }

@@ -1178,3 +1178,131 @@ export class ActivityStore {
     };
   }
 }
+
+function unreadable() {
+  return new BoopyError(
+    400,
+    'activity_unreadable',
+    'This is not one JSON object, or one fenced json block, of at most 64 KiB.',
+  );
+}
+
+function invalid(issues: string[]) {
+  return new ActivityFileError(
+    400,
+    'activity_invalid',
+    'This file does not match the Boopy activity format.',
+    issues,
+  );
+}
+
+function unprepared() {
+  return new BoopyError(
+    404,
+    'prepared_unavailable',
+    'No single completed local preparation is available for that package.',
+  );
+}
+
+function sourcesChanged() {
+  return new BoopyError(
+    409,
+    'sources_changed',
+    'The sources changed after preparation. Prepare the handoff again.',
+  );
+}
+
+function missing(component: 'arrangement' | 'sequence') {
+  return new BoopyError(400, 'invalid_request', `This activity has no ${component}.`);
+}
+
+function sourceIds(request: RequestState): ReadonlySet<string> {
+  return new Set(request.sources.map((source) => source.sourceId));
+}
+
+function statusOf(state: ActivityState): 'active' | 'fallback-only' {
+  return state.activity === null ? 'fallback-only' : 'active';
+}
+
+function importResult(state: ActivityState) {
+  return { activityId: state.activityId, status: statusOf(state), issues: [...state.issues] };
+}
+
+/** Something placed or some tile chosen. */
+function submittable(state: ActivityState, activity: ActivityBody): boolean {
+  const placed =
+    arrangeOf(activity) !== null && Object.values(state.positions).some((x) => x !== null);
+  return placed || (sequenceOf(activity) !== null && state.chosen.length > 0);
+}
+
+function textView(item: TextItem) {
+  return { text: item.text, language: item.language, gloss: item.gloss ?? null };
+}
+
+function arrangeView(
+  component: ArrangeComponent,
+  positions: PositionMap,
+  sources: ReadonlyMap<string, SourceEntry>,
+) {
+  const axis = component.axis;
+  return {
+    type: 'arrange' as const,
+    axis:
+      axis.kind === 'number'
+        ? {
+            kind: axis.kind,
+            min: axis.min,
+            max: axis.max,
+            step: axis.step,
+            unit: axis.unit ?? null,
+          }
+        : { ...axis },
+    tokens: component.tokens.map((token) => {
+      const position = positions[token.key] ?? null;
+      const source = token.sourceId === null ? undefined : sources.get(token.sourceId);
+      return {
+        key: token.key,
+        label: textView(token.label),
+        source: source ? { sourceId: source.sourceId, label: source.label } : null,
+        position,
+        value: axis.kind === 'number' ? snapValue(axis, position) : null,
+      };
+    }),
+    target: component.target ? { ...component.target } : null,
+    derived: deriveArrangement(component, positions),
+  };
+}
+
+function sequenceView(activityId: string, component: SequenceComponent, chosen: string[]) {
+  return {
+    type: 'sequence' as const,
+    joiner: component.joiner,
+    language: component.language,
+    tiles: tileDisplayOrder(activityId, component.tiles).map((tile) => ({
+      key: tile.key,
+      text: tile.text,
+      used: chosen.includes(tile.key),
+    })),
+    chosen: [...chosen],
+    text: sequenceText(component, chosen),
+  };
+}
+
+export function callFailure(kind: 'activity' | 'reply', code: CallFailure['code']): CallFailure {
+  const reasons = {
+    assistant_unreachable: "the local model isn't answering on this Mac.",
+    assistant_timeout: "the local model didn't answer in time.",
+    assistant_error: 'the local model reported an error.',
+    answer_unreadable: "its answer wasn't one JSON object.",
+    answer_invalid: "its answer didn't fit Boopy's format.",
+    assistant_busy: 'Boopy was already waiting for the local model. Submit again in a moment.',
+    interrupted: 'Boopy stopped before the local model answered.',
+  };
+  return {
+    code,
+    message:
+      (kind === 'activity'
+        ? "Boopy couldn't make practice from this: "
+        : "Boopy couldn't make a reply from this: ") + reasons[code],
+  };
+}
