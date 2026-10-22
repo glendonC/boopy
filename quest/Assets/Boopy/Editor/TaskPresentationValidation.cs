@@ -380,5 +380,145 @@ namespace Boopy.Quest.Editor
             foreach (var x in new[] { ink.min.x, ink.max.x }) foreach (var y in new[] { ink.min.y, ink.max.y })
                 yield return text.transform.TransformPoint(new Vector3(x, y, 0f));
         }
+        private static IEnumerable<Vector3> BoxCorners(BoxCollider box)
+        {
+            foreach (var x in new[] { -.5f, .5f }) foreach (var y in new[] { -.5f, .5f })
+                yield return box.transform.TransformPoint(box.center + new Vector3(box.size.x * x, box.size.y * y, 0f));
+        }
+        private static N.Vector3 Num(Vector3 value) => new N.Vector3(value.x, value.y, value.z);
+
+        internal static SessionView Session(bool grounded = true)
+        {
+            var view = new SessionView
+            {
+                Id = SessionId, State = "review", ReferentId = SubjectId, Model = new ModelRef { Provider = "fixture", Id = "synthetic" },
+                Dialogue = new DialogueView { Speaker = "boopy", UtteranceId = "synthetic-turn", At = "1970-01-01T12:00:00Z", Text = Line },
+            };
+            view.Dialogue.Actions.Add(new ContextualAction { Id = "question-origin", Question = "Who placed this marker?", TargetItemId = SubjectId, ObservationId = ObservationId });
+            view.Dialogue.Actions.Add(new ContextualAction { Id = "question-sign", Question = "What does the nearby sign say?", ObservationId = ObservationId });
+            view.Utterances.Add(new UtteranceRef { Id = "synthetic-turn", Text = "What is this?", Kind = "ask" });
+            view.Observations.Add(new ObservationRef { Id = ObservationId, CapturedAt = "1970-01-01T12:00:00Z" });
+            // Unknown confidence stays unknown: the session chip and the task chip read the same.
+            view.Items.Add(new Item
+            {
+                Id = SubjectId, Kind = "object", Label = Annotation, Statement = "It may be a stone marker.", Origin = "model", Status = "proposed",
+                Grounding = grounded
+                    ? new Grounding { Kind = "box", ObservationId = ObservationId, Box = new Box2 { X0 = .34f, Y0 = .42f, X1 = .49f, Y1 = .605f } }
+                    : new Grounding { Kind = "scene" },
+            });
+            return view;
+        }
+
+        private const string StandIn =
+            "{\"type\":\"subject\",\"sourceId\":\"src_synthetic-observation\",\"maskId\":null}," +
+            "{\"type\":\"annotation\",\"text\":\"" + Annotation + "\",\"evidenceIds\":[\"" + SubjectId + "\"]}," +
+            "{\"type\":\"dialogue\",\"text\":\"" + Line + "\",\"evidenceIds\":[\"" + SubjectId + "\"]}";
+        private const string Choice = "{\"type\":\"choice\",\"prompt\":\"Which one?\",\"options\":[{\"id\":\"opt_a\",\"label\":\"The stone\"}]}";
+        private const string Step = "{\"type\":\"task_step\",\"text\":\"Look at the base.\",\"evidenceIds\":[\"" + SubjectId + "\"]}";
+        private static string Components(string action) => "[" + StandIn + "," + action + ",{\"type\":\"status\",\"code\":\"not-sent\"}]";
+
+        internal static string Attempts(params string[] words) => new JArray(words.Select((text, index) => new JObject
+        {
+            ["eventId"] = "evt_synthetic" + index, ["text"] = text, ["recognitionUncertain"] = index % 2 == 1, ["kind"] = "practice-attempt",
+        })).ToString(Newtonsoft.Json.Formatting.None);
+
+        /// <summary>The view the service's stand-in result produces for the synthetic first turn.</summary>
+        internal static string TaskView(int revision = 1, string attempts = "[]", string? components = null, string phase = "open") =>
+            "{\"taskId\":\"" + TaskId + "\",\"sessionId\":\"" + SessionId + "\",\"revision\":" + revision +
+            ",\"source\":{\"sourceId\":\"src_synthetic-observation\",\"sourceRevision\":1,\"sha256\":\"" + new string('c', 64) + "\"}" +
+            ",\"intent\":\"consult_source\",\"utterance\":\"What is this?\",\"phase\":\"" + phase + "\"" +
+            ",\"continuity\":\"local-only\",\"delivery\":\"not-sent\",\"subjectCorrected\":false" +
+            ",\"components\":" + (components ?? Components("{\"type\":\"voice_reply\",\"prompt\":\"Answer aloud.\"}")) +
+            ",\"attempts\":" + attempts + ",\"lastRejection\":null}";
+
+        internal static Task<HttpResponseMessage> Reply(HttpStatusCode status, string body) =>
+            Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") });
+        private static Task<HttpResponseMessage> Drop() => Task.FromException<HttpResponseMessage>(new HttpRequestException("Synthetic dropped reply."));
+        private static string Refusal(string code) => "{\"error\":{\"code\":\"" + code + "\",\"message\":\"Synthetic refusal for " + code + ".\"}}";
+
+        /// <summary>The objects BoopyApp builds, over a synthetic grounded subject and synthetic transport.</summary>
+        internal sealed class Fixture : IDisposable
+        {
+            public readonly GameObject Root;
+            public readonly Transform Eyes;
+            public readonly SessionScene Scene;
+            public readonly ContextConsole Console;
+            public readonly DialogueStrip Strip;
+            public readonly StatusLine Status;
+            public readonly BoopyApp App;
+            public readonly Transport Transport = new Transport();
+            private readonly ServiceClient client;
+            private readonly string directory = Path.Combine(Path.GetTempPath(), "boopy-task-validation-" + Guid.NewGuid().ToString("N"));
+
+            public Fixture(bool large)
+            {
+                Directory.CreateDirectory(directory);
+                Root = new GameObject("Synthetic task presentation");
+                Eyes = new GameObject("Synthetic eyes").transform; Eyes.SetParent(Root.transform, false);
+                var room = Root.AddComponent<RoomCamera>();
+                Scene = SessionScene.Create(Root.transform, room, Eyes);
+                Console = ContextConsole.Create(Root.transform, Eyes);
+                if (large) Console.Activate(ConsoleAction.Size);
+                Scene.MoveConsole(Console, new Vector3(.42f, .08f, 1f));
+                Strip = DialogueStrip.Create(Root.transform, Eyes); Console.DockDialogue(Strip);
+                Status = StatusLine.Create(Root.transform, Eyes, Visuals.Quad());
+                App = Root.AddComponent<BoopyApp>();
+                client = new ServiceClient(handler: Transport);
+                Set(App, "client", client); Set(App, "scene", Scene); Set(App, "console", Console); Set(App, "dialogue", Strip);
+                Set(App, "room", room); Set(App, "head", Eyes); Set(App, "status", Status);
+                Set(App, "recoveryStore", new CaptureRecoveryStore(Path.Combine(directory, "pending-id")));
+                Set(App, "handoffRecoveryStore", new HandoffRecoveryStore(Path.Combine(directory, "preparation-identity")));
+            }
+
+            /// <summary>The production first turn: capture sent, view applied, the task asked for and presented.</summary>
+            public void Start()
+            {
+                Set(App, "pending", Snapshot()); Set(App, "pendingEvidence", new EvidenceTurn(false));
+                ((Task)typeof(BoopyApp).GetMethod("Send", Flags)!.Invoke(App, new object[] { SpeechValidation.SyntheticWav() })!).GetAwaiter().GetResult();
+                Require(Get(App, "session") is SessionView view && view.Id == SessionId, "The synthetic first turn was not applied.");
+                Settle(this);
+            }
+
+            public void Dispose()
+            {
+                client.Dispose();
+                UnityEngine.Object.DestroyImmediate(Root);
+                Directory.Delete(directory, true);
+            }
+        }
+
+        // A recorded camera pose and coarse depth that place the subject 2 m ahead, left of center.
+        internal static Snapshot Snapshot() => new Snapshot(new byte[] { 255, 216, 255, 217 }, 80, 80,
+            new DateTime(1970, 1, 1, 12, 0, 0, DateTimeKind.Utc), new Pose(Vector3.zero, Quaternion.identity),
+            new DepthGrid { Columns = 1, Rows = 1, Meters = new float?[] { 2f } },
+            new CameraInfo { FocalLength = new float[] { 40, 40 }, PrincipalPoint = new float[] { 40, 40 }, SensorResolution = new[] { 80, 80 } });
+
+        internal sealed class Transport : HttpMessageHandler
+        {
+            public SessionView SessionView = Session();
+            public readonly Queue<Func<Task<HttpResponseMessage>>> Open = new Queue<Func<Task<HttpResponseMessage>>>();
+            public readonly Queue<Func<Task<HttpResponseMessage>>> Answers = new Queue<Func<Task<HttpResponseMessage>>>();
+            public readonly Queue<Func<Task<HttpResponseMessage>>> Read = new Queue<Func<Task<HttpResponseMessage>>>();
+            private readonly List<(string Path, string? Body)> requests = new List<(string, string?)>();
+            public int Count(string path) => requests.Count(request => request.Path == path);
+            public List<string> Bodies(string path) => requests.Where(request => request.Path == path).Select(request => request.Body ?? "").ToList();
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancel)
+            {
+                var path = request.RequestUri!.AbsolutePath;
+                if (path == "/v1/health") return Reply(HttpStatusCode.OK, Health);
+                requests.Add((path, request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()));
+                if (request.Method == HttpMethod.Post && path == "/v1/sessions") return Reply(HttpStatusCode.OK, Wire.Write(SessionView));
+                if (request.Method == HttpMethod.Post && path == "/v1/sessions/" + SessionId + "/task") return Open.Dequeue()();
+                if (request.Method == HttpMethod.Post && path == "/v1/tasks/" + TaskId + "/answers") return Answers.Dequeue()();
+                if (request.Method == HttpMethod.Get && path == "/v1/tasks/" + TaskId) return Read.Dequeue()();
+                throw new InvalidOperationException("Unexpected synthetic request: " + request.Method + " " + path);
+            }
+        }
+
+        private static object? Invoke(object target, string name, params object[] args) => target.GetType().GetMethod(name, Flags)!.Invoke(target, args);
+        private static void Set(object target, string name, object? value) => target.GetType().GetField(name, Flags)!.SetValue(target, value);
+        private static object? Get(object target, string name) => target.GetType().GetField(name, Flags)!.GetValue(target);
+        private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     }
 }
