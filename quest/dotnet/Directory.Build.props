@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Newtonsoft.Json is pinned to the version com.unity.nuget.newtonsoft-json 3.2.2 ships. -->
+    <NewtonsoftJsonVersion>13.0.2</NewtonsoftJsonVersion>
+  </PropertyGroup>
+</Project>

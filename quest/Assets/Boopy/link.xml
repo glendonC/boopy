@@ -1,0 +1,4 @@
+<!-- The client core's protocol types are read and written by reflection (Newtonsoft.Json). -->
+<linker>
+  <assembly fullname="Boopy.Client" preserve="all" />
+</linker>

@@ -1,0 +1,248 @@
+{
+  "id": "ses_1",
+  "state": "review",
+  "scope": "object",
+  "referentId": "int_7.photo",
+  "intentId": "int_7.intent",
+  "items": [
+    {
+      "id": "int_7.intent",
+      "kind": "goal",
+      "label": "Talk about the trip",
+      "statement": "Practice telling the story of this desert trip in Korean.",
+      "grounding": {
+        "kind": "scene"
+      },
+      "confidence": 0.8,
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "proposed",
+      "emphasis": false
+    },
+    {
+      "id": "int_7.photo",
+      "kind": "object",
+      "label": "Desert photo",
+      "statement": "A photo of a desert trip with dunes and camels.",
+      "grounding": {
+        "kind": "box",
+        "observationId": "obs_3",
+        "box": {
+          "x0": 0.27,
+          "y0": 0.4,
+          "x1": 0.63,
+          "y1": 0.7
+        }
+      },
+      "confidence": 0.85,
+      "why": "It is under the cue.",
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "proposed",
+      "emphasis": false
+    },
+    {
+      "id": "int_7.camels",
+      "kind": "object",
+      "label": "Camels",
+      "gloss": "낙타",
+      "statement": "Camels stand on the dunes in the photo.",
+      "grounding": {
+        "kind": "box",
+        "observationId": "obs_3",
+        "box": {
+          "x0": 0.31,
+          "y0": 0.54,
+          "x1": 0.43,
+          "y1": 0.64
+        }
+      },
+      "confidence": 0.7,
+      "why": "Animal shapes in the photo.",
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "confirmed",
+      "emphasis": true
+    },
+    {
+      "id": "int_7.tents",
+      "kind": "object",
+      "label": "Tents",
+      "gloss": "텐트",
+      "statement": "Small tents near the dunes suggest a camp.",
+      "grounding": {
+        "kind": "box",
+        "observationId": "obs_3",
+        "box": {
+          "x0": 0.5,
+          "y0": 0.59,
+          "x1": 0.6,
+          "y1": 0.67
+        }
+      },
+      "confidence": 0.4,
+      "why": "Low shapes that may be tents.",
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "rejected",
+      "emphasis": false,
+      "note": "we didn't camp"
+    },
+    {
+      "id": "int_7.landscape",
+      "kind": "topic",
+      "label": "Describing the landscape",
+      "gloss": "풍경 묘사",
+      "statement": "Describe the dunes, sand and sky.",
+      "grounding": {
+        "kind": "scene"
+      },
+      "confidence": 0.75,
+      "why": "The scene is mostly landscape.",
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "proposed",
+      "emphasis": false
+    },
+    {
+      "id": "int_7.arrival",
+      "kind": "topic",
+      "label": "How you got there",
+      "statement": "Recount how you travelled to this place.",
+      "grounding": {
+        "kind": "scene"
+      },
+      "confidence": 0.6,
+      "why": "Trips are usually told from the journey.",
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "proposed",
+      "emphasis": false
+    },
+    {
+      "id": "int_7.past",
+      "kind": "grammar",
+      "label": "Past tense",
+      "gloss": "-았/었어요",
+      "statement": "Telling a trip needs past-tense verb endings.",
+      "grounding": {
+        "kind": "scene"
+      },
+      "confidence": 0.8,
+      "why": "The trip is over.",
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "confirmed",
+      "emphasis": false
+    },
+    {
+      "id": "int_7.desert",
+      "kind": "vocabulary",
+      "label": "desert",
+      "gloss": "사막",
+      "statement": "The word for desert.",
+      "grounding": {
+        "kind": "scene"
+      },
+      "confidence": 0.9,
+      "why": "Central to the scene.",
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "known",
+      "emphasis": false
+    },
+    {
+      "id": "int_7.question-1",
+      "kind": "question",
+      "label": "Where was this trip?",
+      "statement": "Where was this trip?",
+      "grounding": {
+        "kind": "box",
+        "observationId": "obs_3",
+        "box": {
+          "x0": 0.27,
+          "y0": 0.4,
+          "x1": 0.63,
+          "y1": 0.7
+        }
+      },
+      "confidence": null,
+      "interpretationId": "int_7",
+      "origin": "model",
+      "status": "proposed",
+      "emphasis": false
+    },
+    {
+      "id": "itm_21",
+      "kind": "note",
+      "label": "talk about the sunset",
+      "statement": "Talk about the sunset.",
+      "grounding": {
+        "kind": "scene"
+      },
+      "confidence": null,
+      "origin": "person",
+      "status": "confirmed",
+      "emphasis": false
+    }
+  ],
+  "relations": [
+    {
+      "id": "int_7.relation-1",
+      "from": "int_7.camels",
+      "to": "int_7.photo",
+      "kind": "part_of"
+    },
+    {
+      "id": "int_7.relation-2",
+      "from": "int_7.past",
+      "to": "int_7.arrival",
+      "kind": "supports_goal"
+    }
+  ],
+  "observations": [
+    {
+      "id": "obs_3",
+      "capturedAt": "1970-01-01T18:00:00.000Z"
+    }
+  ],
+  "utterances": [
+    {
+      "id": "utt_5",
+      "text": "I want to practice talking about this trip in Korean.",
+      "language": "en",
+      "kind": "ask"
+    },
+    {
+      "id": "utt_10",
+      "text": "Not that, we didn't camp",
+      "language": "en",
+      "kind": "correct"
+    },
+    {
+      "id": "utt_13",
+      "text": "I already know this",
+      "language": "en",
+      "kind": "correct"
+    },
+    {
+      "id": "utt_16",
+      "text": "This matters",
+      "language": "en",
+      "kind": "correct"
+    },
+    {
+      "id": "utt_19",
+      "text": "I also want to talk about the sunset",
+      "language": "en",
+      "kind": "correct"
+    }
+  ],
+  "model": {
+    "provider": "fixture",
+    "id": "recorded-desert-trip",
+    "latencyMs": 0
+  },
+  "notice": "Added \"talk about the sunset\".",
+  "committed": null
+}
