@@ -127,16 +127,19 @@ namespace Boopy.Quest.Editor
                 using var current=new CancellationTokenSource();using var old=new CancellationTokenSource();
                 Set(app,"captureRequest",current);Set(app,"busy",true);Set(app,"inputAllowed",true);
                 Set(app,"session",new SessionView{Id="synthetic-current",State="review"});
-                console.ShowProcessing();dialogue.Show(DialogueStage.Working,"Sending…");
+                console.ShowProcessing();dialogue.ShowThinking(new ThinkingPhrases(3));var phrase=dialogue.FullText;
+                var header=(SpatialSurface)typeof(ContextConsole).GetField("header",Flags)!.GetValue(console)!;
                 var progress=(TurnProgress)Activator.CreateInstance(typeof(TurnProgress),Flags,null,new object[]{"interpreting"},null)!;
                 Call(app,"ApplyTurnProgress",old,"synthetic-current",progress);
-                Require(dialogue.FullText=="Sending…","A stale request changed the pending caption.");
+                Require(dialogue.FullText==phrase && header.BodyText=="Sending…","A stale request changed the pending caption.");
                 Call(app,"ApplyTurnProgress",current,"synthetic-other",progress);
-                Require(dialogue.FullText=="Sending…","A different session changed the pending caption.");
+                Require(dialogue.FullText==phrase && header.BodyText=="Sending…","A different session changed the pending caption.");
                 Set(app,"inputAllowed",false);Call(app,"ApplyTurnProgress",current,"synthetic-current",progress);
-                Require(dialogue.FullText=="Sending…","Background progress appeared after focus loss.");
+                Require(dialogue.FullText==phrase && header.BodyText=="Sending…","Background progress appeared after focus loss.");
                 Set(app,"inputAllowed",true);Call(app,"ApplyTurnProgress",current,"synthetic-current",progress);
-                Require(dialogue.FullText==progress.Words && dialogue.Stage==DialogueStage.Working,"Actual current stage was not visible.");
+                // The actual stage reaches the console's processing line; the strip keeps Boopy's thinking phrase.
+                Require(header.BodyText==progress.Words && dialogue.FullText==phrase && dialogue.Stage==DialogueStage.Working,
+                    "The actual current stage missed the processing line or replaced the thinking line.");
                 dialogue.Show(DialogueStage.Response,"Exact final synthetic answer.");Set(app,"busy",false);
                 Call(app,"ApplyTurnProgress",current,"synthetic-current",progress);
                 Require(dialogue.FullText=="Exact final synthetic answer.","A queued stage replaced the final answer.");

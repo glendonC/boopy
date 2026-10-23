@@ -129,9 +129,9 @@ namespace Boopy.Quest.Editor
             Require(caption.VisibleText == "Thinking…" && cancel.gameObject.activeInHierarchy, "Reduced motion hides the wait line or cancel action.");
             typeof(DialogueStrip).GetField("stageStartedAt", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(caption, Time.unscaledTime - 12f);
             caption.RefreshVisuals(0f);
-            Require(caption.VisibleText.StartsWith("Thinking…\nStill waiting · ") && caption.VisibleText.EndsWith("s") && caption.FullText == "Thinking…", "Slow wait duplicates status or replaces the base operation.");
+            Require(caption.VisibleText == "Thinking…" && caption.FullText == "Thinking…", "A slow wait adds a second line or a timer to the working words.");
             caption.ShowNotice("Synthetic temporary notice.", 5f); caption.ClearNotice(); caption.RefreshVisuals(0f);
-            Require(caption.VisibleText.Contains("Still waiting · ") && caption.FullText == "Thinking…", "Notice restoration resets the actual wait duration.");
+            Require(caption.VisibleText == "Thinking…" && caption.FullText == "Thinking…", "Notice restoration changed the working words.");
             caption.Show(DialogueStage.Working, string.Concat(Enumerable.Repeat("Synthetic waiting detail ", 50)));
             Require(caption.PageCount > 1 && !caption.HitPage(cancelRay), "Long waiting caption steals cancellation hit ownership.");
             caption.Hide();

@@ -52,7 +52,7 @@ namespace Boopy.Quest.Editor
                 Set(app,"pending",snapshot); Set(app,"pendingEvidence",new EvidenceTurn(false));
                 var sending = (Task)typeof(BoopyApp).GetMethod("Send",Flags)!.Invoke(app,new object[] { SpeechValidation.SyntheticWav() })!;
                 Require(!sending.IsCompleted && handler.Starts == 1 && handler.Speeches == 0, "First turn did not wait for an actual response before speech.");
-                Require(caption.FullText == "Sending…", "Delayed request lacks the genuine wait line.");
+                Require(caption.Stage == DialogueStage.Working && ThinkingPhrases.All.Contains(caption.FullText), "Delayed request lacks Boopy's thinking line.");
                 handler.Start.SetResult(Json(view)); sending.GetAwaiter().GetResult();
                 Require(caption.FullText == view.Dialogue!.Text && caption.Stage == DialogueStage.Response, "Actual returned journaled reply changed in caption.");
                 Require(anchor.Invoke(scene,new object[] { view.Items[0] }) is Vector3 point && point.z > .8f && point.z < 1.2f, "Valid recorded source pose failed referent anchoring.");
@@ -193,13 +193,15 @@ namespace Boopy.Quest.Editor
                     using (var request=new CancellationTokenSource())
                     {
                         Set(app,"captureRequest",request); Set(app,"busy",true);
-                        console.ShowProcessing(); caption.Show(DialogueStage.Working,"Sending…"); caption.SetCancelableWait(true);
+                        console.ShowProcessing(); caption.ShowThinking(new ThinkingPhrases(5)); caption.SetCancelableWait(true);
+                        var header=(SpatialSurface)typeof(ContextConsole).GetField("header",Flags)!.GetValue(console)!;
                         foreach (var stage in new[] {"transcribing","reading-text","interpreting","refining-geometry"})
                         {
                             var progress=(TurnProgress)Activator.CreateInstance(typeof(TurnProgress),Flags,null,new object[]{stage},null)!;
                             typeof(BoopyApp).GetMethod("ApplyTurnProgress",Flags)!.Invoke(app,new object?[]{request,view.Id,progress});
-                            Require(caption.Stage==DialogueStage.Working && caption.FullText==progress.Words,
-                                "Synthetic actual-stage event was not displayed exactly: "+stage);
+                            // The actual stage reaches the console's processing line; the strip keeps Boopy's thinking phrases.
+                            Require(caption.Stage==DialogueStage.Working && ThinkingPhrases.All.Contains(caption.FullText) && header.BodyText==progress.Words,
+                                "Synthetic actual-stage event replaced the thinking line or missed the processing line: "+stage);
                             RenderWait(console,caption,camera,"stage-"+stage+"-"+variant);
                         }
                         request.Cancel();

@@ -36,6 +36,8 @@ namespace Boopy.Quest.Editor
         internal const string Annotation = "Stone marker";
         internal const string FirstAnswer = "A stone marker by the trail.";
         internal const string SecondAnswer = "어제 본 돌이에요.";
+        // The app's thinking phrases come in this seeded order, so the working line is exact under test.
+        internal const int PhraseSeed = 17;
         private const string Health = "{\"ok\":true,\"service\":\"boopy\",\"interpreter\":{\"provider\":\"fixture\",\"model\":\"synthetic\"}}";
         private static readonly ConsoleAction[] Global = { ConsoleAction.Talk, ConsoleAction.FinishTalk, ConsoleAction.PauseScene,
             ConsoleAction.Options, ConsoleAction.Settings, ConsoleAction.Cancel };
@@ -51,9 +53,11 @@ namespace Boopy.Quest.Editor
                 SynchronizationContext.SetSynchronizationContext(null);
                 foreach (var large in new[] { false, true }) Validate(large);
                 NotOffered();
+                ThinkingWithoutPictureOrMotion();
                 Debug.Log("Boopy task presentation validation passed: one chip on the outlined subject at its session placement, " +
                     "the dialogue line with \"Boopy · Not sent\", one \"Answer aloud\" control under it and no follow-ups, no overlap, " +
-                    "answers as \"You · Not sent\", wrong item, retry with the same ids, standard and large text (synthetic).");
+                    "answers as \"You · Not sent\" after \"Saving on your Mac…\", the thinking line changes on its own, " +
+                    "a turn with no photo never says Boopy is looking, wrong item, retry with the same ids, standard and large text (synthetic).");
             }
             catch (Exception error)
             {
@@ -111,7 +115,15 @@ namespace Boopy.Quest.Editor
             // A lost reply is asked again with the same ids, which is the same open.
             f.Transport.Open.Enqueue(Drop);
             f.Transport.Open.Enqueue(() => Reply(HttpStatusCode.OK, TaskView()));
+            // While the first turn is on its way: Boopy's thinking phrase from its first frame, the next one after
+            // a while, and no timer.
+            var order = new ThinkingPhrases(PhraseSeed);
+            var (firstPhrase, nextPhrase) = (order.Next(), order.Next());
+            string? startWait = "The first turn never reached the Mac.";
+            f.Transport.OnStart = () => startWait = WorkingProblem(f, firstPhrase, "Sending…", nextPhrase);
             f.Start();
+            f.Transport.OnStart = null;
+            Require(startWait == null, "The first turn's working line: " + startWait);
             var opens = f.Transport.Bodies("/v1/sessions/" + SessionId + "/task");
             Require(opens.Count == 2 && opens[0] == opens[1], "The open retry was not the same event.");
             var open = JObject.Parse(opens[0]);
@@ -146,11 +158,24 @@ namespace Boopy.Quest.Editor
                 "An empty answer lacks its retry words.");
             Settle(f); Only(f.Console, ConsoleAction.AnswerTask);
 
-            // An answer: the current revision, base64 audio, no frame. A lost reply is the same event again.
+            // An answer: the wait line, the current revision, base64 audio, no frame. A lost reply is the same event again.
             var current = (InteractionPresentation)Get(f.App, "task")!;
+            var waits = new List<string>();
+            string? answerWait = null;
+            f.Transport.OnAnswer = () =>
+            {
+                waits.Add(f.Strip.Stage + ": " + f.Strip.FullText);
+                if (waits.Count == 1) answerWait = WorkingProblem(f, "Saving on your Mac…", "Saving on your Mac…");
+            };
             f.Transport.Answers.Enqueue(Drop);
             f.Transport.Answers.Enqueue(() => Reply(HttpStatusCode.OK, TaskView(2, Attempts(FirstAnswer))));
+            // Whatever time has passed on the line before, its working state starts the shimmer on the first glyph.
+            f.Strip.RefreshVisuals(.7f);
             Answer(f, current);
+            f.Transport.OnAnswer = null;
+            Require(waits.Count == 2 && waits.All(wait => wait == "Working: Saving on your Mac…"),
+                "The answer's wait line is not Saving on your Mac: " + string.Join(" | ", waits));
+            Require(answerWait == null, "The answer's working line: " + answerWait);
             var answers = f.Transport.Bodies("/v1/tasks/" + TaskId + "/answers");
             Require(answers.Count == 2 && answers[0] == answers[1], "The answer retry was not the same event.");
             var answer = JObject.Parse(answers[0]);
@@ -234,6 +259,80 @@ namespace Boopy.Quest.Editor
             Only(f.Console, ConsoleAction.FollowUpOne);
             Require(Label(SingleChip(f)) == Annotation && SingleChip(f).ItemId == SubjectId, "A later turn lost the session's chip.");
             Require(f.Transport.Count("/v1/sessions/" + SessionId + "/actions") == 0, "The task confirmed or changed the subject.");
+        }
+
+        private static void ThinkingWithoutPictureOrMotion()
+        {
+            // A turn with no photo shows the picture-free phrases only: it never says Boopy is looking.
+            using (var spoken = new Fixture(false))
+            {
+                var order = new ThinkingPhrases(PhraseSeed, picture: false);
+                var (first, next) = (order.Next(), order.Next());
+                spoken.Transport.Open.Enqueue(() => Reply(HttpStatusCode.Conflict, Refusal("task_unavailable")));
+                string? wait = "The turn without a photo never reached the Mac.";
+                spoken.Transport.OnStart = () => wait = WorkingProblem(spoken, first, "Sending…", next);
+                spoken.Start(picture: false);
+                Require(wait == null, "A turn without a photo: " + wait);
+                Require(!ThinkingPhrases.Looking.Contains(first) && !ThinkingPhrases.Looking.Contains(next), "A turn without a photo says Boopy is looking.");
+            }
+
+            // Reduced motion: the phrase is whole and still, and the next phrase arrives as a cut, whole on its first frame.
+            using var still = new Fixture(false);
+            still.Console.SetReducedMotion(true);
+            var phrases = new ThinkingPhrases(PhraseSeed);
+            var (shown, after) = (phrases.Next(), phrases.Next());
+            still.Console.ShowProcessing(); still.Strip.ShowThinking(new ThinkingPhrases(PhraseSeed));
+            var problem = FirstFrameProblem(still, shown, sweep: false);
+            Require(problem == null, "Reduced motion, the first phrase: " + problem);
+            typeof(DialogueStrip).GetField("stageStartedAt", Flags)!.SetValue(still.Strip, Time.unscaledTime - ThinkingPhrases.Seconds - .1f);
+            still.Strip.RefreshVisuals(0f);
+            problem = FirstFrameProblem(still, after, sweep: false);
+            Require(problem == null, "Reduced motion, the next phrase: " + problem);
+        }
+
+        // The working line on the first frame of the working state: fully visible, one line, its shimmer already
+        // on its first glyph and not on its last. After 12 s there is no timer: the strip shows the same words, or
+        // the next thinking phrase on its own first frame, and the console header its working words. Returns what
+        // is wrong, or null; it runs inside a request, so it never throws.
+        private static string? WorkingProblem(Fixture f, string words, string headerWords, string? next = null)
+        {
+            var first = FirstFrameProblem(f, words);
+            if (first != null) return first;
+            typeof(DialogueStrip).GetField("stageStartedAt", Flags)!.SetValue(f.Strip, Time.unscaledTime - 12f);
+            f.Strip.RefreshVisuals(0f); f.Console.RefreshVisuals(0f);
+            if (next != null)
+            {
+                var after = FirstFrameProblem(f, next);
+                if (after != null) return "after a while, the next phrase: " + after;
+            }
+            else if (f.Strip.VisibleText != words) return "after 12 s the strip shows: " + f.Strip.VisibleText;
+            var header = (SpatialSurface)Get(f.Console, "header")!;
+            if (header.BodyText != headerWords) return "after 12 s the console header shows: " + header.BodyText;
+            return null;
+        }
+
+        // With motion the band is on the first glyph and not the last; with reduced motion there is no sweep at all.
+        private static string? FirstFrameProblem(Fixture f, string words, bool sweep = true)
+        {
+            if (f.Strip.Stage != DialogueStage.Working || f.Strip.FullText != words) return "it is " + f.Strip.Stage + ": " + f.Strip.FullText;
+            var caption = f.Strip.GetComponentsInChildren<TextMeshPro>(true).Single(text => text.name == "Actual response");
+            var info = caption.textInfo;
+            var glyphs = Enumerable.Range(0, info.characterCount).Select(index => info.characterInfo[index]).Where(glyph => glyph.isVisible).ToArray();
+            if (glyphs.Length < 2) return "it has no glyphs.";
+            Color32 Of(TMP_CharacterInfo glyph) => info.meshInfo[glyph.materialReferenceIndex].colors32[glyph.vertexIndex];
+            var first = Of(glyphs[0]); var last = Of(glyphs[glyphs.Length - 1]);
+            if (caption.alpha < .99f || first.a < 250) return "it is not fully visible on its first frame (alpha " + caption.alpha.ToString("0.00") + ").";
+            if (sweep && first.r < last.r + 60) return "it has no shimmer on its first frame (first glyph " + first.r + ", last " + last.r + ").";
+            if (!sweep && glyphs.Select(Of).Any(glyph => Mathf.Abs(glyph.r - first.r) > 2))
+                return "it sweeps under reduced motion (glyphs " + string.Join(",", glyphs.Select(glyph => Of(glyph).r)) + ").";
+            if (f.Strip.VisibleText != words) return "it is not one line: " + f.Strip.VisibleText;
+            // Boopy stays whole while it works, from the first frame.
+            var companion = (CompanionOrb)Get(f.Console, "companion")!;
+            var body = (Transform?)Get(companion, "body");
+            var drawn = (float)Get(companion, "opacity")!;
+            if (body == null || !body.gameObject.activeInHierarchy || drawn < .99f)
+                return "Boopy is not whole on the first working frame (opacity " + drawn.ToString("0.00") + ").";
+            return null;
         }
 
         // A turn without a referent grounded on an observation never asks for a task.
@@ -466,14 +565,17 @@ namespace Boopy.Quest.Editor
                 client = new ServiceClient(handler: Transport);
                 Set(App, "client", client); Set(App, "scene", Scene); Set(App, "console", Console); Set(App, "dialogue", Strip);
                 Set(App, "room", room); Set(App, "head", Eyes); Set(App, "status", Status);
+                Set(App, "thinking", new ThinkingPhrases(PhraseSeed));
+                Set(App, "thinkingWithoutPicture", new ThinkingPhrases(PhraseSeed, picture: false));
                 Set(App, "recoveryStore", new CaptureRecoveryStore(Path.Combine(directory, "pending-id")));
                 Set(App, "handoffRecoveryStore", new HandoffRecoveryStore(Path.Combine(directory, "preparation-identity")));
             }
 
-            /// <summary>The production first turn: capture sent, view applied, the task asked for and presented.</summary>
-            public void Start()
+            /// <summary>The production first turn: capture sent, view applied, the task asked for and presented.
+            /// Without a picture it is the person's turn that sends no photo.</summary>
+            public void Start(bool picture = true)
             {
-                Set(App, "pending", Snapshot()); Set(App, "pendingEvidence", new EvidenceTurn(false));
+                Set(App, "pending", Snapshot()); Set(App, "pendingEvidence", new EvidenceTurn(!picture));
                 ((Task)typeof(BoopyApp).GetMethod("Send", Flags)!.Invoke(App, new object[] { SpeechValidation.SyntheticWav() })!).GetAwaiter().GetResult();
                 Require(Get(App, "session") is SessionView view && view.Id == SessionId, "The synthetic first turn was not applied.");
                 Settle(this);
@@ -502,6 +604,10 @@ namespace Boopy.Quest.Editor
             private readonly List<(string Path, string? Body)> requests = new List<(string, string?)>();
             // Runs as a later turn reaches the Mac, before its reply (the same session view comes back).
             public Action? OnUtter;
+            // Runs as an answer reaches the Mac, before its reply.
+            public Action? OnAnswer;
+            // Runs as the first turn reaches the Mac, before its reply.
+            public Action? OnStart;
             public int Count(string path) => requests.Count(request => request.Path == path);
             public List<string> Bodies(string path) => requests.Where(request => request.Path == path).Select(request => request.Body ?? "").ToList();
 
@@ -510,10 +616,10 @@ namespace Boopy.Quest.Editor
                 var path = request.RequestUri!.AbsolutePath;
                 if (path == "/v1/health") return Reply(HttpStatusCode.OK, Health);
                 requests.Add((path, request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()));
-                if (request.Method == HttpMethod.Post && path == "/v1/sessions") return Reply(HttpStatusCode.OK, Wire.Write(SessionView));
+                if (request.Method == HttpMethod.Post && path == "/v1/sessions") { OnStart?.Invoke(); return Reply(HttpStatusCode.OK, Wire.Write(SessionView)); }
                 if (request.Method == HttpMethod.Post && path == "/v1/sessions/" + SessionId + "/task") return Open.Dequeue()();
                 if (request.Method == HttpMethod.Post && path == "/v1/sessions/" + SessionId + "/utterances") { OnUtter?.Invoke(); return Reply(HttpStatusCode.OK, Wire.Write(SessionView)); }
-                if (request.Method == HttpMethod.Post && path == "/v1/tasks/" + TaskId + "/answers") return Answers.Dequeue()();
+                if (request.Method == HttpMethod.Post && path == "/v1/tasks/" + TaskId + "/answers") { OnAnswer?.Invoke(); return Answers.Dequeue()(); }
                 if (request.Method == HttpMethod.Get && path == "/v1/tasks/" + TaskId) return Read.Dequeue()();
                 throw new InvalidOperationException("Unexpected synthetic request: " + request.Method + " " + path);
             }

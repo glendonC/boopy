@@ -46,7 +46,8 @@ namespace Boopy.Quest.Editor
                 {
                     var header = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Intent instrument");
                     Require(header.BodyText == "Sending…", "Targeted turn falsely promises a specific perception stage.");
-                    Require(strip.Stage == DialogueStage.Working && strip.FullText == "Sending…" && strip.SpeakerText == "", "Targeted processing caption repeats or misidentifies work.");
+                    Require(strip.Stage == DialogueStage.Working && ThinkingPhrases.All.Contains(strip.FullText) && strip.SpeakerText == "",
+                        "Targeted processing caption is not one of Boopy's thinking phrases, or it names a speaker.");
                     console.InputPolicy.End(); console.RefreshVisuals(.1f);
                     Require(header.BodyText == "Sending…", "Busy refresh changed the waiting label.");
                     if (cancelled) ((CancellationTokenSource)Get(app, "captureRequest")!).Cancel();
