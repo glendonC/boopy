@@ -48,7 +48,6 @@ namespace Boopy.Quest
         private string mode = "";
         private string recoveryErrorWords = "";
         private string processingWords = "Thinking…";
-        private float requestAt;
         private float animationTime;
         private ConsoleAction focused;
         private int overflow;
@@ -252,7 +251,7 @@ namespace Boopy.Quest
         public void SetReducedMotion(bool on) { reduced = on; Assemble(); }
         public void ShowCapture(string? target = null) { Stage("capture", "", ""); ConfigureOpening(); Compose(); }
         public void ShowListening(bool correcting = false) => Stage("listening", "", "Listening…\nLet go when you’re done.");
-        public void ShowProcessing(bool targeted = false) { voicePreparing = false; processingWords = "Sending…"; requestAt = Time.unscaledTime; Stage("processing", "", processingWords); }
+        public void ShowProcessing(bool targeted = false, string words = "Sending…") { voicePreparing = false; processingWords = words; Stage("processing", "", processingWords); }
         public void ShowTurnProgress(TurnProgress progress)
         {
             // The owning request/generation is checked by BoopyApp before reaching this surface.
@@ -260,7 +259,7 @@ namespace Boopy.Quest
             processingWords = progress.Words;
             header?.SetBody(processingWords);
         }
-        public void ShowCheckingCapture() { processingWords = "Checking…"; requestAt = Time.unscaledTime; Stage("processing", "", processingWords); }
+        public void ShowCheckingCapture() { processingWords = "Checking…"; Stage("processing", "", processingWords); }
         public void ShowInterpretationFailure(string words) => Stage("error", "Could not answer", words);
         public void ShowError(string words)
         {
@@ -802,14 +801,10 @@ namespace Boopy.Quest
             if (companion != null)
             {
                 companion.SetVisible(gameObject.activeInHierarchy && !controlsOnly);
-                companion.SetOpacity(visitPoint != null || returning ? 1f : header?.Opacity ?? 1f);
+                // Boopy stays whole while it works: the re-reveal when work starts fades the panel, never the companion.
+                companion.SetOpacity(mode == "processing" || visitPoint != null || returning ? 1f : header?.Opacity ?? 1f);
                 Travel(delta);
                 companion.Refresh(delta, reduced);
-            }
-            if (mode == "processing")
-            {
-                var elapsed = Time.unscaledTime - requestAt;
-                header!.SetBody(elapsed < 10f ? processingWords : $"{processingWords}\nStill waiting · {Mathf.FloorToInt(elapsed)}s");
             }
             header?.Shimmer(animationTime, mode == "processing" || busy);
         }

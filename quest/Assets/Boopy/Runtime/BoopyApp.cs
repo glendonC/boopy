@@ -106,6 +106,11 @@ namespace Boopy.Quest
         private CancellationTokenSource? taskOpen;
         // The button recording is an answer to the presented task, not a Talk turn.
         private bool answeringTask;
+        // Boopy's thinking phrases while a turn is with the Mac, one order for the whole app run. A turn that sends
+        // no picture never says Boopy is looking.
+        private ThinkingPhrases thinking = new ThinkingPhrases(Environment.TickCount);
+        private ThinkingPhrases thinkingWithoutPicture = new ThinkingPhrases(Environment.TickCount + 1, picture: false);
+        private ThinkingPhrases Thinking(bool picture) => picture ? thinking : thinkingWithoutPicture;
 
         private void Start()
         {
@@ -600,10 +605,11 @@ namespace Boopy.Quest
         {
             if (client == null || session == null || console == null) return;
             var sessionId = session.Id;
+            const string saving = "Saving on your Mac…";
             busy = true;
             SayStatus(null);
-            console.ShowProcessing(false);
-            dialogue?.Show(DialogueStage.Working, "Sending…");
+            console.ShowProcessing(false, saving);
+            dialogue?.Show(DialogueStage.Working, saving);
             using var request = new CancellationTokenSource();
             captureRequest = request;
             dialogue?.SetCancelableWait(true);
@@ -843,8 +849,8 @@ namespace Boopy.Quest
         {
             if (!ReferenceEquals(captureRequest, request) || request.IsCancellationRequested || !busy ||
                 !inputAllowed || !isActiveAndEnabled || (expectedSession != null && session?.Id != expectedSession)) return;
+            // The actual stage goes to the console's processing line; the strip keeps Boopy's thinking phrases.
             console?.ShowTurnProgress(progress);
-            dialogue?.Show(DialogueStage.Working, progress.Words);
         }
 
         // Work on an outlined subject: Boopy goes beside it, faces it, and on arrival lights it with one sweep. A turn
@@ -864,7 +870,7 @@ namespace Boopy.Quest
             SayStatus(null);
             console?.ShowProcessing(pendingTarget != null);
             var evidenceTurn = pendingEvidence ?? new EvidenceTurn(false);
-            dialogue?.Show(DialogueStage.Working, "Sending…");
+            dialogue?.ShowThinking(Thinking(evidenceTurn.RequiresPicture));
             VisitSubject(evidenceTurn.RequiresPicture);
             Debug.Log("Boopy: sending capture to Mac.");
             var snapshot = pending;
@@ -1352,7 +1358,7 @@ namespace Boopy.Quest
             var submit = control == ConsoleAction.SendChoice;
             if (submit) console.SuppressDispatchedChoice();
             StopSpeech(); busy = true; console.SetBusy(true, !submit);
-            if (submit) { console.ShowProcessing(false); dialogue?.Show(DialogueStage.Working, "Sending your choice to Boopy…"); }
+            if (submit) { console.ShowProcessing(false); dialogue?.ShowThinking(Thinking(false)); }
             using var request = new CancellationTokenSource(); captureRequest = request;
             dialogue?.SetCancelableWait(true);
             SessionView? speechView = null;
@@ -1386,8 +1392,8 @@ namespace Boopy.Quest
             busy = true;
             SayStatus(null);
             console.ShowProcessing(suggestion.TargetItemId != null);
-            dialogue?.Show(DialogueStage.Working, "Sending…");
             // A follow-up works on the recorded view only when it names an observation.
+            dialogue?.ShowThinking(Thinking(suggestion.ObservationId != null));
             VisitSubject(suggestion.ObservationId != null);
             using var request = new CancellationTokenSource();
             captureRequest = request;

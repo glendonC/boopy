@@ -1,6 +1,7 @@
 #nullable enable
 using TMPro;
 using System.Collections.Generic;
+using Boopy.Client;
 using UnityEngine;
 
 namespace Boopy.Quest
@@ -35,6 +36,8 @@ namespace Boopy.Quest
         private bool noticeActive, restoreVisible, voicePreparing;
         // A task line's speaker and delivery state, in place of the stage words. Null for every other line.
         private string? taskSpeaker, previousTaskSpeaker;
+        // Boopy's thinking phrases while this working line is a turn with the Mac. Null for every other line.
+        private ThinkingPhrases? thinking, previousThinking;
         private string previousText = "";
         private DialogueStage previousStage;
         private float noticeExpires, stageStartedAt, previousStartedAt;
@@ -127,11 +130,23 @@ namespace Boopy.Quest
             RefreshSpeaker();
         }
 
+        /// <summary>
+        /// The thinking line while a turn is with the Mac: one of Boopy's phrases, then the next about every
+        /// <see cref="ThinkingPhrases.Seconds"/> seconds. Any other line takes its place.
+        /// </summary>
+        public void ShowThinking(ThinkingPhrases phrases)
+        {
+            Show(DialogueStage.Working, phrases.Next());
+            thinking = phrases;
+        }
+
         public void Show(DialogueStage stage, string words)
         {
-            noticeActive = false; voicePreparing = false; taskSpeaker = null;
+            noticeActive = false; voicePreparing = false; taskSpeaker = null; thinking = null;
             Stage = stage; FullText = words; stageStartedAt = Time.unscaledTime;
             revealAge = 0f;
+            // Each working line starts its shimmer on its first glyph.
+            if (stage == DialogueStage.Working) animationTime = 0f;
             if (caption == null || speaker == null) return;
             var width = CaptionWidth;
             speaker.rectTransform.sizeDelta = new Vector2(width, .036f);
@@ -174,9 +189,10 @@ namespace Boopy.Quest
             var savedPage = noticeActive ? previousPage : page;
             var savedStartedAt = noticeActive ? previousStartedAt : stageStartedAt;
             var savedSpeaker = noticeActive ? previousTaskSpeaker : taskSpeaker;
+            var savedThinking = noticeActive ? previousThinking : thinking;
             Show(DialogueStage.Clarification, words);
             restoreVisible = visible; previousText = savedText; previousStage = savedStage; previousPage = savedPage; previousStartedAt = savedStartedAt;
-            previousTaskSpeaker = savedSpeaker;
+            previousTaskSpeaker = savedSpeaker; previousThinking = savedThinking;
             noticeExpires = seconds > 0 ? Time.unscaledTime + seconds : float.PositiveInfinity;
             noticeActive = true;
         }
@@ -184,7 +200,7 @@ namespace Boopy.Quest
         {
             if (!noticeActive) return;
             noticeActive = false;
-            if (restoreVisible) { Show(previousStage, previousText); taskSpeaker = previousTaskSpeaker; page = Mathf.Clamp(previousPage, 0, pages.Count - 1); stageStartedAt = previousStartedAt; DrawPage(); } else Hide();
+            if (restoreVisible) { Show(previousStage, previousText); taskSpeaker = previousTaskSpeaker; thinking = previousThinking; page = Mathf.Clamp(previousPage, 0, pages.Count - 1); stageStartedAt = previousStartedAt; DrawPage(); } else Hide();
         }
         /// <summary>Only an actual cancellable local wait may offer this fallback action.</summary>
         public void SetCancelableWait(bool value) { cancelableWait = value; RefreshFallbackAction(); }
@@ -273,22 +289,20 @@ namespace Boopy.Quest
         public void RefreshVisuals(float delta)
         {
             if (noticeActive && Time.unscaledTime >= noticeExpires) ClearNotice();
+            // The next thinking phrase about every three seconds; the change is a cut.
+            if (thinking != null && Stage == DialogueStage.Working && Time.unscaledTime - stageStartedAt >= ThinkingPhrases.Seconds) ShowThinking(thinking);
             var still=host?.ReducedMotion ?? reduced;
             if(!still)animationTime+=Mathf.Max(0f,delta);
             revealAge += Mathf.Max(0f, delta);
-            var entered = Mathf.Clamp01(revealAge / (still ? .12f : .18f));
+            // The working line is whole on its first frame, shimmer included: no fade of its own and none from
+            // the console's reveal. It is one line with no timer.
+            var working = Stage == DialogueStage.Working;
+            var entered = working ? 1f : Mathf.Clamp01(revealAge / (still ? .12f : .18f));
             var eased = entered * entered * (3f - 2f * entered);
             if (reveal != null) reveal.localPosition = still ? Vector3.zero : Vector3.down * (.006f * (1f-eased));
-            var opacity = entered * (dock != null && !fallback ? dock.Opacity : 1f);
+            var opacity = working ? 1f : entered * (dock != null && !fallback ? dock.Opacity : 1f);
             if (speaker != null) speaker.alpha = opacity;
             fallbackStop?.Refresh(delta, 1f, host?.ReducedMotion ?? reduced);
-            // This measures this actual outstanding wait, including when motion is reduced.
-            // It never pretends to know which provider step is running or how much is complete.
-            if (Stage == DialogueStage.Working && caption != null)
-            {
-                var elapsed = Mathf.Max(0f, Time.unscaledTime - stageStartedAt);
-                caption.text = elapsed >= 10f ? FullText + $"\nStill waiting · {Mathf.FloorToInt(elapsed)}s" : FullText;
-            }
             RefreshBacking(opacity);
             if (caption != null)
             {

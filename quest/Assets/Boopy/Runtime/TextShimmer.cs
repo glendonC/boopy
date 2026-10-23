@@ -19,7 +19,8 @@ namespace Boopy.Quest
                 min = Mathf.Min(min, glyph.bottomLeft.x); max = Mathf.Max(max, glyph.topRight.x);
             }
             var width = Mathf.Max(.001f, max - min);
-            var band = Mathf.Repeat(time / 2f, 1f) * 1.6f - .3f;
+            // At time zero the band is on the first glyph; it crosses the text and returns every 2 s.
+            var band = Mathf.Repeat(time * .8f + .3f, 1.6f) - .3f;
             for (var i = 0; i < info.characterCount; i++)
             {
                 var glyph = info.characterInfo[i]; if (!glyph.isVisible) continue;
