@@ -171,15 +171,33 @@ namespace Boopy.Quest
         }
 
         /// <summary>
-        /// Place a boundary from captured depth. A distributed, strongly supported plane can
-        /// stabilize a slanted flat surface; otherwise retain individual captured samples.
-        /// Missing depth stays approximate and never receives a surface fill.
+        /// Place a boundary from captured depth. A box with no mask sits at its subject's depth: one plane
+        /// facing the capture through the point the chip's anchor uses. A mask contour keeps its own samples:
+        /// a distributed, strongly supported plane can stabilize a slanted flat surface; otherwise retain
+        /// individual captured samples. Missing depth stays approximate and never receives a surface fill.
         /// </summary>
         public Vector3[] PlaceBoundary(Grounding grounding, Snapshot snapshot, out bool capturedDepth)
         {
             var boundary = Geometry.Outline(grounding);
             capturedDepth = false;
             if (boundary.Length < 3) return Array.Empty<Vector3>();
+            if (grounding.Box != null && !Geometry.TryContour(grounding, out _))
+            {
+                // A box is the subject's extent, not a surface: its corners would sample, and a fitted plane
+                // would include, whatever lies behind the subject.
+                var center = Geometry.Center(grounding.Box);
+                var anchor = Place(center, snapshot);
+                var facing = new Plane((snapshot.Pose.position - anchor).normalized, anchor);
+                var meters = Geometry.SampleDepth(snapshot.Depth, center);
+                capturedDepth = meters != null && meters >= 0.05f && meters <= MaxDepth;
+                var placed = new Vector3[boundary.Length];
+                for (var i = 0; i < boundary.Length; i++)
+                {
+                    var ray = SnapshotRay(boundary[i], snapshot);
+                    placed[i] = facing.Raycast(ray, out var enter) ? ray.GetPoint(enter) : anchor;
+                }
+                return placed;
+            }
             var samples = new System.Collections.Generic.List<N.Vector3>();
             var index = 0;
             foreach (var cell in Geometry.CellCenters(snapshot.Depth.Columns, snapshot.Depth.Rows))
