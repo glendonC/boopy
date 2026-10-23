@@ -24,7 +24,49 @@ from transformers.utils import logging
 logging.set_verbosity_error()
 warnings.filterwarnings("ignore", category=FutureWarning)
 VOCABULARY = "a person. a chair. a table. a sofa. a door. a window. a monitor. a laptop. a phone. a book. a bottle. a cup. a plant. a lamp. a picture. a bag. a shelf. a cabinet. a bed. a sign. a circle. a rectangle."
+NOUNS = [phrase.strip().removeprefix("a ").removeprefix("an ") for phrase in VOCABULARY.split(".") if phrase.strip()]
+DETECTION_THRESHOLD = .30
+TEXT_THRESHOLD = .25
 MAX_INPUT = 6 * 1024 * 1024
+
+
+def noun_spans(tokens):
+    """Token positions of each vocabulary noun in the tokenized prompt, in vocabulary order.
+
+    Special tokens, articles and periods belong to no noun. None when the prompt does not split
+    into exactly the vocabulary's nouns, so a label can never come from a misaligned token.
+    """
+    spans, current = [], []
+    for position, token in enumerate(tokens):
+        if token in ("[CLS]", "[SEP]", "a", "an"):
+            continue
+        if token == ".":
+            if current:
+                spans.append(current)
+            current = []
+            continue
+        current.append(position)
+    if current:
+        spans.append(current)
+    if len(spans) != len(NOUNS):
+        return None
+    for noun, span in zip(NOUNS, spans):
+        if "".join(tokens[position].removeprefix("##") for position in span) != noun:
+            return None
+    return spans
+
+
+def best_noun(token_scores, spans, threshold):
+    """The one vocabulary noun the detector scores highest for a box, with that noun's own score.
+
+    None when that score is under the threshold or another noun has exactly the same score: an
+    unclear name is left out, never guessed, and a joined phrase of several nouns is never a name.
+    """
+    scores = [max(float(token_scores[position]) for position in span) for span in spans]
+    best = max(scores)
+    if best < threshold or scores.count(best) > 1:
+        return None
+    return NOUNS[scores.index(best)], best
 
 
 def mask_geometry(mask):
@@ -85,17 +127,29 @@ class Perceiver:
         inputs = self.detector_processor(images=image, text=VOCABULARY, return_tensors="pt", size={"shortest_edge": min(h, w, 480), "longest_edge": 640}).to(self.device)
         with torch.inference_mode():
             detected = self.detector(**inputs)
-        results = self.detector_processor.post_process_grounded_object_detection(detected, inputs.input_ids, threshold=.30, text_threshold=.25, target_sizes=[(h, w)])[0]
-        labels = results["text_labels"]
+        results = self.detector_processor.post_process_grounded_object_detection(detected, inputs.input_ids, threshold=DETECTION_THRESHOLD, text_threshold=TEXT_THRESHOLD, target_sizes=[(h, w)])[0]
+        # The detector's own token scores for each kept box, in the order post-processing keeps them.
+        token_scores = torch.sigmoid(detected.logits[0]).detach().cpu()
+        best = token_scores.max(dim=-1)[0]
+        kept = (best > DETECTION_THRESHOLD).nonzero(as_tuple=True)[0]
+        if len(kept) != len(results["scores"]) or not torch.allclose(best[kept], results["scores"].detach().cpu()):
+            raise ValueError("Kept boxes do not match the detector's scores.")
+        spans = noun_spans(self.detector_processor.tokenizer.convert_ids_to_tokens(inputs.input_ids[0].tolist()))
+        if spans is None:
+            raise ValueError("The prompt does not split into the vocabulary.")
         choices = []
         for index in results["scores"].argsort(descending=True).tolist():
             box = results["boxes"][index].detach().cpu().tolist()
             box = [max(0, min(w, box[0])), max(0, min(h, box[1])), max(0, min(w, box[2])), max(0, min(h, box[3]))]
             if box[2] - box[0] < 8 or box[3] - box[1] < 8 or (box[2]-box[0])*(box[3]-box[1]) / (w*h) > .80:
                 continue
+            named = best_noun(token_scores[kept[index]], spans, TEXT_THRESHOLD)
+            if named is None:
+                continue  # The headset needs a name for every outline, so an unnamed box is left out.
             if any(overlap(box, choice[0]) > .65 for choice in choices):
                 continue
-            choices.append((box, str(labels[index]), float(results["scores"][index].detach().cpu())))
+            # The confidence beside a name is that name's own score, not an article's or a period's.
+            choices.append((box, *named))
             if len(choices) == 4:
                 break
         objects = []
@@ -116,7 +170,7 @@ class Perceiver:
                 if geometry is None:
                     continue
                 accepted_masks.append(binary)
-                objects.append({"label": label.removeprefix("a ").removeprefix("an "), "confidence": confidence,
+                objects.append({"label": label, "confidence": confidence,
                                 "maskConfidence": float(scores[index]), **geometry})
         return {"objects": objects, "latencyMs": (time.perf_counter() - started) * 1000}
 

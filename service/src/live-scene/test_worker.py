@@ -1,8 +1,67 @@
-"""Synthetic mask geometry tests; model inference is verified separately by synthetic-probe.ts."""
+"""Synthetic mask geometry and label tests; model inference is verified separately by synthetic-probe.ts."""
 import unittest
 import cv2
 import numpy as np
-from worker import mask_geometry
+from worker import NOUNS, best_noun, mask_geometry, noun_spans
+
+
+def prompt_tokens():
+    """The detector's tokens for the vocabulary prompt, one token per noun."""
+    tokens = ["[CLS]"]
+    for noun in NOUNS:
+        tokens += ["a", noun, "."]
+    return tokens + ["[SEP]"]
+
+
+def scores(tokens, values):
+    """Token scores for one box: the given value on each named token, 0.05 elsewhere."""
+    return np.array([values.get(token, .05) for token in tokens], dtype=np.float32)
+
+
+class LabelTests(unittest.TestCase):
+    def test_each_noun_has_its_own_tokens_without_articles_or_periods(self):
+        tokens = prompt_tokens()
+        spans = noun_spans(tokens)
+        self.assertEqual(len(spans), len(NOUNS))
+        self.assertEqual([tokens[span[0]] for span in spans], NOUNS)
+        self.assertTrue(all(len(span) == 1 for span in spans))
+
+    def test_a_noun_split_into_word_pieces_keeps_both_pieces(self):
+        tokens = prompt_tokens()
+        at = tokens.index("cabinet")
+        tokens[at:at + 1] = ["cab", "##inet"]
+        spans = noun_spans(tokens)
+        self.assertEqual(spans[NOUNS.index("cabinet")], [at, at + 1])
+
+    def test_a_prompt_that_does_not_split_into_the_vocabulary_has_no_spans(self):
+        merged = prompt_tokens()
+        merged.remove(".")
+        renamed = prompt_tokens()
+        renamed[renamed.index("bottle")] = "flask"
+        self.assertIsNone(noun_spans(merged))
+        self.assertIsNone(noun_spans(renamed))
+
+    def test_two_nouns_over_the_threshold_give_the_higher_one_never_both(self):
+        tokens = prompt_tokens()
+        spans = noun_spans(tokens)
+        self.assertEqual(best_noun(scores(tokens, {"bottle": .34, "lamp": .31}), spans, .25)[0], "bottle")
+        self.assertEqual(best_noun(scores(tokens, {"bottle": .29, "lamp": .52}), spans, .25)[0], "lamp")
+
+    def test_a_name_carries_its_own_score_not_an_article_or_period(self):
+        tokens = prompt_tokens()
+        spans = noun_spans(tokens)
+        name, score = best_noun(scores(tokens, {"a": .9, ".": .8, "lamp": .27}), spans, .25)
+        self.assertEqual(name, "lamp")
+        self.assertAlmostEqual(score, .27, places=6)
+
+    def test_a_box_under_the_threshold_or_with_a_tie_has_no_name(self):
+        tokens = prompt_tokens()
+        spans = noun_spans(tokens)
+        self.assertIsNone(best_noun(scores(tokens, {"bottle": .24}), spans, .25))
+        # A high article or period belongs to no noun, so it names nothing.
+        self.assertIsNone(best_noun(scores(tokens, {"a": .9, ".": .9}), spans, .25))
+        self.assertIsNone(best_noun(scores(tokens, {"sofa": .4, "bed": .4}), spans, .25))
+
 
 class MaskGeometryTests(unittest.TestCase):
     def test_actual_circle_boundary_is_not_a_box(self):
