@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Linq;
 using Boopy.Client;
-using TMPro;
 using UnityEngine;
 
 namespace Boopy.Quest
@@ -11,24 +10,26 @@ namespace Boopy.Quest
     public sealed class ContextConsole : MonoBehaviour
     {
         private readonly EvidenceNavigator navigator = new EvidenceNavigator();
+        // The selected item's measured source pages, as the navigator holds them, so the card can take its tallest page's height.
+        private readonly List<string> sourcePages = new List<string>();
         private readonly Dictionary<ConsoleAction, SpatialAction> actions = new Dictionary<ConsoleAction, SpatialAction>();
-        private SpatialSurface? header, card, dock, options, bar;
+        private SpatialSurface? header, card, options, bar;
         private Transform? head;
-        private TextMeshPro? itemCount, pageCount;
         private DialogueStrip? dockedDialogue;
         private bool voicePreparing, openingGreeted;
         private string connectionState = "checking";
         private bool? liveSceneAvailable;
         private bool speechAvailable, buttonRecording;
-        private BoxCollider? headerHit, evidenceHit;
+        private BoxCollider? headerHit, evidenceHit, sheetHit;
         private CompanionOrb? companion;
         private SessionView? view;
         private bool captureRecovery, dialogueVisible, controlsOnly;
-        // The shelf's controls; More swaps it in place to Context, Settings and Back.
-        private static readonly ConsoleAction[] Shelved = { ConsoleAction.Talk, ConsoleAction.AnswerTask, ConsoleAction.FinishTalk, ConsoleAction.PauseScene,
-            ConsoleAction.Cancel, ConsoleAction.Options, ConsoleAction.More, ConsoleAction.ShelfBack };
-        private bool moreOpen;
-        // The recovery dialog's panel: the line's dark backing, drawn on the header while the dialog shows.
+        // More swaps the row in place: page 1 is Context and More, page 2 Settings and Back; 0 is the conversation's row.
+        private int morePage;
+        // The page each sheet's row shows: the Context sheet's actions paged with More, the reader's two rows, one setting.
+        private int contextPage, readerPage, settingsPage;
+        private const int SettingsPages = 5;
+        // The dark panel of the line, drawn on the header while Boopy's words show on it with no line docked over them.
         private MeshRenderer? dialogBacking;
         private Mesh? dialogMesh;
         private bool handoffRecordAvailable, handoffRecoveryOffered, handoffStorageFailed;
@@ -48,10 +49,8 @@ namespace Boopy.Quest
         private bool taskShown;
         private string? taskActionLabel;
         private bool settingsOpen;
-        private float conversationPanelHeight;
         private string? suppressedCardSession, suppressedCardId;
-        private bool keepChoiceVisible;
-        private bool busy, reduced, optionsOpen, actionsOpen, interactionLocked, readerOpen, savePreview, handoffOpen;
+        private bool busy, reduced, optionsOpen, interactionLocked, readerOpen, savePreview, handoffOpen;
         private string mode = "";
         private string recoveryErrorWords = "";
         private string processingWords = "Thinking…";
@@ -88,56 +87,26 @@ namespace Boopy.Quest
             console.header.SetCompanionInset(true);
             console.companion = CompanionOrb.Create(console.header.transform);
             console.card = SpatialSurface.Create(go.transform, "Evidence instrument");
-            console.dock = SpatialSurface.Create(go.transform, "Save dock");
             console.options = SpatialSurface.Create(go.transform, "Comfort options");
             // Sheets and cards take the line's column, as Boopy's line and its words do.
             console.card.SetColumn(true); console.options.SetColumn(true);
-            console.dock.SetChrome(false);
             console.bar = SpatialSurface.Create(go.transform, "Control bar");
-            // The shelf's surface is exactly one control tall, so the panel above it sits one gap above the controls.
+            // The row's surface is exactly one control tall, so the panel above it sits one gap above the controls.
             console.bar.Configure("", "", "", bottomSpace: SpatialTheme.Target - 2f * SpatialTheme.Padding);
             console.bar.SetChrome(false);
-            console.Add(ConsoleAction.Talk, "Talk", console.bar, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.FinishTalk, "Finish", console.bar, SpatialTheme.ShelfSlot);
-            console.itemCount = SpatialTheme.Text(console.card.transform, "Item position", SpatialTheme.Utility, SpatialTheme.Ivory);
-            console.itemCount.alignment = TextAlignmentOptions.Center; console.itemCount.rectTransform.sizeDelta = new Vector2(.10f, .025f);
-            console.pageCount = SpatialTheme.Text(console.card.transform, "Text position", SpatialTheme.Utility, SpatialTheme.Ivory);
-            console.pageCount.alignment = TextAlignmentOptions.Center; console.pageCount.rectTransform.sizeDelta = new Vector2(.10f, .025f);
-            console.Add(ConsoleAction.PreviousItem, "Previous", console.card, .132f);
-            console.Add(ConsoleAction.NextItem, "Next", console.card, .132f);
-            console.Add(ConsoleAction.ToggleDetails, "Source", console.card, .115f);
-            console.Add(ConsoleAction.Confirm, "Confirm", console.card, .125f);
-            console.Add(ConsoleAction.ToggleIncluded, "Exclude", console.card, .125f);
-            console.Add(ConsoleAction.PreviousText, "Earlier", console.card, .132f);
-            console.Add(ConsoleAction.NextText, "Read more", console.card, .160f);
-            console.Add(ConsoleAction.PrepareSave, "Prepare context", console.dock, .300f);
-            console.Add(ConsoleAction.UseCurrentView, "Use current view", console.dock, .245f);
-            console.Add(ConsoleAction.UseSpokenOnly, "Without a photo", console.dock, .175f);
-            console.Add(ConsoleAction.CheckCapture, "Check", console.dock, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.DismissCapture, "New", console.dock, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.Save, "Use this context", console.dock, .270f);
-            console.Add(ConsoleAction.Back, "Back", console.dock, .145f);
-            console.Add(ConsoleAction.Handoff, "Use context", console.dock, .210f);
-            console.Add(ConsoleAction.Review, "Conversation", console.dock, .400f);
-            console.Add(ConsoleAction.ChoiceOne, "", console.dock, .400f);
-            console.Add(ConsoleAction.ChoiceTwo, "", console.dock, .400f);
-            console.Add(ConsoleAction.ChoiceThree, "", console.dock, .400f);
-            console.Add(ConsoleAction.SendChoice, "Send to Boopy", console.dock, .400f);
-            console.Add(ConsoleAction.FollowUpOne, "", console.dock, .400f);
-            console.Add(ConsoleAction.FollowUpTwo, "", console.dock, .400f);
-            console.Add(ConsoleAction.AnswerTask, "", console.bar, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.Options, "Context", console.bar, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.PauseScene, "Pause", console.bar, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.Actions, "Actions", console.dock, .240f);
-            console.Add(ConsoleAction.Settings, "Settings", console.bar, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.More, "More", console.bar, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.ShelfBack, "Back", console.bar, SpatialTheme.ShelfSlot);
-            console.Add(ConsoleAction.Size, "Size: standard", console.options, .200f);
-            console.Add(ConsoleAction.Sound, "Sound: on", console.options, .200f);
-            console.Add(ConsoleAction.Speech, "Voice: off", console.options, .200f);
-            console.Add(ConsoleAction.EvidenceSource, "Include photo: on", console.options, .400f);
-            console.Add(ConsoleAction.Motion, "Motion: full", console.options, .200f);
-            console.Add(ConsoleAction.Cancel, "Stop", console.bar, SpatialTheme.ShelfSlot);
+            // Every control is a tile of the one row; each state names its first and third tile.
+            foreach (var (action, label) in new[]
+            {
+                (ConsoleAction.Talk, "Talk"), (ConsoleAction.FinishTalk, "Finish"), (ConsoleAction.AnswerTask, ""), (ConsoleAction.PauseScene, "Pause"),
+                (ConsoleAction.Cancel, "Stop"), (ConsoleAction.More, "More"), (ConsoleAction.ShelfBack, "Back"), (ConsoleAction.Back, "Back"),
+                (ConsoleAction.Options, "Context"), (ConsoleAction.Settings, "Settings"), (ConsoleAction.CheckCapture, "Check"), (ConsoleAction.DismissCapture, "New"),
+                (ConsoleAction.UseSpokenOnly, "No view"), (ConsoleAction.UseCurrentView, "View"), (ConsoleAction.SendChoice, "Choose"),
+                (ConsoleAction.FollowUpOne, "Ask"), (ConsoleAction.FollowUpTwo, "Ask"), (ConsoleAction.PrepareSave, "Prepare"), (ConsoleAction.Review, "Review"),
+                (ConsoleAction.Handoff, "Prepare"), (ConsoleAction.Save, "Use"), (ConsoleAction.ToggleIncluded, "Exclude"), (ConsoleAction.ToggleDetails, "Source"),
+                (ConsoleAction.Confirm, "Confirm"), (ConsoleAction.Size, "Turn on"), (ConsoleAction.Sound, "Turn off"), (ConsoleAction.Motion, "Turn on"),
+                (ConsoleAction.Speech, "Turn off"), (ConsoleAction.EvidenceSource, "Turn off"),
+            })
+                console.Add(action, label);
             var dialogPlate = new GameObject("Dialog backing"); dialogPlate.transform.SetParent(console.header.transform, false);
             console.dialogMesh = RoundedPlate.Create(1f, 1f, .06f);
             dialogPlate.AddComponent<MeshFilter>().sharedMesh = console.dialogMesh;
@@ -147,6 +116,7 @@ namespace Boopy.Quest
             var panel = new MaterialPropertyBlock(); panel.SetColor("_Color", SpatialTheme.Panel); console.dialogBacking.SetPropertyBlock(panel);
             console.headerHit = console.header.gameObject.AddComponent<BoxCollider>();
             console.evidenceHit = console.card.gameObject.AddComponent<BoxCollider>();
+            console.sheetHit = console.options.gameObject.AddComponent<BoxCollider>(); console.sheetHit.enabled = false;
             if (Application.isPlaying)
             {
                 console.SoundEnabled = PlayerPrefs.GetInt("Boopy.Sound", 1) != 0;
@@ -211,8 +181,7 @@ namespace Boopy.Quest
         private void LoadVoicePreference() => voicePreferred = PlayerPrefs.GetInt("Boopy.Voice", 1) != 0;
         private void SaveVoicePreference() { PlayerPrefs.SetInt("Boopy.Voice", voicePreferred ? 1 : 0); PlayerPrefs.Save(); }
 
-        private void Add(ConsoleAction action, string label, SpatialSurface parent, float width)
-            => actions.Add(action, SpatialAction.Create(parent.transform, action, label, width));
+        private void Add(ConsoleAction action, string label) => actions.Add(action, SpatialAction.Create(bar!.transform, action, label, SpatialTheme.ShelfSlot));
         public void Place(Vector3 point) { transform.position = point; gameObject.SetActive(true); if(controlsOnly) { controlsOnly=false; Compose(); } Face(); }
         public void ShowControlsOnly(Vector3 point) { transform.position=point; controlsOnly=true; gameObject.SetActive(true); Compose(); Face(); }
         public void AttendTo(Vector3 worldPoint, bool objectAttention = false)
@@ -233,7 +202,7 @@ namespace Boopy.Quest
         {
             if (captureRecovery == available) return;
             captureRecovery = available;
-            if (available) { actionsOpen = false; optionsOpen = false; readerOpen = false; savePreview = false; handoffOpen = false; ClearFocus(); header?.Configure("", "Earlier capture", string.IsNullOrEmpty(recoveryErrorWords) ? header.BodyText : recoveryErrorWords, .145f); }
+            if (available) { optionsOpen = false; readerOpen = false; savePreview = false; handoffOpen = false; ClearFocus(); header?.Configure("", "Earlier capture", string.IsNullOrEmpty(recoveryErrorWords) ? header.BodyText : recoveryErrorWords, .145f); }
             Compose(); Assemble();
         }
         public void Hide() { companion?.SetVisible(false); gameObject.SetActive(false); }
@@ -296,7 +265,7 @@ namespace Boopy.Quest
 
         private void Stage(string next, string heading, string words)
         {
-            var changed = mode != next; mode = next; busy = next == "processing"; actionsOpen = false; optionsOpen = false; savePreview = false; handoffOpen = false;
+            var changed = mode != next; mode = next; busy = next == "processing"; optionsOpen = false; savePreview = false; handoffOpen = false; morePage = 0;
             if (next == "listening" || next == "processing") readerOpen = false;
             header!.SetTrailingInset(false);
             header.Configure("", heading, words, .145f);
@@ -311,7 +280,7 @@ namespace Boopy.Quest
             view = returned; busy = false;
             speechAvailable = connectionState != "unavailable" && returned.SpeechOutputAvailable;
             VoiceEnabled = speechAvailable && voicePreferred;
-            if (newSession) { optionsOpen = false; settingsOpen = false; actionsOpen = false; readerOpen = false; savePreview = false; handoffOpen = false; taskShown = false; taskActionLabel = null; }
+            if (newSession) { optionsOpen = false; settingsOpen = false; morePage = 0; readerOpen = false; savePreview = false; handoffOpen = false; taskShown = false; taskActionLabel = null; }
             if (!ContextReview.CanSave(returned)) savePreview = false;
             if (returned.Committed != null) { readerOpen = false; savePreview = false; }
             header!.SetTrailingInset(false);
@@ -328,61 +297,44 @@ namespace Boopy.Quest
 
         private void Compose()
         {
-            if (header == null || card == null || dock == null || options == null || bar == null || evidenceHit == null || headerHit == null) return;
+            if (header == null || card == null || options == null || bar == null || evidenceHit == null || headerHit == null || sheetHit == null) return;
             header.gameObject.SetActive(true);
-            if(conversationPanelHeight > 0f) header.Configure("", "", header.BodyText, .145f);
-            // Under a docked line the panel starts from its own words' height each time, so a line alone and a line with rows
-            // each end one gap above the shelf; a height reserved earlier never lingers.
-            else if (dialogueVisible && dockedDialogue != null) header.Configure(header.StateText, header.TitleText, header.BodyText, .145f);
-            conversationPanelHeight = 0f; dockedDialogue?.SetConversationContentHeight(0f);
+            // With a line docked, shown or hidden, the panel starts from its own words' height each time, so it ends one gap above
+            // the row; a height reserved earlier never lingers.
+            if (dockedDialogue != null) header.Configure(header.StateText, header.TitleText, header.BodyText, .145f);
             var recoveryOffered = captureRecovery && !busy && mode != "listening" && mode != "processing";
             // The recovery dialog speaks on the panel itself: no line and no speaker over it. Hiding the line composes again.
             if (recoveryOffered && dockedDialogue != null && dockedDialogue.gameObject.activeSelf) { dockedDialogue.Hide(); return; }
-            var evidenceOffered = !captureRecovery && !busy && (mode == "review" || mode == "error") && ChoiceAvailable() && !taskShown;
+            var evidenceOffered = !captureRecovery && !busy && (mode == "review" || mode == "error") && EvidenceAsked() && !taskShown;
             var reviewing = mode == "review";
             RefreshSuggestions();
             shownSuggestionIds.Clear();
-            card.gameObject.SetActive(!recoveryOffered && !evidenceOffered && (savePreview || handoffOpen || (reviewing && readerOpen && navigator.Selected != null)));
-            dock.gameObject.SetActive(mode == "processing" || ((mode != "capture" || recoveryOffered || handoffOpen) && mode != "listening" && (!busy || keepChoiceVisible)));
-            options.gameObject.SetActive(!recoveryOffered && !evidenceOffered && optionsOpen && (dock.gameObject.activeSelf || mode == "capture"));
+            // Protected-source fallback shows no conversation content and permits explicitly opened global settings only.
+            card.gameObject.SetActive(!controlsOnly && !recoveryOffered && !evidenceOffered && (savePreview || handoffOpen || (reviewing && readerOpen && navigator.Selected != null)));
+            options.gameObject.SetActive(optionsOpen && !recoveryOffered && !evidenceOffered && !(controlsOnly && !settingsOpen)
+                && (mode == "capture" || mode == "processing" || mode != "listening" && !busy));
             foreach (var action in actions.Values) action.gameObject.SetActive(false);
             if (dialogBacking != null) dialogBacking.enabled = false;
-            actions[ConsoleAction.Handoff].Label(handoffRecoveryOffered ? "Check earlier"
-                : handoffState == "prepared-local" ? "Preparation status" : handoffState == "changed" ? "Prepare again"
-                : handoffState == "not-prepared" || handoffState == "missing" ? "Prepare context"
-                : handoffState == "failed" ? "Retry preparation" : "Check preparation");
-            foreach (var action in new[] { ConsoleAction.Review, ConsoleAction.PrepareSave, ConsoleAction.Handoff, ConsoleAction.CheckCapture, ConsoleAction.DismissCapture })
-                actions[action].transform.SetParent(dock.transform, false);
-            itemCount!.gameObject.SetActive(card.gameObject.activeSelf && !savePreview && !handoffOpen && !navigator.DetailsOpen);
-            pageCount!.gameObject.SetActive(card.gameObject.activeSelf && !savePreview && !handoffOpen && navigator.DetailsOpen);
             if (card.gameObject.activeSelf && !savePreview && !handoffOpen)
             {
                 var selected = navigator.Selected!;
-                var state = ChipStyles.For(selected, false).Tag;
-                var words = navigator.DetailsOpen ? navigator.CurrentPage ?? "No additional evidence." : selected.Statement;
-                card.Configure(navigator.DetailsOpen ? "Source" : state, selected.Label, words,
-                    navigator.DetailsOpen ? .116f : .066f, .130f, maxTitleHeight: .044f);
-                // Stable mode capacity prevents hover inspection from moving action targets.
-                SetCardCapacity(navigator.DetailsOpen ? .370f : .310f);
-                itemCount.text = $"{navigator.ItemIndex + 1} of {navigator.ItemCount}";
-                pageCount.text = $"Page {navigator.PageIndex + 1} of {navigator.PageCount}";
-                var bottom = -card.Size.y / 2f;
-                Put(ConsoleAction.PreviousItem, -.144f, bottom + .102f, !navigator.DetailsOpen && navigator.HasPreviousItem);
-                Put(ConsoleAction.NextItem, .144f, bottom + .102f, !navigator.DetailsOpen && navigator.HasNextItem);
-                itemCount.transform.localPosition = new Vector3(0, bottom + .102f, -.005f);
-                Put(ConsoleAction.ToggleDetails, -.135f, bottom + .035f, true);
-                actions[ConsoleAction.ToggleDetails].Label(navigator.DetailsOpen ? "Back" : "Source");
-                Put(ConsoleAction.Confirm, .135f, bottom + .035f, navigator.DetailsOpen && navigator.CanConfirmSelected);
-                Put(ConsoleAction.ToggleIncluded, .135f, bottom + .035f, !navigator.DetailsOpen);
-                actions[ConsoleAction.ToggleIncluded].Label(ContextReview.IsExcluded(selected) ? "Include" : "Exclude");
-                if (navigator.DetailsOpen)
-                {
-                    Put(ConsoleAction.PreviousText, -.144f, bottom + .102f, navigator.HasPreviousPage);
-                    Put(ConsoleAction.NextText, .130f, bottom + .102f, navigator.HasNextPage);
-                    pageCount.transform.localPosition = new Vector3(-.006f, bottom + .102f, -.005f);
-                }
-                evidenceHit.center = new Vector3(0, .062f, -.004f);
-                evidenceHit.size = new Vector3(card.Size.x, Mathf.Max(.060f, card.Size.y - .150f), .012f);
+                var source = navigator.DetailsOpen;
+                // One item, or one page of its source, at a time, with "n of N" where the speaker line sits; a pinch on the
+                // card shows the next.
+                var count = source ? Count(navigator.PageIndex, navigator.PageCount) : Count(navigator.ItemIndex, navigator.ItemCount);
+                // One height across its pages, its tallest page's, keeps the card under the pinch that pages it and hugs its words.
+                var tallest = 0f;
+                if (source && sourcePages.Count == navigator.PageCount)
+                    foreach (var sourcePage in sourcePages) { card.Configure("Source" + count, selected.Label, sourcePage, .116f, maxTitleHeight: .044f); tallest = Mathf.Max(tallest, card.Size.y); }
+                // The reader's items are the navigator's: every item but the goal.
+                else if (!source && view != null)
+                    foreach (var other in view.Items.Where(candidate => candidate.Kind != "goal"))
+                    { card.Configure(ChipStyles.For(other, false).Tag + count, other.Label, other.Statement, .066f, maxTitleHeight: .044f); tallest = Mathf.Max(tallest, card.Size.y); }
+                card.Configure((source ? "Source" : ChipStyles.For(selected, false).Tag) + count, selected.Label,
+                    source ? navigator.CurrentPage ?? "No additional evidence." : selected.Statement, source ? .116f : .066f, maxTitleHeight: .044f);
+                card.ReserveHeight(tallest);
+                evidenceHit.center = Vector3.back * .004f;
+                evidenceHit.size = new Vector3(card.Size.x, card.Size.y, .012f);
                 evidenceHit.enabled = !busy;
             }
             if (savePreview || handoffOpen)
@@ -394,95 +346,24 @@ namespace Boopy.Quest
                     handoffOpen ? .300f : .180f, .015f, maxTitleHeight: .055f);
                 evidenceHit.enabled = false;
             }
-            if (dock.gameObject.activeSelf)
-            {
-                var questionRows = reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered;
-                var choice = questionRows ? ActiveChoice() : null;
-                var rowHeights = choice == null ? suggestions.Select((suggestion, index) => ConfigureQuestion(index == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo, suggestion.Question)).ToArray() : System.Array.Empty<float>();
-                var questionHeight = questionRows ? rowHeights.Sum() + SpatialTheme.Gap * rowHeights.Length : 0f;
-                dock.Configure("", "", "", bottomSpace: choice == null ? questionHeight + .070f : .015f);
-                if (mode == "processing") { }
-                else if (recoveryOffered)
-                {
-                    // A dialog on the panel: its title and one sentence. Its actions, Check and New, lead the row under it.
-                    header.Configure("", "Earlier capture", string.IsNullOrEmpty(recoveryErrorWords) ? header.BodyText : recoveryErrorWords, .145f);
-                    var column = SpatialTheme.ShelfLeft + SpatialTheme.ShelfWidth / 2f;
-                    // The line's dark panel behind the dialog: across the text column with the line's 12 mm side margin, from
-                    // the panel's top to its bottom edge, so it too ends one gap above the row.
-                    if (dialogBacking != null)
-                    {
-                        dialogBacking.transform.localPosition = new Vector3(column, 0f, .006f);
-                        dialogBacking.transform.localScale = new Vector3(SpatialTheme.ShelfWidth + .024f, header.Size.y, 1f);
-                        dialogBacking.enabled = true;
-                    }
-                    dock.gameObject.SetActive(false);
-                }
-                else if (evidenceOffered)
-                {
-                    Put(ConsoleAction.UseCurrentView, -.0975f, 0, true);
-                    Put(ConsoleAction.UseSpokenOnly, .120f, 0, true);
-                }
-                else if (savePreview || handoffOpen)
-                {
-                    Put(ConsoleAction.Back, -.130f, 0, true);
-                    Put(ConsoleAction.Save, .095f, 0, savePreview && ContextReview.CanSave(view) && !busy && !handoffStorageFailed);
-                    actions[ConsoleAction.DismissCapture].Label("Dismiss");
-                    Put(ConsoleAction.DismissCapture, .095f, 0, handoffOpen && handoffRecordAvailable && !busy);
-                }
-                else if (reviewing && optionsOpen) { }
-                else if (reviewing && readerOpen) Put(ConsoleAction.Review, 0, 0, true);
-                else if (reviewing && choice != null)
-                {
-                    // The option shown is a paragraph of the line. Choose is a tile of the row, named below.
-                    dock.gameObject.SetActive(false);
-                }
-                else if (reviewing && taskActionLabel != null)
-                {
-                    // The task's line alone on the panel; the Answer tile, labeled with the Mac's prompt, leads the row.
-                    actions[ConsoleAction.AnswerTask].Label(taskActionLabel);
-                    dock.gameObject.SetActive(false);
-                }
-                else if (reviewing && suggestions.Count > 0 && (dockedDialogue == null || !dialogueVisible))
-                {
-                    conversationPanelHeight=rowHeights.Sum()+SpatialTheme.Gap*Mathf.Max(0,rowHeights.Length-1);
-                    header.ReserveHeight(dockedDialogue?.ConversationPanelHeight(conversationPanelHeight) ?? .160f+conversationPanelHeight);
-                    var top=header.Size.y/2f-.080f+(dockedDialogue?.ConversationAnswerBottom ?? -.064f)-.016f;
-                    for(var index=0;index<suggestions.Count;index++)
-                    {
-                        var control=index==0?ConsoleAction.FollowUpOne:ConsoleAction.FollowUpTwo;
-                        actions[control].transform.SetParent(header.transform,false);
-                        shownSuggestionIds[control]=suggestions[index].Id;
-                        Put(control,.065f,top-rowHeights[index]/2f,true);
-                        top-=rowHeights[index]+SpatialTheme.Gap;
-                    }
-                    dockedDialogue?.SetConversationContentHeight(conversationPanelHeight);
-                    dock.gameObject.SetActive(false);
-                }
-
-                actions[ConsoleAction.Review].Label(readerOpen ? "Done" : ContextLabel());
-                actions[ConsoleAction.PrepareSave].Label("Prepare context");
-
-            }
+            // A dialog on the panel: its title and one sentence. Its actions, Check and New, lead the row under it.
+            if (recoveryOffered) header.Configure("", "Earlier capture", string.IsNullOrEmpty(recoveryErrorWords) ? header.BodyText : recoveryErrorWords, .145f);
+            // Boopy's words on the console's own panel, with no line docked over them: the recovery dialog, an opening or a
+            // next-turn line.
+            var ownWords = recoveryOffered || !dialogueVisible && (header.StateText.Length > 0 || header.TitleText.Length > 0 || header.BodyText.Length > 0);
             if (options.gameObject.activeSelf)
             {
                 if (!settingsOpen)
                 {
+                    // The Context sheet, named on its top line as Settings is, and its words, hugged by its panel; its actions page in
+                    // the row, and its words say what each one-word action does.
                     var earlier = handoffRecoveryOffered || handoffStorageFailed;
-                    var current = ContextReview.CanSave(view) && view?.Committed == null;
-                    var extraRow = earlier && current;
-                    options.Configure("", "", earlier
+                    options.Configure("Context", "", earlier
                         ? handoffStorageFailed ? "Preparation recovery is unavailable. Dismiss only the headset record; context stays on your Mac."
                             : "An earlier preparation needs checking. Checking restores only that selected context; nothing is sent."
                         : view == null ? "Tell me what you see.\nKeep it on your Mac. Continue online when ready."
-                        : ContextReview.ConversationSummary(view) + "\nKeep it on your Mac. Continue online when ready.", maxBodyHeight: .220f,
-                        bottomSpace: (extraRow ? .210f : view == null && !earlier ? .015f : .140f) + SettingsRow);
-                    var bottom = -options.Size.y / 2f + SettingsRow;
-                    SettingsTile(-options.Size.y / 2f);
-                    foreach (var action in new[] { ConsoleAction.Review, ConsoleAction.PrepareSave, ConsoleAction.Handoff }) actions[action].transform.SetParent(options.transform, false);
-                    Put(ConsoleAction.Review, 0, bottom + (extraRow ? .175f : .105f), navigator.Selected != null);
-                    Put(ConsoleAction.PrepareSave, 0, bottom + (extraRow ? .105f : .035f), current && !handoffStorageFailed);
-                    Put(ConsoleAction.Handoff, 0, bottom + .035f, earlier || view?.Committed != null);
-
+                        : view.Committed != null ? ContextReview.ConversationSummary(view) + "\n" + HandoffStatusWords
+                        : ContextReview.ConversationSummary(view) + "\nKeep it on your Mac. Continue online when ready.", maxBodyHeight: .220f);
                 }
                 else
                 {
@@ -493,114 +374,144 @@ namespace Boopy.Quest
                         : liveSceneAvailable == false ? "Scene outlines are unavailable." : "Scene outline status is unknown.";
                     var voiceWords = !speechAvailable ? "Voice is unavailable."
                         : VoiceEnabled ? "Voice reads replies aloud." : "Voice is off.";
-                    options.Configure("Settings", "", connectionWords + "\n" + sceneWords + "\n" + voiceWords, maxBodyHeight: .180f, bottomSpace: .218f + SettingsRow);
-                    var settingsBottom = -options.Size.y / 2f + SettingsRow;
-                    SettingsTile(-options.Size.y / 2f);
-                    Put(ConsoleAction.Size, -.108f, settingsBottom + .180f, true); Put(ConsoleAction.Sound, .108f, settingsBottom + .180f, true);
-                    Put(ConsoleAction.Motion, -.108f, settingsBottom + .109f, true);
-                    Put(ConsoleAction.Speech, .108f, settingsBottom + .109f, true);
-                    Put(ConsoleAction.EvidenceSource, 0, settingsBottom + .038f, true);
-                    actions[ConsoleAction.EvidenceSource].Label(InputPolicy.SpokenOnly ? "Include photo: off" : "Include photo: on");
-                    actions[ConsoleAction.Speech].Label(!speechAvailable ? "Voice unavailable" : VoiceEnabled ? "Voice: on" : "Voice: off");
-                    actions[ConsoleAction.Speech].SetInteractable(speechAvailable);
-                    actions[ConsoleAction.Motion].Label(reduced ? "Motion: reduced" : "Motion: full");
-                    actions[ConsoleAction.Size].Label(ComfortScale > 1f ? "Size: large" : "Size: standard");
-                    actions[ConsoleAction.Sound].Label(SoundEnabled ? "Sound: on" : "Sound: off");
+                    // One setting per page, its state as a sentence; the first page keeps the connection, scene and voice lines.
+                    var (name, on) = settingsPage switch
+                    {
+                        0 => ("Large text", ComfortScale > 1f), 1 => ("Sound", SoundEnabled), 2 => ("Reduced motion", reduced),
+                        3 => ("Voice", VoiceEnabled), _ => ("Photo", !InputPolicy.SpokenOnly),
+                    };
+                    var sentence = settingsPage == 3 && !speechAvailable ? "Voice is unavailable." : name + " is " + (on ? "on." : "off.");
+                    var status = connectionWords + "\n" + sceneWords + "\n" + voiceWords + "\n";
+                    // Every page keeps the first page's height, so the sheet stays under the pinch that pages it.
+                    options.Configure("Settings", "", status + sentence, maxBodyHeight: .180f, bottomSpace: .015f);
+                    var tallest = options.Size.y;
+                    options.Configure("Settings" + Count(settingsPage, SettingsPages), "", (settingsPage == 0 ? status : "") + sentence, maxBodyHeight: .180f, bottomSpace: .015f);
+                    options.ReserveHeight(tallest);
                 }
             }
-            // One row of identical tiles under the panel: at most three equal slots, filled from the panel's text column, so
-            // the orb stays left of it. The recommended action is the first tile. More swaps the same row in place to
-            // Context, Settings and Back.
-            foreach(var action in Shelved) actions[action].transform.SetParent(bar.transform,false);
-            var asks = reviewing && taskActionLabel != null && !captureRecovery;
-            var stop = mode=="processing" || (busy && keepChoiceVisible) || (busy && (handoffState == "preparing-local" || handoffState == "checking"));
-            var choiceOnLine = reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered && !controlsOnly ? ActiveChoice() : null;
+            // A pinch on Settings shows its next setting.
+            sheetHit.center = Vector3.back * .004f; sheetHit.size = new Vector3(options.Size.x, options.Size.y, .012f);
+            sheetHit.enabled = options.gameObject.activeSelf && settingsOpen && !busy;
+            var choice = reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered ? ActiveChoice() : null;
             // A notice over a line that offers a choice leaves the choice standing: nothing takes its slot until the line returns.
-            var choiceUnderNotice = choiceOnLine == null && reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered
+            var choiceUnderNotice = choice == null && reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered
                 && dockedDialogue?.NoticeShown == true && view?.Dialogue?.Choice?.Supported == true && dockedDialogue.LineText == view.Dialogue.Text;
-            var questions = choiceOnLine == null && !choiceUnderNotice && reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen
-                && !recoveryOffered && !evidenceOffered && suggestions.Count > 0 && dockedDialogue != null && dialogueVisible && moreOpen == false;
+            var questions = choice == null && reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered && !choiceUnderNotice;
+            // More is not offered while Boopy asks for a choice or a view, and closes while Boopy listens or works. Protected-source
+            // fallback offers no conversation tile, only Talk, Pause and More.
+            if ((choice != null || choiceUnderNotice || evidenceOffered) && !controlsOnly || busy || captureRecovery || mode == "listening") morePage = 0;
+            // A choice's options page under its prompt and the follow-ups behind Boopy's line, one per page, while the row can
+            // act on them; the row acts on the one shown.
             if (dockedDialogue != null)
             {
-                if (choiceOnLine != null) dockedDialogue.SetItems(choiceOnLine.Options.Select(option => option.Label).ToArray(), true);
-                else if (questions) dockedDialogue.SetItems(suggestions.Select(suggestion => suggestion.Question).ToArray(), false, "You could ask");
+                if (choice != null && !controlsOnly) dockedDialogue.SetItems(choice.Options.Select(option => option.Label).ToArray(), true);
+                else if (questions && morePage == 0) dockedDialogue.SetItems(suggestions.Select(suggestion => suggestion.Question).ToArray(), false, "You could ask");
                 else dockedDialogue.SetItems(System.Array.Empty<string>(), false);
             }
             var shown = dockedDialogue?.ShownItem ?? -1;
-            if (questions && shown >= 0 && shown < suggestions.Count)
-                shownSuggestionIds[shown == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo] = suggestions[shown].Id;
-            if (choiceOnLine != null || choiceUnderNotice || busy || captureRecovery || mode=="listening") moreOpen = false;
-            // Pause, the privacy stop, keeps slot 2 in every state; each state names its first and third tiles.
+            if (questions && shown >= 0 && shown < suggestions.Count) shownSuggestionIds[shown == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo] = suggestions[shown].Id;
+            var context = ContextActions();
+            contextPage = Mathf.Clamp(contextPage, 0, Mathf.Max(0, context.Count - 1));
+            // One row of identical tiles under the panel: three equal slots on the panel's text column, so the orb stays left
+            // of it. Pause, the privacy stop, keeps slot 2 in every state; each state names its first and third tiles. A speak
+            // tile is always first, and on a sheet or card Back is always last. More swaps the same row in place.
+            var asks = reviewing && taskActionLabel != null && !captureRecovery;
+            var stop = mode == "processing" || busy && (handoffState == "preparing-local" || handoffState == "checking");
             var (first, third) = buttonRecording ? (ConsoleAction.FinishTalk, ConsoleAction.Cancel)
                 : stop ? (ConsoleAction.Cancel, ConsoleAction.None)
                 : recoveryOffered ? (ConsoleAction.CheckCapture, ConsoleAction.DismissCapture)
-                : busy || captureRecovery || mode=="listening" ? (ConsoleAction.None, ConsoleAction.None)
-                : moreOpen ? (ConsoleAction.Options, ConsoleAction.ShelfBack)
-                : choiceOnLine != null && (dockedDialogue?.ShownItem ?? -1) >= 0 ? (ConsoleAction.Talk, ConsoleAction.SendChoice)
-                : choiceUnderNotice ? (ConsoleAction.Talk, ConsoleAction.None)
-                : questions && shown >= 0 ? (ConsoleAction.Talk, shown == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo)
-                : (asks ? ConsoleAction.AnswerTask : ConsoleAction.Talk, ConsoleAction.More);
-            if (third == ConsoleAction.SendChoice)
-            {
-                actions[ConsoleAction.SendChoice].transform.SetParent(bar.transform, false);
-                actions[ConsoleAction.SendChoice].Label("Choose");
-            }
-            if (third == ConsoleAction.FollowUpOne || third == ConsoleAction.FollowUpTwo)
-            {
-                actions[third].transform.SetParent(bar.transform, false);
-                actions[third].Label("Ask");
-            }
+                : busy || captureRecovery || mode == "listening" ? (ConsoleAction.None, ConsoleAction.None)
+                : card.gameObject.activeSelf && savePreview ? (ContextReview.CanSave(view) && !handoffStorageFailed ? ConsoleAction.Save : ConsoleAction.None, ConsoleAction.Back)
+                : card.gameObject.activeSelf && handoffOpen ? (handoffRecordAvailable ? ConsoleAction.DismissCapture : ConsoleAction.None, ConsoleAction.Back)
+                : card.gameObject.activeSelf ? navigator.DetailsOpen ? (navigator.CanConfirmSelected ? ConsoleAction.Confirm : ConsoleAction.None, ConsoleAction.ShelfBack)
+                    : readerPage == 0 ? (ConsoleAction.ToggleIncluded, ConsoleAction.More) : (ConsoleAction.ToggleDetails, ConsoleAction.ShelfBack)
+                : options.gameObject.activeSelf && settingsOpen ? (Setting(), ConsoleAction.ShelfBack)
+                : options.gameObject.activeSelf ? (context.Count > 0 ? context[contextPage] : ConsoleAction.None, contextPage < context.Count - 1 ? ConsoleAction.More : ConsoleAction.ShelfBack)
+                : morePage == 1 ? (ConsoleAction.Options, ConsoleAction.More)
+                : morePage == 2 ? (ConsoleAction.Settings, ConsoleAction.ShelfBack)
+                : (asks ? ConsoleAction.AnswerTask : ConsoleAction.Talk,
+                    controlsOnly ? ConsoleAction.More
+                    : evidenceOffered ? InputPolicy.SpokenOnly ? ConsoleAction.UseCurrentView : ConsoleAction.UseSpokenOnly
+                    // Nothing to choose on a page without an option.
+                    : choice != null ? shown >= 0 ? ConsoleAction.SendChoice : ConsoleAction.None
+                    : choiceUnderNotice ? ConsoleAction.None
+                    : questions && shown >= 0 ? shown == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo
+                    : ConsoleAction.More);
             var shelf = new[] { first, ConsoleAction.PauseScene, third };
-            if (recoveryOffered)
-            {
-                actions[ConsoleAction.CheckCapture].transform.SetParent(bar.transform, false);
-                actions[ConsoleAction.DismissCapture].transform.SetParent(bar.transform, false);
-                actions[ConsoleAction.DismissCapture].Label("New");
-            }
-            actions[ConsoleAction.Cancel].Label(buttonRecording ? "Cancel" : "Stop");
+            foreach (var action in shelf)
+                if (Words(action, recoveryOffered) is string words && actions[action].AccessibleLabel != words) actions[action].Label(words);
             for (var slot = 0; slot < shelf.Length; slot++)
                 if (shelf[slot] != ConsoleAction.None)
                     Put(shelf[slot], SpatialTheme.ShelfLeft + SpatialTheme.ShelfSlot / 2f + slot * (SpatialTheme.ShelfSlot + SpatialTheme.Gap), 0f, true);
-            // Empty contextual rows no longer reserve space or draw a second control location.
-            if(!actions.Values.Any(action=>action.transform.parent==dock.transform && action.gameObject.activeSelf))dock.gameObject.SetActive(false);
-            if(mode=="capture" && !recoveryOffered)options.gameObject.SetActive(optionsOpen);
             headerHit.center = Vector3.back * .004f; headerHit.size = new Vector3(header.Size.x, header.Size.y, .012f);
             headerHit.enabled = !dialogueVisible && !recoveryOffered && !evidenceOffered && reviewing && !savePreview && !busy && view?.IntentId != null;
-            // A line alone keeps the subtitle's full paging target; with rows under it the panel is exactly the line and its
-            // rows, so it ends one gap above the shelf.
-            if ((choiceOnLine != null || questions) && dockedDialogue != null) header.ReserveHeight(dockedDialogue.PanelHeight);
-            else if (conversationPanelHeight <= 0f && !recoveryOffered) header.ReserveHeight(.160f);
+            // The panel keeps its line's full paging target, a choice page's extra room included. Words of its own keep their
+            // own height, so their panel ends one gap above the row.
+            if (dialogueVisible && dockedDialogue != null) header.ReserveHeight(dockedDialogue.PanelHeight);
+            else if (!ownWords) header.ReserveHeight(.160f);
+            // Those words sit on the line's dark panel: across the text column with the line's 12 mm side margin, from the
+            // panel's top to its bottom edge.
+            if (ownWords && dialogBacking != null)
+            {
+                dialogBacking.transform.localPosition = new Vector3(SpatialTheme.ShelfLeft + SpatialTheme.ShelfWidth / 2f, 0f, .006f);
+                dialogBacking.transform.localScale = new Vector3(SpatialTheme.ShelfWidth + .024f, header.Size.y, 1f);
+                dialogBacking.enabled = true;
+            }
             if (companion != null)
             {
-                // Beside the line: level with its first words when rows sit under it, otherwise with the middle of a line
-                // that sits on the panel's bottom edge.
-                var beside = conversationPanelHeight > 0f ? header.Size.y / 2f - .080f
-                    : dialogueVisible && dockedDialogue != null ? -header.Size.y / 2f + dockedDialogue.VisibleHeight / 2f : 0f;
+                // Beside the line: level with the middle of the line that sits on the panel's bottom edge.
+                var beside = dialogueVisible && dockedDialogue != null ? -header.Size.y / 2f + dockedDialogue.VisibleHeight / 2f : 0f;
                 companionHome = new Vector3(-.215f, beside, -.018f);
                 // Away beside a subject, or flying back, Boopy keeps its own path home.
                 if (visitPoint == null && !returning) companion.transform.localPosition = companionHome;
                 companion.SetState(voicePreparing || (busy && mode != "processing") ? "processing" : mode == "capture" ? "idle" : mode);
             }
-            // Protected-source fallback permits explicitly opened global settings only.
-            // Context shares this surface, but its summary and context actions remain conversation content.
-            if (controlsOnly && !settingsOpen) options.gameObject.SetActive(false);
             // An explicit sheet takes the conversation's place; closing it restores the exact caption.
             if (options.gameObject.activeSelf || card.gameObject.activeSelf) header.gameObject.SetActive(false);
-            var modules = new[] { bar, options, dock, card, header }.Where(surface => surface.gameObject.activeSelf).ToArray();
+            var modules = new[] { bar, options, card, header }.Where(surface => surface.gameObject.activeSelf).ToArray();
             height = modules.Sum(surface => surface.Size.y) + SpatialTheme.Gap * Mathf.Max(0, modules.Length - 1);
             // The bar stays put. Requested content unfolds upward from it.
             var y = -bar.Size.y / 2f;
             foreach (var surface in modules) { surface.transform.localPosition = new Vector3(surface.CenterX, y + surface.Size.y / 2f, 0); y += surface.Size.y + SpatialTheme.Gap; }
-            if(controlsOnly) { header.gameObject.SetActive(false); card.gameObject.SetActive(false); dock.gameObject.SetActive(false); headerHit.enabled=false; }
+            if(controlsOnly) { header.gameObject.SetActive(false); card.gameObject.SetActive(false); headerHit.enabled=false; }
             transform.localScale = Vector3.one * ComfortScale;
             RefreshVisuals(0f);
         }
 
-        private string ContextLabel()
+        // The Context sheet's actions, the recommended first: an earlier preparation to check, then preparing this context,
+        // then reviewing the conversation's items.
+        private List<ConsoleAction> ContextActions()
         {
-            var label = view?.Items.FirstOrDefault(item => item.Id == view.IntentId)?.Label;
-            return string.IsNullOrWhiteSpace(label) ? "Conversation" : label.Length <= 60 ? label : "Conversation";
+            var list = new List<ConsoleAction>();
+            var earlier = handoffRecoveryOffered || handoffStorageFailed;
+            if (earlier) list.Add(ConsoleAction.Handoff);
+            if (ContextReview.CanSave(view) && view?.Committed == null && !handoffStorageFailed) list.Add(ConsoleAction.PrepareSave);
+            else if (!earlier && view?.Committed != null) list.Add(ConsoleAction.Handoff);
+            if (navigator.Selected != null) list.Add(ConsoleAction.Review);
+            return list;
         }
+        // The setting the Settings page shows, or none while Voice is unavailable.
+        private ConsoleAction Setting() => settingsPage switch
+        {
+            0 => ConsoleAction.Size, 1 => ConsoleAction.Sound, 2 => ConsoleAction.Motion,
+            3 => speechAvailable ? ConsoleAction.Speech : ConsoleAction.None, _ => ConsoleAction.EvidenceSource,
+        };
+        // The words a tile reads in this state; a tile whose words never change keeps its own.
+        private string? Words(ConsoleAction action, bool recovery) => action switch
+        {
+            ConsoleAction.Cancel => buttonRecording ? "Cancel" : "Stop",
+            ConsoleAction.DismissCapture => recovery ? "New" : "Dismiss",
+            ConsoleAction.AnswerTask => taskActionLabel,
+            ConsoleAction.Handoff => handoffRecoveryOffered ? "Check" : handoffState == "prepared-local" ? "Status"
+                : handoffState == "changed" || handoffState == "not-prepared" || handoffState == "missing" ? "Prepare"
+                : handoffState == "failed" ? "Retry" : "Check",
+            ConsoleAction.ToggleIncluded => navigator.Selected != null && ContextReview.IsExcluded(navigator.Selected) ? "Include" : "Exclude",
+            ConsoleAction.Size => Turn(ComfortScale > 1f), ConsoleAction.Sound => Turn(SoundEnabled), ConsoleAction.Motion => Turn(reduced),
+            ConsoleAction.Speech => Turn(VoiceEnabled), ConsoleAction.EvidenceSource => Turn(!InputPolicy.SpokenOnly),
+            _ => null,
+        };
+        private static string Turn(bool on) => on ? "Turn off" : "Turn on";
+        private static string Count(int index, int count) => count > 1 ? $" · {index + 1} of {count}" : "";
 
         /// <summary>Hide this dispatched response's choices locally; its accepted Mac outcome may be unknown.</summary>
         public void SuppressSuggestions()
@@ -617,7 +528,7 @@ namespace Boopy.Quest
             suggestions.Clear();
             if (taskShown || view?.Dialogue == null || mode != "review" || busy || view.Committed != null
                 || view.Id == suppressedSuggestionSession && view.Dialogue.UtteranceId == suppressedSuggestionUtterance && view.Dialogue.At == suppressedSuggestionAt
-                || dockedDialogue != null && (!dialogueVisible || dockedDialogue.FullText != view.Dialogue.Text)
+                || dockedDialogue == null || !dialogueVisible || dockedDialogue.FullText != view.Dialogue.Text
                 || view.Dialogue.Actions == null || view.Dialogue.Speaker != "boopy" || view.Dialogue.UtteranceId != view.Utterances.LastOrDefault()?.Id) return;
             var ids = new HashSet<string>();
             foreach (var action in view.Dialogue.Actions)
@@ -652,21 +563,10 @@ namespace Boopy.Quest
         public ChoiceSelection? SelectedChoice(ConsoleAction control)
         {
             var choice = ActiveChoice();
-            if (choice == null || busy || controlsOnly || control != ConsoleAction.SendChoice || !actions[control].gameObject.activeInHierarchy || dockedDialogue == null) return null;
-            var index = dockedDialogue.ShownItem;
+            if (choice == null || busy || controlsOnly || control != ConsoleAction.SendChoice || !actions[control].gameObject.activeInHierarchy) return null;
+            var index = dockedDialogue!.ShownItem;
             if (index < 0 || index >= choice.Options.Count || index >= dockedDialogue.Items.Count || dockedDialogue.Items[index] != choice.Options[index].Label) return null;
             return new ChoiceSelection { UtteranceId = view!.Dialogue!.UtteranceId, ResponseAt = view.Dialogue.At, CardId = choice.Id, OptionId = choice.Options[index].Id };
-        }
-
-        private float ConfigureQuestion(ConsoleAction action, string question)
-        {
-            var control = actions[action]; control.Label(question); control.SetLeftAligned(true);
-            var text = control.GetComponentsInChildren<TextMeshPro>(true).Single(label => label.name == "Verb");
-            var height = Mathf.Max(SpatialTheme.Target, SpatialTheme.Height(text, question, .384f) + .020f);
-            text.rectTransform.sizeDelta = new Vector2(.384f, height - .012f);
-            control.GetComponent<BoxCollider>().size = new Vector3(.400f, height, .012f);
-            control.GetComponentsInChildren<MeshRenderer>(true).Single(renderer => renderer.name == "Action surface").transform.localScale = new Vector3(.400f, height, 1f);
-            return height;
         }
 
         private string handoffState = "not-prepared";
@@ -710,23 +610,11 @@ namespace Boopy.Quest
                 : "Context ID unavailable.\nCheck the context receipt on your Mac.\nNothing has been sent.";
         }
 
-        private void SetCardCapacity(float capacity)
-        {
-            // Capacity is reserved across selected items; measured text retains its own hierarchy.
-            card!.ReserveHeight(capacity);
-        }
         private static string ShortId(string? id) => id == null ? "Context saved" : id.Length > 18 ? id.Substring(0, 18) + "..." : id;
         private static string GeometryCue(Item item) => item.Grounding.Spatial?.Outcome == "contour" && item.Grounding.Contour?.Count >= 3
             ? "Proposed contour" : item.Grounding.Kind == "box" && item.Grounding.Box != null
             ? "Approximate box" : item.Grounding.Kind == "point" && item.Grounding.Point != null
             ? "Image point" : item.Grounding.Kind == "scene" ? "Scene / no object position" : "Position unknown";
-        // The Settings tile's row at the bottom of the Context and Settings sheet: one tile on the text column.
-        private const float SettingsRow = SpatialTheme.Target + SpatialTheme.Gap;
-        private void SettingsTile(float bottom)
-        {
-            actions[ConsoleAction.Settings].transform.SetParent(options!.transform, false);
-            Put(ConsoleAction.Settings, SpatialTheme.ShelfLeft + SpatialTheme.ShelfSlot / 2f, bottom + SpatialTheme.Gap / 2f + SpatialTheme.Target / 2f, true);
-        }
         private void Put(ConsoleAction action, float x, float y, bool show)
         {
             var control = actions[action]; control.gameObject.SetActive(show);
@@ -734,7 +622,7 @@ namespace Boopy.Quest
         }
         private void Assemble()
         {
-            foreach (var module in new[] { header, card, dock, options, bar })
+            foreach (var module in new[] { header, card, options, bar })
                 if (module != null && module != bar && module.gameObject.activeSelf) module.Assemble(0f, reduced);
             RefreshVisuals(0f);
         }
@@ -742,22 +630,23 @@ namespace Boopy.Quest
         public void Inspect(Item? item)
         { if (item == null || mode != "review" || readerOpen || savePreview || navigator.DetailsOpen || !navigator.Select(item.Id)) return; Compose(); }
         public void SetOverflow(int count) { overflow = Mathf.Max(0, count); }
-        public void SetBusy(bool on, bool retainChoice = false) { busy = on; keepChoiceVisible = on && retainChoice; Compose(); }
+        public void SetBusy(bool on) { busy = on; Compose(); }
         private bool ChoiceDismissed() => view?.State == "review" && view.Committed == null && view.Attention != null && !string.IsNullOrWhiteSpace(view.Attention.UtteranceId) && view.Utterances.LastOrDefault()?.Id == view.Attention.UtteranceId && dismissedChoiceSession == view.Id && dismissedChoiceId == view.Attention.UtteranceId && nextTurnInstruction != null;
-        private bool ChoiceAvailable() => view?.State == "review" && view.Committed == null && view.Attention != null && !string.IsNullOrWhiteSpace(view.Attention.UtteranceId)
+        // Boopy's latest line asks for a fresh view, or a detail about the current surroundings; the ask stands until the next turn.
+        private bool EvidenceAsked() => view?.State == "review" && view.Committed == null && view.Attention != null && !string.IsNullOrWhiteSpace(view.Attention.UtteranceId)
             && view.Utterances.LastOrDefault()?.Id == view.Attention.UtteranceId
             && (view.Attention.Action == "fresh-view" || view.Attention.Action == "clarify")
-            && (view.Attention.Source == "current-surroundings" || view.Attention.Source == "unknown")
-            && !ChoiceDismissed();
+            && (view.Attention.Source == "current-surroundings" || view.Attention.Source == "unknown");
+        // While the ask stands, one tile switches the next turn's photo; the next turn's words show on the line.
         private void SelectEvidenceChoice(bool spoken)
         {
-            if ((mode != "review" && mode != "error") || !ChoiceAvailable() || !(spoken ? InputPolicy.SelectSpokenOnly() : InputPolicy.SelectCurrentView())) return;
+            if ((mode != "review" && mode != "error") || !EvidenceAsked() || !(spoken ? InputPolicy.SelectSpokenOnly() : InputPolicy.SelectCurrentView())) return;
             dismissedChoiceId = view!.Attention!.UtteranceId; dismissedChoiceSession = view.Id;
             nextTurnInstruction = spoken ? "Talk with photo sharing off." : "Look toward the subject, then Talk.";
             header!.Configure("Next turn", "", nextTurnInstruction, .145f);
+            if (dockedDialogue != null && dialogueVisible) dockedDialogue.Show(DialogueStage.Response, nextTurnInstruction);
             Compose(); Assemble();
         }
-        public Item? NextEvidence() => Activate(ConsoleAction.NextItem);
 
         public Item? Activate(ConsoleAction action)
         {
@@ -766,20 +655,27 @@ namespace Boopy.Quest
             { SelectEvidenceChoice(action == ConsoleAction.UseSpokenOnly); return navigator.Selected; }
             switch (action)
             {
-                case ConsoleAction.Actions: actionsOpen = !actionsOpen; optionsOpen = false; break;
-                case ConsoleAction.Review: handoffOpen = false; readerOpen = !readerOpen; actionsOpen = false; optionsOpen = false; break;
-                case ConsoleAction.PrepareSave: actionsOpen = false; savePreview = ContextReview.CanSave(view); readerOpen = false; optionsOpen = false; break;
+                case ConsoleAction.Review: handoffOpen = false; readerOpen = !readerOpen; readerPage = 0; optionsOpen = false; break;
+                case ConsoleAction.PrepareSave: savePreview = ContextReview.CanSave(view); readerOpen = false; optionsOpen = false; break;
                 case ConsoleAction.Handoff: handoffOpen = true; optionsOpen = false; break;
-                case ConsoleAction.Back: actionsOpen = false; optionsOpen = false; savePreview = false; handoffOpen = false; break;
-                case ConsoleAction.PreviousItem: navigator.MoveItem(-1); break;
-                case ConsoleAction.NextItem: navigator.MoveItem(1); break;
+                case ConsoleAction.Back: optionsOpen = false; savePreview = false; handoffOpen = false; morePage = 0; break;
                 case ConsoleAction.ToggleDetails: navigator.SetDetailsOpen(!navigator.DetailsOpen); if (navigator.DetailsOpen) Pages(); break;
-                case ConsoleAction.PreviousText: navigator.MovePage(-1); break;
-                case ConsoleAction.NextText: navigator.MovePage(1); break;
-                case ConsoleAction.Settings: optionsOpen = !optionsOpen || !settingsOpen; settingsOpen = true; actionsOpen = false; readerOpen = false; savePreview = false; handoffOpen = false; break;
-                case ConsoleAction.Options: optionsOpen = !optionsOpen || settingsOpen; settingsOpen = false; readerOpen = false; savePreview = false; handoffOpen = false; break;
-                case ConsoleAction.More: moreOpen = true; break;
-                case ConsoleAction.ShelfBack: moreOpen = false; optionsOpen = false; settingsOpen = false; break;
+                case ConsoleAction.Settings: optionsOpen = !optionsOpen || !settingsOpen; settingsOpen = true; settingsPage = 0; morePage = 0; readerOpen = false; savePreview = false; handoffOpen = false; break;
+                case ConsoleAction.Options: optionsOpen = !optionsOpen || settingsOpen; settingsOpen = false; contextPage = 0; morePage = 0; readerOpen = false; savePreview = false; handoffOpen = false; break;
+                // More pages the row in place: the Context sheet's next actions, the reader's second row, or the conversation's
+                // More pages.
+                case ConsoleAction.More:
+                    if (optionsOpen && !settingsOpen) contextPage++;
+                    else if (readerOpen) readerPage = 1;
+                    else morePage = Mathf.Min(morePage + 1, 2);
+                    break;
+                // Back goes up one level: from Source to its item, from the reader to the Context sheet, from More or a sheet to
+                // the conversation.
+                case ConsoleAction.ShelfBack:
+                    if (readerOpen && navigator.DetailsOpen) { navigator.SetDetailsOpen(false); readerPage = 0; }
+                    else if (readerOpen) { readerOpen = false; optionsOpen = true; settingsOpen = false; contextPage = 0; }
+                    else { morePage = 0; optionsOpen = false; settingsOpen = false; }
+                    break;
                 case ConsoleAction.Size: ComfortScale = ComfortScale > 1f ? 1f : 1.2f; if (Application.isPlaying) PlayerPrefs.SetInt("Boopy.LargeText", ComfortScale > 1f ? 1 : 0); break;
                 case ConsoleAction.Sound: SoundEnabled = !SoundEnabled; if (Application.isPlaying) PlayerPrefs.SetInt("Boopy.Sound", SoundEnabled ? 1 : 0); break;
                 case ConsoleAction.EvidenceSource: InputPolicy.Toggle(); if (mode == "capture") ConfigureOpening(); Assemble(); break;
@@ -791,7 +687,7 @@ namespace Boopy.Quest
                 case ConsoleAction.Motion: reduced = !reduced; if (Application.isPlaying) PlayerPrefs.SetInt("Boopy.Motion", reduced ? 0 : 1); Assemble(); break;
             }
             Compose();
-            if (action == ConsoleAction.Actions || action == ConsoleAction.Settings || action == ConsoleAction.PrepareSave || action == ConsoleAction.Back || action == ConsoleAction.Handoff || action == ConsoleAction.Review || action == ConsoleAction.ToggleDetails || action == ConsoleAction.Options
+            if (action == ConsoleAction.Settings || action == ConsoleAction.PrepareSave || action == ConsoleAction.Back || action == ConsoleAction.Handoff || action == ConsoleAction.Review || action == ConsoleAction.ToggleDetails || action == ConsoleAction.Options
                 || action == ConsoleAction.More || action == ConsoleAction.ShelfBack) Assemble();
             return navigator.Selected;
         }
@@ -827,7 +723,7 @@ namespace Boopy.Quest
                 pages.Add(words.Substring(start, length)); start += length;
             }
             if (pages.Count == 0) pages.Add("No additional source text.");
-            navigator.SetPages(pages); if (Application.isPlaying) Destroy(probe.gameObject); else DestroyImmediate(probe.gameObject);
+            navigator.SetPages(pages); sourcePages.Clear(); sourcePages.AddRange(pages); if (Application.isPlaying) Destroy(probe.gameObject); else DestroyImmediate(probe.gameObject);
         }
 
         public ConsoleAction HitAction(Ray ray, out Vector3 point)
@@ -837,9 +733,26 @@ namespace Boopy.Quest
         }
         public bool CanRelease(ConsoleAction action, Ray ray) => action != ConsoleAction.None && HitAction(ray, out _) == action;
         public bool HitSave(Ray ray, out Vector3 point) => Hit(ConsoleAction.Save, ray, out point);
-        public bool HitNext(Ray ray, out Vector3 point) => Hit(ConsoleAction.NextItem, ray, out point);
         public bool HitConfirm(Ray ray, out Vector3 point) => Hit(ConsoleAction.Confirm, ray, out point);
         private bool Hit(ConsoleAction action, Ray ray, out Vector3 point) { point = default; return !busy && actions[action].Hit(ray, out point); }
+        /// <summary>A pinch on the reader's card or on Settings pages it when it has more than one page; never one on a tile.</summary>
+        public bool HitPage(Ray ray) => !busy && HitAction(ray, out _) == ConsoleAction.None && Pages(out _) > 1
+            && (BodyHit(sheetHit, ray, out _) || readerOpen && !savePreview && !handoffOpen && BodyHit(evidenceHit, ray, out _));
+        /// <summary>The next setting, item or page of its source, the first after the last.</summary>
+        public void NextPage()
+        {
+            if (Pages(out var settings) <= 1) return;
+            if (settings) settingsPage = (settingsPage + 1) % SettingsPages;
+            else if (navigator.DetailsOpen) { if (!navigator.MovePage(1)) navigator.MovePage(-navigator.PageCount); }
+            else if (!navigator.MoveItem(1)) navigator.MoveItem(-navigator.ItemCount);
+            Compose();
+        }
+        private int Pages(out bool settings)
+        {
+            settings = options != null && options.gameObject.activeInHierarchy && settingsOpen;
+            return settings ? SettingsPages : !readerOpen || card == null || !card.gameObject.activeInHierarchy ? 0
+                : navigator.DetailsOpen ? navigator.PageCount : navigator.ItemCount;
+        }
         /// <summary>The docked line shows another page: the row follows the item it shows.</summary>
         public void LinePaged() => Compose();
         public bool HitEvidence(Ray ray, out Vector3 point) => BodyHit(evidenceHit, ray, out point);
@@ -849,7 +762,7 @@ namespace Boopy.Quest
         { point = default; if (busy || !gameObject.activeInHierarchy || box == null || !box.enabled || !box.gameObject.activeInHierarchy || !box.Raycast(ray, out var hit, 5f)) return false; point = hit.point; return true; }
         public bool ContainsRay(Ray ray)
         {
-            foreach (var surface in new[] { header, card, dock, options, bar })
+            foreach (var surface in new[] { header, card, options, bar })
             {
                 if (surface == null || !surface.gameObject.activeInHierarchy) continue;
                 var plane = new Plane(transform.forward, surface.transform.position);
@@ -867,7 +780,7 @@ namespace Boopy.Quest
         {
             if (!reduced) animationTime += Mathf.Max(0f, delta);
             Face();
-            foreach (var module in new[] { header, card, dock, options, bar }) if (module != null && module.gameObject.activeSelf) module.Refresh(delta);
+            foreach (var module in new[] { header, card, options, bar }) if (module != null && module.gameObject.activeSelf) module.Refresh(delta);
             foreach (var control in actions.Values) if (control.gameObject.activeSelf)
                 control.Refresh(delta, control.GetComponentInParent<SpatialSurface>(true)?.Opacity ?? 0f, reduced);
             if (companion != null)
@@ -880,6 +793,7 @@ namespace Boopy.Quest
             }
             header?.Shimmer(animationTime, mode == "processing" || busy);
         }
+
         private const float FlightSpeed = 3f;
         private Vector3 companionHome;
         private Vector3? visitPoint, visitAnchor;
@@ -935,7 +849,6 @@ namespace Boopy.Quest
             var progress = arrived && !reduced ? sweepProgress?.Invoke() : null;
             companion.SetCone(progress != null ? visitEdge : null, progress != null ? Mathf.Sin(progress.Value * Mathf.PI) : 0f);
         }
-
         private void Face() { if (head == null || interactionLocked) return; var direction = transform.position - head.position; if (direction.sqrMagnitude > 1e-6f) transform.rotation = Quaternion.LookRotation(direction, Vector3.up); }
         private void LateUpdate() => RefreshVisuals(Time.unscaledDeltaTime);
 

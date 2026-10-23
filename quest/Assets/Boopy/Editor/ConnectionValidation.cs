@@ -125,6 +125,21 @@ namespace Boopy.Quest.Editor
             {
                 camera.targetTexture=target;
                 console.Activate(ConsoleAction.Settings);
+                // Every Settings text fits and stays in view.
+                void Fits(string state)
+                {
+                    foreach(var text in console.GetComponentsInChildren<TextMeshPro>())
+                    {
+                        text.ForceMeshUpdate(true,true);
+                        Require(!text.isTextOverflowing,"Settings text overflow at "+state+": "+text.name+" label="+text.text+" rect="+text.rectTransform.sizeDelta+" preferred="+text.GetPreferredValues(text.text,float.PositiveInfinity,float.PositiveInfinity)+" action="+text.GetComponentInParent<SpatialAction>()?.Action);
+                        foreach(var glyph in text.textInfo.characterInfo.Take(text.textInfo.characterCount).Where(g=>g.isVisible))
+                        foreach(var corner in new[] {glyph.bottomLeft,glyph.topRight})
+                        {
+                            var point=camera.WorldToViewportPoint(text.transform.TransformPoint(corner));
+                            Require(point.z>0 && point.x>=0 && point.x<=1 && point.y>=0 && point.y<=1,"Settings text leaves viewport: "+text.name);
+                        }
+                    }
+                }
                 foreach(var state in new[] {"connected-unavailable","connected-on","connected-off","unavailable-unavailable"})
                 foreach(var large in new[] {false,true})
                 {
@@ -135,26 +150,26 @@ namespace Boopy.Quest.Editor
                     console.RefreshVisuals(1f);
                     var connectionWords=connection=="connected" ? "Boopy is connected to your Mac." : "Boopy can’t reach your Mac. Check the USB cable.";
                     var voiceWords=voiceState=="unavailable" ? "Voice is unavailable." : voiceState=="on" ? "Voice reads replies aloud." : "Voice is off.";
-                    var expected=connectionWords+"\nScene outline status is unknown.\n"+voiceWords;
+                    // The first page keeps the connection, scene and voice lines above its own setting.
+                    var expected=connectionWords+"\nScene outline status is unknown.\n"+voiceWords+"\nLarge text is "+(large?"on.":"off.");
                     Require(console.GetComponentsInChildren<SpatialSurface>().Any(surface=>surface.BodyText==expected),
                         "Settings truncated capability/recovery guidance at "+connection+" large="+large);
-                    var voiceLabel=voiceState=="unavailable" ? "Voice unavailable" : voiceState=="on" ? "Voice: on" : "Voice: off";
-                    Require(console.GetComponentsInChildren<SpatialAction>().Single(action=>action.Action==ConsoleAction.Speech).AccessibleLabel==voiceLabel,
+                    Fits(state);
+                    // Voice's own page says the same, and its tile turns it off or on; unavailable, it shows no tile.
+                    for(var page=0;page<3;page++)console.NextPage();
+                    console.RefreshVisuals(1f);
+                    var voiceSentence=voiceState=="unavailable" ? "Voice is unavailable." : voiceState=="on" ? "Voice is on." : "Voice is off.";
+                    var voiceLabel=voiceState=="on" ? "Turn off" : "Turn on";
+                    var voice=console.GetComponentsInChildren<SpatialAction>().SingleOrDefault(action=>action.Action==ConsoleAction.Speech);
+                    Require(console.GetComponentsInChildren<SpatialSurface>().Any(surface=>surface.BodyText==voiceSentence)
+                        && (voiceState=="unavailable" ? voice==null : voice!=null && voice.AccessibleLabel==voiceLabel),
                         "Settings voice explanation contradicts its control: "+state);
-                    foreach(var text in console.GetComponentsInChildren<TextMeshPro>())
-                    {
-                        text.ForceMeshUpdate(true,true);
-                        Require(!text.isTextOverflowing,"Settings text overflow: "+text.name+" label="+text.text+" rect="+text.rectTransform.sizeDelta+" preferred="+text.GetPreferredValues(text.text,float.PositiveInfinity,float.PositiveInfinity)+" action="+text.GetComponentInParent<SpatialAction>()?.Action);
-                        foreach(var glyph in text.textInfo.characterInfo.Take(text.textInfo.characterCount).Where(g=>g.isVisible))
-                        foreach(var corner in new[] {glyph.bottomLeft,glyph.topRight})
-                        {
-                            var point=camera.WorldToViewportPoint(text.transform.TransformPoint(corner));
-                            Require(point.z>0 && point.x>=0 && point.x<=1 && point.y>=0 && point.y<=1,"Settings text leaves viewport: "+text.name);
-                        }
-                    }
+                    Fits(state);
                     camera.Render();RenderTexture.active=target;pixels.ReadPixels(new Rect(0,0,1200,750),0,0);pixels.Apply();
                     var path=Path.Combine(Path.GetTempPath(),"boopy-scene-capability-"+state+"-"+(large?"large":"standard")+".png");
                     File.WriteAllBytes(path,pixels.EncodeToPNG());Debug.Log("Boopy synthetic capability Settings render: "+path);
+                    // Back to the first page for the next state.
+                    console.NextPage();console.NextPage();
                 }
             }
             finally {camera.targetTexture=null;RenderTexture.active=prior;UnityEngine.Object.DestroyImmediate(pixels);UnityEngine.Object.DestroyImmediate(target);}

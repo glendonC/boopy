@@ -22,10 +22,13 @@ namespace Boopy.Quest.Editor
                 var eyes = new GameObject("Synthetic eyes").transform; eyes.SetParent(root.transform, false);
                 var console = ContextConsole.Create(root.transform, eyes);
                 console.Activate(ConsoleAction.Settings);
+                // Photo is the fifth setting, one per page, its state in a sentence and its tile turning it off or on.
+                for (var page = 0; page < 4; page++) console.NextPage();
+                var sheet = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Comfort options");
                 var action = console.GetComponentsInChildren<SpatialAction>(true).Single(value => value.Action == ConsoleAction.EvidenceSource);
-                Require(action.gameObject.activeSelf && action.AccessibleLabel == "Include photo: on", "Physical default or input action missing.");
+                Require(action.gameObject.activeSelf && action.AccessibleLabel == "Turn off" && sheet.BodyText.Contains("Photo is on."), "Physical default or input action missing.");
                 console.Activate(ConsoleAction.EvidenceSource);
-                Require(console.InputPolicy.SpokenOnly && action.AccessibleLabel == "Include photo: off", "Spoken selector did not apply.");
+                Require(console.InputPolicy.SpokenOnly && action.AccessibleLabel == "Turn on" && sheet.BodyText.Contains("Photo is off."), "Spoken selector did not apply.");
                 console.InputPolicy.Begin(); console.ShowListening();
                 Require(console.InputPolicy.Pending != null && !console.InputPolicy.Pending.RequiresPicture, "Spoken-only listening requested a picture.");
                 Require(console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Intent instrument").BodyText == "Listening…\nLet go when you’re done.", "Listening copy falsely claims picture capture.");

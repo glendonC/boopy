@@ -22,10 +22,15 @@ The interface stays in the person's language.
 
 One grounded subject and its label can sit in the room. The spoken line, choices, and settings
 are on a console under the companion. Live proposed names are visible and not tappable.
-Under the console, one row holds at most three tiles of one style, Pause always in the middle:
-Talk, Pause and More, which shows Context, Pause and Back in its place, Settings on the Context
-sheet. The Context sheet and the reader sit on the line's column, the same text width as the
-line. While recording it holds Finish, Pause and Cancel, and while Boopy works, Stop and Pause.
+Under the console, one row holds every control, at most three tiles of one style, Pause always in
+the middle: Talk, Pause and More. More shows Context, Pause and More in its place, then Settings,
+Pause and Back. While recording the row holds Finish, Pause and Cancel, and while Boopy works,
+Stop and Pause. The Context sheet, Settings, the reader and the receipts keep their words on the
+panel and their actions in the row, ending in Back; lists show one item at a time, paged with a
+pinch on the panel and counted "n of N". A choice shows its prompt with one option, and Choose
+sends the option shown; if it stops or fails before Boopy answers, the choice stays, unless the Mac
+says the choice is no longer available. Follow-up questions page behind Boopy's line, each with Ask.
+When Boopy asks for a fresh view, one tile turns the next turn's photo off or back on.
 After a restart before Boopy heard back about a capture, the console says "Earlier capture" with
 one sentence, and the row holds Check, Pause and New.
 
@@ -37,10 +42,7 @@ never spoken. The Mac still records each stage of the turn in its journal; the l
 show those stage words. An answer to a task reads "Saving on your Mac…" instead.
 
 After a first turn about a grounded subject, the headset asks the Mac for the session's task.
-A first turn that offers a choice opens no task. The panel shows the prompt with one option, and
-Choose sends the option shown. If it stops or fails before Boopy answers, the choice stays, unless
-the Mac says the choice is no longer available. Follow-up questions page behind Boopy's line, each
-with Ask.
+A first turn that offers a choice opens no task; the choice stays on the console.
 The task uses the same parts: the chip on the outlined subject and Boopy's line on the console.
 The line's speaker reads "Boopy · Not sent". Only while the line asks the person something is the
 row's first tile Answer, with Talk's mic and labeled with the prompt the Mac sends, in Talk's

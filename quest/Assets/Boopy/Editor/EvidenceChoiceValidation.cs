@@ -24,12 +24,11 @@ namespace Boopy.Quest.Editor
                 Require(!Visible(console, ConsoleAction.UseCurrentView), "Idle UI invented a source question.");
                 var view = Response("synthetic-turn", "fresh-view", "current-surroundings");
                 console.Render(view); console.RefreshVisuals(1f); Offered(console);
-                foreach (var action in new[] { ConsoleAction.UseCurrentView, ConsoleAction.UseSpokenOnly })
                 {
-                    var control = console.GetComponentsInChildren<SpatialAction>(true).Single(value => value.Action == action);
-                    Require(Mathf.Abs(control.transform.localPosition.x) + control.GetComponent<BoxCollider>().size.x / 2 <= SpatialTheme.Width / 2 + .000001f, "Choice exceeds dock bounds.");
+                    var control = console.GetComponentsInChildren<SpatialAction>(true).Single(value => value.Action == ConsoleAction.UseSpokenOnly);
+                    Require(control.transform.parent.name == "Control bar" && control.GetComponent<BoxCollider>().size.x <= SpatialTheme.ShelfSlot + .000001f, "The photo switch is not a tile of the row.");
                     var ray = new Ray(eyes.position, control.transform.position - eyes.position);
-                    Require(console.HitAction(ray, out _) == action && console.CanRelease(action, ray), "Choice hit target missing or overlaps.");
+                    Require(console.HitAction(ray, out _) == ConsoleAction.UseSpokenOnly && console.CanRelease(ConsoleAction.UseSpokenOnly, ray), "Choice hit target missing or overlaps.");
                 }
                 Render(console, eyes);
                 console.SetBusy(true); Require(!Visible(console, ConsoleAction.UseSpokenOnly), "Busy operation exposes choice.");
@@ -47,18 +46,22 @@ namespace Boopy.Quest.Editor
                 console.ShowCapture(); Require(!Visible(console, ConsoleAction.UseSpokenOnly), "Idle capture resurrected a prior response choice.");
                 console.Activate(ConsoleAction.UseSpokenOnly); Require(!console.InputPolicy.SpokenOnly, "Idle capture allowed stale source action.");
                 console.Render(view); console.Activate(ConsoleAction.UseCurrentView);
-                Require(!console.InputPolicy.SpokenOnly && !Visible(console, ConsoleAction.UseCurrentView), "Idempotent current-view choice did not dismiss.");
-                Require(Visible(console, ConsoleAction.More), "Existing deliberate actions did not return.");
-                console.Activate(ConsoleAction.Options);
-                Require(Visible(console, ConsoleAction.PrepareSave), "Explicit actions lost save access.");
-                console.Activate(ConsoleAction.Options);
-                console.Render(view); Require(!Visible(console, ConsoleAction.UseCurrentView), "Same response reoffered dismissed choice.");
+                // The switch stays, reading the other choice, until the ask ends; More returns then.
+                Require(!console.InputPolicy.SpokenOnly && Visible(console, ConsoleAction.UseSpokenOnly) && !Visible(console, ConsoleAction.UseCurrentView), "Idempotent current-view choice changed the switch.");
+                Require(!Visible(console, ConsoleAction.More), "More returned before the ask ended.");
+                console.Render(view); Require(Visible(console, ConsoleAction.UseSpokenOnly), "The same response dropped the photo switch before the ask ended.");
                 var header = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Intent instrument");
                 Require(header.BodyText.Contains("Look toward the subject, then Talk."), "No next-turn instruction after current choice.");
                 console.Render(Response("synthetic-next", "clarify", "unknown")); Offered(console);
                 console.Activate(ConsoleAction.UseSpokenOnly);
-                Require(console.InputPolicy.SpokenOnly && !Visible(console, ConsoleAction.UseSpokenOnly), "Spoken choice did not select/dismiss.");
+                Require(console.InputPolicy.SpokenOnly && !Visible(console, ConsoleAction.UseSpokenOnly) && Visible(console, ConsoleAction.UseCurrentView), "Spoken choice did not switch the tile to Photo.");
                 Require(header.BodyText.Contains("photo sharing off"), "Spoken next turn instruction falsely claims capture.");
+                // The ask ends with a later turn: More returns, and the Context sheet offers to prepare the context.
+                var later = Response("synthetic-later", "reuse", "current-surroundings"); console.Render(later);
+                Require(Visible(console, ConsoleAction.More) && !Visible(console, ConsoleAction.UseCurrentView), "More did not return when the ask ended.");
+                console.Activate(ConsoleAction.Options);
+                Require(Visible(console, ConsoleAction.PrepareSave), "Explicit actions lost save access.");
+                console.Activate(ConsoleAction.Options);
                 foreach (var source in new[] { "past-recollection", "virtual-scene", "displayed-image" })
                 { console.Render(Response("synthetic-" + source, "clarify", source)); Require(!Visible(console, ConsoleAction.UseCurrentView), "Other source got a physical-view offer."); }
                 var stale = Response("synthetic-old", "clarify", "unknown"); stale.Utterances.Add(new UtteranceRef { Id = "synthetic-newer" });
@@ -108,7 +111,7 @@ namespace Boopy.Quest.Editor
             finally { camera.targetTexture = null; RenderTexture.active = previous; UnityEngine.Object.DestroyImmediate(target); UnityEngine.Object.DestroyImmediate(image); }
         }
         private static bool Visible(ContextConsole console, ConsoleAction action) => console.GetComponentsInChildren<SpatialAction>(true).Single(control => control.Action == action).gameObject.activeInHierarchy;
-        private static void Offered(ContextConsole console) { Require(Visible(console, ConsoleAction.UseCurrentView) && Visible(console, ConsoleAction.UseSpokenOnly), "Matching response has no evidence choice."); Require(!Visible(console, ConsoleAction.PrepareSave) && !Visible(console, ConsoleAction.Actions), "Foreground preparation/actions compete with source choice."); }
+        private static void Offered(ContextConsole console) { Require(Visible(console, console.InputPolicy.SpokenOnly ? ConsoleAction.UseCurrentView : ConsoleAction.UseSpokenOnly), "Matching response has no evidence choice."); Require(!Visible(console, ConsoleAction.PrepareSave) && !Visible(console, ConsoleAction.More), "Foreground preparation/actions compete with source choice."); }
         private static void Set(object target, string name, object? value) => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
         private static object? Get(object target, string name) => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(target);
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }

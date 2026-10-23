@@ -68,29 +68,62 @@ The segment follows the source mask or region. A saved photo does not become a 3
 Every control is one tile: the control plate, 0.124 m by 0.060 m with a 0.014 m corner, a filled
 glyph and its label in IBM Plex Sans Regular at the body size, centered as one group inside the
 tile. Nothing is filled and nothing is borderless. The recommended action is the row's first tile;
-that is the only difference. Each glyph has one meaning and stays with its action in every state: a mic on Talk, Answer and
-Finish, two bars on Pause and a triangle on Resume, a square on Stop, a cross on Cancel and Dismiss,
-three dots on More, two cards on Context, a gear on Settings, a left chevron on Back, a circular
-arrow on Check and Retry, a plus on New and Include, a minus on Exclude, a camera on View and the
-camera crossed out on No view, a check mark on Choose, Use and Confirm, a speech bubble on Ask, a
-tray with an up arrow on Prepare, three bars on Review, an i in a circle on Status, a framed picture
-on Source, and on each setting's Turn on or Turn off its own glyph: a T for Large text, a speaker
-for Sound, a moving dot for Reduced motion, a waveform for Voice and the camera for Photo.
+that is the only difference. No tile shows disabled: an action that cannot run now is not shown,
+and the panel's words say why. Each glyph has one meaning and stays with its action in every
+state: a mic on Talk, Answer and Finish, two bars on Pause and a triangle on Resume, a square on
+Stop, a cross on Cancel and Dismiss, three dots on More, two cards on Context, a gear on Settings,
+a left chevron on Back, a circular arrow on Check and Retry, a plus on New and Include, a minus on
+Exclude, a camera on View and the camera crossed out on No view, a check mark on Choose, Use and
+Confirm, a speech bubble on Ask, a tray with an up arrow on Prepare, three bars on Review, an i in
+a circle on Status, a framed picture on Source, and on each setting's Turn on or Turn off its own
+glyph: a T for Large text, a speaker for Sound, a moving dot for Reduced motion, a waveform for
+Voice and the camera for Photo.
 
-One row under the console's panel holds the tiles. Its left edge sits on the panel's text column,
-so the orb stays to its left, and it has three slots 0.014 m apart. Pause, the privacy stop, keeps
-the middle slot in every state: Answer, Pause and More while Boopy's line asks; Talk, Pause and
-More otherwise; Finish, Pause and Cancel while recording; Stop and Pause while Boopy works; Check,
-Pause and New while an earlier capture waits; Pause alone, in the middle, while the console is
-busy. More swaps the same row in place to Context, Pause and Back, and Settings is a tile on the
-Context sheet. The row never moves: the panel above it holds only Boopy's line, ends one gap
-(0.014 m) over the row in every state and grows upward with its line, and the speaker label sits
-right above its line. Paging the line is a pinch on its panel, never on the row. The panel's
-question and choice rows stay left-aligned, as content. Sheets and cards sit on the line's
-column: their dark panel spans the text column with the line's 12 mm side margin, and their
-words start on the text column. Under a choice the row reads Talk, Pause and Choose: the panel holds
-Boopy's prompt and, as its own paragraph one gap (0.014 m) under it, one option, and Choose sends
-the option shown. On a follow-up question's page the row reads Talk, Pause and Ask.
+Every control is a tile of one row under the console's panel. Nothing sits on a panel, sheet or
+card, and there is never a second row, a column or a grid. The row's left edge sits on the panel's
+text column, so the orb stays to its left, and it has three slots 0.014 m apart. Pause, the
+privacy stop, keeps the middle slot in every state. A speak tile (Talk, Answer, Finish) is always
+first, and on a sheet or card Back is always last, so paging never moves Talk, Pause or Back. The
+row reads Talk, Pause and More, with Answer in Talk's place while Boopy's line asks; Finish, Pause
+and Cancel while recording; Stop and Pause while Boopy works; Pause alone, in the middle, while the
+console is busy; Check, Pause and New while an earlier capture waits. While Boopy asks for a fresh
+view it reads Talk, Pause and No view: No view turns the next turn's photo off, and the tile then
+reads View to turn it back on, until the next turn; the next turn's words show on the line. Under
+a choice it reads Talk, Pause and Choose: the panel holds Boopy's prompt and, as its own paragraph
+one gap (0.014 m) under it, one option, and Choose sends the option shown in one tap. If the choice
+stops or fails before Boopy answers, the card stays: the line says so for a moment, with the
+choice's slot left empty, then shows the prompt and option again. Once Boopy is answering, or when
+the Mac says the choice is no longer available, the card is gone. On a follow-up question's page it
+reads Talk, Pause and Ask.
+
+More swaps the same row in place to Context, Pause and More, then Settings, Pause and Back. The
+Context sheet keeps its words, and its actions page with More, the recommended first and the last
+ending in Back: Check for an earlier preparation, Prepare for this context, Review for the
+conversation's items. The handoff's action is one word, Check, Prepare, Retry or Status, and the
+sheet's words say the rest. Settings shows one setting per page, its state as a sentence ("Sound
+is on."), with Turn on or Turn off, Pause and Back; the first page keeps the connection, scene and
+voice lines, and while Voice is unavailable its page says so and shows no left tile. The save
+preview reads Use, Pause and Back; a prepared handoff Dismiss, Pause and Back, or Back alone with
+nothing to do. The reader reads Exclude or Include, Pause and More, then Source, Pause and Back,
+and in Source, Confirm, Pause and Back when the item can be confirmed. Back goes up one level:
+from Source to its item, from the reader to the Context sheet, from More or a sheet to the
+conversation. Sheets and cards sit on the line's column: their dark panel spans the text column
+with the line's 12 mm side margin, and their words start on the text column. The Context sheet's
+top line reads Context, as Settings' reads Settings, and its panel hugs its words; the reader
+keeps one height across its pages, its tallest page's.
+
+Lists show one item at a time on their own panel, paged with a pinch on the panel, never on the
+row, with "n of N" where the speaker line sits: a long line's pages, a choice's options under its
+prompt, the follow-up questions after Boopy's line (their speaker line reads "You could ask"), the
+reader's items and source pages, and the settings. On the reader's card and on Settings a short
+pinch pages and a held pinch talks, on the card about the item it shows, as a hold does everywhere.
+The last page wraps to the first, and the row acts on the item shown. The row never moves: the
+panel above it ends one gap (0.014 m) over the row in every state and grows upward with its words,
+and the speaker label sits right above its line. Each page of a choice keeps its prompt with one
+option under it, every page as tall as its tallest, and a question's page may take two more lines,
+so a question fits one page. Boopy's words on the console's own panel, with no line over them, such
+as the opening greeting or "Talk to continue.", sit on the line's dark panel too, across the text
+column, hugging the words and ending one gap over the row.
 
 A capture left pending by a restart is a dialog on the line's dark panel: "Earlier capture" and
 one sentence, with no speaker line; Check and New sit on either side of Pause in the row under it.

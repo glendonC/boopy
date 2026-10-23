@@ -128,6 +128,8 @@ namespace Boopy.Quest.Editor
                     CheckBar(console,eyes,bar);console.Activate(ConsoleAction.Settings);Ready(console);
                 }
                 console.SetConnectionStatus("connected",true);console.Activate(ConsoleAction.Settings);Ready(console);
+                // Voice is the fourth setting, one per page.
+                for(var page=0;page<3;page++)console.NextPage();Ready(console);
                 Require(Control(console,ConsoleAction.Speech).gameObject.activeInHierarchy,"Voice unavailable before the first conversation turn despite health capability.");
                 if(!console.VoiceEnabled)console.Activate(ConsoleAction.Speech);
                 console.Activate(ConsoleAction.Speech);Require(!console.VoiceEnabled,"Synthetic mute was not applied.");

@@ -32,9 +32,10 @@ namespace Boopy.Quest.Editor
                 var bar = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Control bar");
                 var anchor = bar.transform.position;
                 // At most two questions, each on its own page behind the line, with Ask in the row; the line's page has none.
+                Only(console);
                 Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.SuppressSuggestions(); console.Render(view);
-                Only(console, ConsoleAction.Options);
+                Only(console); Require(dialogue.PageCount == 1, "Suppressed questions still page behind the line.");
                 Require(view.Dialogue.Actions.Count == 3 && view.Items[0].Status == "proposed", "Suppression mutated service state or context.");
                 console.Activate(ConsoleAction.Options); console.Activate(ConsoleAction.Review);
                 Require(console.ReaderOpen && console.SelectedItemId == "synthetic-source", "Suppression removed source inspection.");
@@ -44,20 +45,22 @@ namespace Boopy.Quest.Editor
                 dialogue.NextPage();
                 view.Dialogue.UtteranceId = "stale-turn";
                 Require(console.SuggestedAction(ConsoleAction.FollowUpOne) == null, "Stale displayed suggestion remains actionable.");
-                console.Render(view); Only(console, ConsoleAction.Options);
+                console.Render(view); Only(console); Require(dialogue.PageCount == 1, "A stale response's questions still page.");
                 view.Dialogue.UtteranceId = "synthetic-turn";
                 view.Dialogue.Actions[0].ObservationId = "missing-view";
                 view.Dialogue.Actions[1].TargetItemId = "missing-item";
                 view.Dialogue.Actions[2].Question = new string('x', 121);
-                console.Render(view); Only(console, ConsoleAction.Options);
+                console.Render(view); Only(console); Require(dialogue.PageCount == 1, "Unusable questions still page.");
                 view.Dialogue.Actions[0].ObservationId = "synthetic-view";
                 view.Dialogue.Actions[1].TargetItemId = null;
                 console.Render(view);
                 console.Activate(ConsoleAction.Options);
                 Require(bar.transform.position == anchor && dialogue.FullText == exactReply, "Opening context tools moved the app bar or rewrote the answer.");
                 AssertFootprint(console);
-                Require(!Control(console, ConsoleAction.Actions).gameObject.activeInHierarchy && !Control(console, ConsoleAction.Save).gameObject.activeInHierarchy, "Context tools restore foreground save/actions workflow.");
-                Require(Label(console, ConsoleAction.Review) == "Conversation" && Label(console, ConsoleAction.PrepareSave) == "Prepare context", "Context tools lack their actual purpose.");
+                Require(!Control(console, ConsoleAction.Save).gameObject.activeInHierarchy, "Context tools restore foreground save workflow.");
+                Require(Label(console, ConsoleAction.Review) == "Review" && Label(console, ConsoleAction.PrepareSave) == "Prepare", "Context tools lack their actual purpose.");
+                // The sheet's actions page with More: Prepare first, then Review and Back.
+                Only(console, ConsoleAction.PrepareSave); console.Activate(ConsoleAction.More); Only(console, ConsoleAction.Review);
                 Hit(console, eyes, ConsoleAction.Review); console.Activate(ConsoleAction.Review);
                 Require(console.ReaderOpen && console.SelectedItemId == "synthetic-source", "Deliberate context reading lost selected evidence.");
                 console.Activate(ConsoleAction.ToggleDetails);
@@ -65,30 +68,33 @@ namespace Boopy.Quest.Editor
                 for (var page = 0; page < 20; page++)
                 {
                     exactAccountVisible |= console.GetComponentsInChildren<SpatialSurface>(true).Any(surface => surface.BodyText.Contains("Exact synthetic personal words."));
-                    console.Activate(ConsoleAction.NextText);
+                    console.NextPage();
                 }
                 Require(exactAccountVisible, "Source pagination dropped exact personal account.");
-                console.Activate(ConsoleAction.Review); Questions(console, dialogue, eyes, "question-one", "question-two");
+                console.Activate(ConsoleAction.ShelfBack); console.Activate(ConsoleAction.ShelfBack);
+                Require(!console.ReaderOpen && console.Reading, "Back from the reader does not return to the Context sheet.");
+                console.Activate(ConsoleAction.ShelfBack); Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.Activate(ConsoleAction.Options); console.Activate(ConsoleAction.PrepareSave);
                 Require(console.SavePreviewOpen && view.Committed == null && view.Items[0].Status == "proposed", "Preparation silently committed or confirmed context.");
                 Only(console, ConsoleAction.Back, ConsoleAction.Save);
-                Require(Label(console, ConsoleAction.Save) == "Use this context", "Preparation confirmation hides its purpose.");
+                Require(Label(console, ConsoleAction.Save) == "Use", "Preparation confirmation hides its purpose.");
                 console.Activate(ConsoleAction.Back); Questions(console, dialogue, eyes, "question-one", "question-two");
-                console.Activate(ConsoleAction.More); console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.Size); Hit(console, eyes, ConsoleAction.Settings);
-                console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.ShelfBack);
+                console.Activate(ConsoleAction.More); console.Activate(ConsoleAction.More); Hit(console, eyes, ConsoleAction.Settings);
+                console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.Size); Hit(console, eyes, ConsoleAction.Size);
+                console.Activate(ConsoleAction.ShelfBack);
                 Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.ShowProcessing(); Only(console, ConsoleAction.Cancel);
                 Require(console.SuggestedAction(ConsoleAction.FollowUpOne) == null, "Busy state retained a suggested action.");
                 console.Render(view); console.SetCaptureRecovery(true); Only(console, ConsoleAction.CheckCapture, ConsoleAction.DismissCapture);
                 console.SetCaptureRecovery(false);
-                view.Dialogue.Actions.Clear(); console.Render(view); Only(console, ConsoleAction.Options);
+                view.Dialogue.Actions.Clear(); console.Render(view); Only(console);
                 view.Dialogue.Actions.Add(new ContextualAction { Id = "duplicate", Question = "A duplicated question?" });
                 view.Dialogue.Actions.Add(new ContextualAction { Id = "duplicate", Question = "A duplicated question?" });
-                console.Render(view); Only(console, ConsoleAction.Options);
+                console.Render(view); Only(console); Require(dialogue.PageCount == 1, "Duplicated questions still page.");
                 view.Dialogue.Actions.Clear();
                 view.Utterances.Add(new UtteranceRef { Id = "synthetic-clarify", Text = "Synthetic ambiguous request" });
                 view.Attention = new AttentionView { UtteranceId = "synthetic-clarify", Action = "clarify", Source = "unknown" };
-                console.Render(view); Only(console, ConsoleAction.UseCurrentView, ConsoleAction.UseSpokenOnly);
+                console.Render(view); Only(console, ConsoleAction.UseSpokenOnly);
                 Require(dialogue.FullText == exactReply && view.Committed == null, "Context tools mutated reply or receipt.");
                 console.Render(new SessionView { Id = "synthetic-prepared-session", State = "committed", Committed = new Committed { PackageId = "ctx_synthetic_prepared" } });
                 console.Activate(ConsoleAction.Options); console.Activate(ConsoleAction.Settings);
@@ -97,16 +103,18 @@ namespace Boopy.Quest.Editor
                 spoken.Items.Add(new Item { Id = "synthetic-spoken-account", Origin = "person", Status = "confirmed", Label = "Synthetic personal context", Statement = "Exact synthetic words.", Kind = "utterance", Grounding = new Grounding { Kind = "scene" } });
                 spoken.Utterances.Add(new UtteranceRef { Id = "synthetic-spoken-turn", Text = "Exact synthetic words.", Kind = "ask" });
                 console.Render(spoken);
-                Only(console, ConsoleAction.Options);
+                Only(console);
                 Require(!console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Comfort options").gameObject.activeInHierarchy, "New conversation inherited prior context tools.");
                 console.Activate(ConsoleAction.Options);
-                Require(Control(console, ConsoleAction.Review).gameObject.activeInHierarchy && !Control(console, ConsoleAction.Size).gameObject.activeInHierarchy, "New conversation inherited prior settings subpanel.");
+                Require((Control(console, ConsoleAction.Review).gameObject.activeInHierarchy || Control(console, ConsoleAction.PrepareSave).gameObject.activeInHierarchy)
+                    && !Control(console, ConsoleAction.Size).gameObject.activeInHierarchy, "New conversation inherited prior settings subpanel.");
                 Debug.Log("Boopy adaptive conversation actions validation passed (synthetic grounded questions; optional evidence and explicit context preparation).");
             }
             finally { UnityEngine.Object.DestroyImmediate(root); }
         }
         private static SpatialAction Control(ContextConsole console,ConsoleAction action)=>console.GetComponentsInChildren<SpatialAction>(true).Single(control=>control.Action==action);
-        // Pages the line once around: its own page with nothing to ask, then each question with Ask. It ends on the line's page.
+        // Pages the line once around: its own page with nothing to ask, then each question with Ask, its source identity and a
+        // label that fits; it ends on the line's page.
         private static void Questions(ContextConsole console, DialogueStrip dialogue, Transform eyes, params string[] ids)
         {
             while (dialogue.ShownItem >= 0) dialogue.NextPage();

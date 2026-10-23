@@ -125,7 +125,7 @@ namespace Boopy.Quest.Editor
                 if (!console.ReaderOpen) console.Activate(ConsoleAction.Review);
                 console.Activate(ConsoleAction.ToggleDetails);
                 Capture(camera,console,directory,"long-source");
-                console.Activate(ConsoleAction.NextText);
+                console.NextPage();
                 Capture(camera,console,directory,"long-source-next");
                 console.Activate(ConsoleAction.ToggleDetails);
                 console.ShowListening();

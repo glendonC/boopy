@@ -86,22 +86,24 @@ is the first tile of the row under it **Answer**, the prompt the Mac sends, with
 **Talk**'s place. Pinch it, speak, then tap **Finish**. The line reads "Saving on your Mac…"
 while the Mac records your words on the task, then shows them under "You, as heard · Not sent",
 and **Talk** is the first tile again. When the line asks nothing, Talk stays first. Nothing reaches your own assistant. A first answer that
-offers a choice shows its prompt with one option and no task. Pinch the line's panel for the
-next option, then tap **Choose** to send the one shown. If the choice stops or fails before Boopy
-answers, it stays, unless the Mac says it is no longer available. A later Talk turn returns to the conversation's
+offers a choice shows its choice and no task. A later Talk turn returns to the conversation's
 own line.
 
 Without a task, a response may offer up to two contextual questions, each on its own page behind
 Boopy's line. Pinch the line's panel to page to one, then tap **Ask**: the same conversation
 continues against its recorded evidence; it does not open the microphone, capture another view or
-confirm a claim. You can continue speaking instead. Long questions wrap at the existing
-readable font size. Caption paging preserves exact returned text.
+confirm a claim. You can continue speaking instead. A choice shows its prompt with one option;
+pinch the panel for the next and tap **Choose** to send the one shown. Caption paging preserves
+exact returned text, with "n of N" on the speaker line.
 
-**More** on the shelf under the console shows **Context**, **Settings** and **Back** in its
-place. **Context** opens evolving context, exact evidence and comfort settings. Correct a selected
-reference through speech or explicitly confirm/exclude an item. **Prepare context → Use this
-context** creates the local context snapshot. The receipt reads **Ready on your Mac. Not sent.**
-Boopy does not send it. An agent you connect to the Mac's connector can read it.
+Every control is a tile of the row under the console. **More** shows **Context** and **More** in
+its place, then **Settings** and **Back**. **Context** opens evolving context and exact evidence;
+its actions page with **More** in the row, ending in **Back**, and the reader pages its items and
+sources with a short pinch on its card. Correct a selected reference through speech, with a held
+pinch on the card, or explicitly confirm or exclude an item. **Prepare → Use** creates the local
+context snapshot. **Settings** shows one setting per page, pinched to the next, with **Turn on** or
+**Turn off**. The receipt reads **Ready on your Mac. Not sent.** Boopy does not send it. An agent
+you connect to the Mac's connector can read it.
 
 A successful build is not a worn test. Segmentation is optional and off unless the service
 enables it. Boxes stay approximate until a mask exists.

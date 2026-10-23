@@ -21,8 +21,9 @@ namespace Boopy.Quest.Editor
     /// its left edge on the text column (x -0.135 in the panel's frame) and its right edge at x 0.265, with at most three
     /// equal tiles of 0.124 by 0.060 and 0.014 gaps filled from the left, the orb left of the column. The first tile is the
     /// recommended action, and Pause, the privacy stop, keeps slot 2 in every state: while Boopy's line asks [Answer,
-    /// Pause, More], otherwise [Talk, Pause, More], More swapping in place to [Context, Pause, Back] with Settings a tile on
-    /// the Context sheet, recording [Finish, Pause, Cancel], working [Stop, Pause], a pending recovery [Check, Pause, New], busy [-, Pause, -]. Every control is the same tile: the control plate, an ivory Plex Regular label at the body
+    /// Pause, More], otherwise [Talk, Pause, More], More swapping in place to [Context, Pause, More] and then [Settings,
+    /// Pause, Back], recording [Finish, Pause, Cancel], working [Stop, Pause], a pending recovery [Check, Pause, New], busy
+    /// [-, Pause, -]. Every control is the same tile: the control plate, an ivory Plex Regular label at the body
     /// size, its filled glyph and label centered as one group inside the tile; nothing is filled and nothing is borderless.
     /// Every tile carries a filled glyph, the same for its action in every state. The panel holds only Boopy's line, its
     /// paging target off the row, its speaker label
@@ -87,21 +88,18 @@ namespace Boopy.Quest.Editor
                 SpeakerWithLine(f, "At rest");
                 var rest = Shot(f, camera, Path.Combine(output, "rest-" + size + ".png")); owner?.Add(rest);
 
-                // More swaps the same row in place, and Back returns it.
+                // More swaps the same row in place, its second page ending in Back, and Back returns it.
                 f.Console.Activate(ConsoleAction.More); Settle(f);
-                Shelf(f, "More", ConsoleAction.Options, ConsoleAction.PauseScene, ConsoleAction.ShelfBack);
+                Shelf(f, "More", ConsoleAction.Options, ConsoleAction.PauseScene, ConsoleAction.More);
                 OneStyle(f, "More");
-                Glyph(f, ConsoleAction.Options, "context"); Glyph(f, ConsoleAction.ShelfBack, "back");
-                Require(Control(f, ConsoleAction.Options).AccessibleLabel == "Context" && Control(f, ConsoleAction.ShelfBack).AccessibleLabel == "Back",
-                    "More does not offer Context and Back.");
-                // Settings is a tile on the Context sheet, on the text column, in the same style.
-                f.Console.Activate(ConsoleAction.Options); Settle(f);
-                var settings = Control(f, ConsoleAction.Settings);
-                Require(settings.gameObject.activeInHierarchy && settings.transform.parent.name == "Comfort options" && Mathf.Abs(Box(f, settings).min.x - Column) < .001f,
-                    "Settings is not a tile on the Context sheet's text column.");
-                Glyph(f, ConsoleAction.Settings, "settings");
-                OneStyle(f, "Context sheet");
-                f.Console.Activate(ConsoleAction.Options); Settle(f);
+                Glyph(f, ConsoleAction.Options, "context");
+                Require(Control(f, ConsoleAction.Options).AccessibleLabel == "Context", "More does not offer Context.");
+                f.Console.Activate(ConsoleAction.More); Settle(f);
+                Shelf(f, "More, second page", ConsoleAction.Settings, ConsoleAction.PauseScene, ConsoleAction.ShelfBack);
+                OneStyle(f, "More, second page");
+                Glyph(f, ConsoleAction.Settings, "settings"); Glyph(f, ConsoleAction.ShelfBack, "back");
+                Require(Control(f, ConsoleAction.Settings).AccessibleLabel == "Settings" && Control(f, ConsoleAction.ShelfBack).AccessibleLabel == "Back",
+                    "More's second page does not offer Settings and Back.");
                 f.Console.Activate(ConsoleAction.ShelfBack); Settle(f);
                 Shelf(f, "Back from More", ConsoleAction.AnswerTask, ConsoleAction.PauseScene, ConsoleAction.More);
 
@@ -221,7 +219,7 @@ namespace Boopy.Quest.Editor
 
         // The visible row: exactly these tiles in these slots of the text column (None leaves a slot empty), the first being
         // the recommended action.
-        private static void Shelf(TaskPresentationValidation.Fixture f, string when, params ConsoleAction[] slots)
+        internal static void Shelf(TaskPresentationValidation.Fixture f, string when, params ConsoleAction[] slots)
         {
             var bar = f.Console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Control bar");
             var shown = bar.GetComponentsInChildren<SpatialAction>().Where(control => control.gameObject.activeInHierarchy)
@@ -243,7 +241,7 @@ namespace Boopy.Quest.Editor
 
         // One tile style for every visible control: the control plate, an ivory Plex Regular label at the body size on one
         // line that fits, the same 0.124 by 0.060 target. Nothing is filled, nothing is borderless.
-        private static void OneStyle(TaskPresentationValidation.Fixture f, string when)
+        internal static void OneStyle(TaskPresentationValidation.Fixture f, string when)
         {
             foreach (var control in f.Console.GetComponentsInChildren<SpatialAction>().Where(control => control.gameObject.activeInHierarchy))
             {
@@ -316,7 +314,7 @@ namespace Boopy.Quest.Editor
 
         // The panel sits one gap above the shelf whatever its line holds: it grows upward, and the shelf stays put.
         // A dialog with no line passes its own backing plate.
-        private static void GapAboveShelf(TaskPresentationValidation.Fixture f, string when, Transform? plate = null)
+        internal static void GapAboveShelf(TaskPresentationValidation.Fixture f, string when, Transform? plate = null)
         {
             var bar = f.Console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Control bar");
             var shelfTop = bar.GetComponentsInChildren<SpatialAction>().Where(control => control.gameObject.activeInHierarchy).Max(control => Box(f, control).max.y);
@@ -333,9 +331,9 @@ namespace Boopy.Quest.Editor
             var gap = panelBottom - shelfTop;
             var header = f.Console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Intent instrument");
             Require(Mathf.Abs(gap - SpatialTheme.Gap) < .002f, when + ": the panel sits " + (gap * 1000f).ToString("0") + " mm above the shelf, not 14 (header "
-                + header.Size.y.ToString("0.000") + " at " + header.transform.localPosition.y.ToString("0.000") + ", answer bottom " + f.Strip.ConversationAnswerBottom.ToString("0.000")
+                + header.Size.y.ToString("0.000") + " at " + header.transform.localPosition.y.ToString("0.000")
                 + ", line at " + f.Strip.transform.localPosition.y.ToString("0.000") + ", backing " + ((Transform)Get(f.Strip, "captionBacking")!).localPosition.y.ToString("0.000")
-                + " by " + ((Transform)Get(f.Strip, "captionBacking")!).localScale.y.ToString("0.000") + ", rows " + ((float)Get(f.Strip, "conversationContentHeight")!).ToString("0.000") + ", shelf top " + shelfTop.ToString("0.000") + ", panel bottom " + panelBottom.ToString("0.000") + ").");
+                + " by " + ((Transform)Get(f.Strip, "captionBacking")!).localScale.y.ToString("0.000") + ", shelf top " + shelfTop.ToString("0.000") + ", panel bottom " + panelBottom.ToString("0.000") + ").");
         }
 
         // True when x lies right of the orb's body, so nothing drawn there sits under it.
@@ -378,7 +376,7 @@ namespace Boopy.Quest.Editor
         private static SpatialAction Control(TaskPresentationValidation.Fixture f, ConsoleAction action) =>
             f.Root.GetComponentsInChildren<SpatialAction>(true).Single(control => control.Action == action && control.GetComponentInParent<DialogueStrip>(true) == null);
 
-        private static void Settle(TaskPresentationValidation.Fixture f)
+        internal static void Settle(TaskPresentationValidation.Fixture f)
         {
             TaskPresentationValidation.Settle(f);
             for (var frame = 0; frame < 12; frame++) { f.Console.RefreshVisuals(1f / 12f); f.Strip.RefreshVisuals(1f / 12f); }
@@ -397,7 +395,7 @@ namespace Boopy.Quest.Editor
         }
         private static bool Near(Color a, Color b) => Mathf.Abs(a.r - b.r) < .02f && Mathf.Abs(a.g - b.g) < .02f && Mathf.Abs(a.b - b.b) < .02f;
 
-        private static Camera Camera(TaskPresentationValidation.Fixture f)
+        internal static Camera Camera(TaskPresentationValidation.Fixture f)
         {
             var camera = f.Eyes.gameObject.AddComponent<Camera>();
             camera.fieldOfView = 40f; camera.nearClipPlane = .05f; camera.farClipPlane = 10f;
@@ -409,7 +407,7 @@ namespace Boopy.Quest.Editor
         // Head-on: the eyes turned to the console and its line, as a person looks at them, in one 28 degree view for every
         // state. These are pictures of the console: the room's outline and chip are off for the capture only, so nothing
         // is cut at the frame's edge.
-        private static Color32[] Shot(TaskPresentationValidation.Fixture f, Camera camera, string path)
+        internal static Color32[] Shot(TaskPresentationValidation.Fixture f, Camera camera, string path)
         {
             var target = new RenderTexture(Width, Height, 24); var pixels = new Texture2D(Width, Height, TextureFormat.RGB24, false);
             var previous = RenderTexture.active; var rotation = f.Eyes.rotation;

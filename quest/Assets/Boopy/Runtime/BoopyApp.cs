@@ -33,6 +33,8 @@ namespace Boopy.Quest
         private CancellationTokenSource? speechRequest;
         private int speechGeneration;
         private bool pendingDialogue;
+        // A pinch begun on the reader's card or on Settings, with its ray, until it is a tap or a hold.
+        private Ray? pagePinch;
         private ContextConsole? console;
         private bool pendingUsesHandRay;
         private ConsoleAction pendingControl;
@@ -201,6 +203,7 @@ namespace Boopy.Quest
             active = null;
             pendingControl = ConsoleAction.None;
             pendingDialogue = false;
+            pagePinch = null;
             dialogue?.Hide();
             dialogue?.SetInteractionLocked(false);
             console?.ClearFocus();
@@ -456,6 +459,15 @@ namespace Boopy.Quest
                 if (pinch != PinchEvent.Holding) { pendingDialogue = false; active = null; dialogue?.SetInteractionLocked(false); }
                 return;
             }
+            // On the reader's card or Settings a tap pages it, as does a release that never came as a hold (a slow frame can span
+            // the threshold); held past the hold threshold, the pinch is talking, aimed where it began, as a hold means everywhere.
+            if (pagePinch != null && pinch != PinchEvent.Began)
+            {
+                var aim = pagePinch.Value; pagePinch = null; active = null; dialogue?.SetInteractionLocked(false);
+                if (pinch == PinchEvent.Tapped || pinch == PinchEvent.Released) console?.NextPage();
+                else if (pinch == PinchEvent.Holding) BeginTalkInternal(hand, false, aim);
+                return;
+            }
             switch (pinch)
             {
                 case PinchEvent.Began:
@@ -463,6 +475,11 @@ namespace Boopy.Quest
                     if (!buttonTalk.Recording && !busy && dialogue?.HitPage(hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward)) == true)
                     {
                         active = hand; pendingDialogue = true; dialogue.SetInteractionLocked(true); dialogue.NextPage(); return;
+                    }
+                    // The reader's card and Settings wait to see whether the pinch is a tap, which pages, or a hold, which talks.
+                    if (!buttonTalk.Recording && !busy && console?.HitPage(hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward)) == true)
+                    {
+                        active = hand; pagePinch = hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward); dialogue?.SetInteractionLocked(true); return;
                     }
                     var control = ControlHit(hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward), out _);
                     if (buttonTalk.Recording && control != ConsoleAction.FinishTalk && control != ConsoleAction.Cancel && control != ConsoleAction.PauseScene) return;
@@ -698,7 +715,7 @@ namespace Boopy.Quest
 
         private void BeginTalk(HandInput hand) => BeginTalkInternal(hand, false);
 
-        private void BeginTalkInternal(HandInput hand, bool fromButton)
+        private void BeginTalkInternal(HandInput hand, bool fromButton, Ray? aim = null)
         {
             if (!inputAllowed || busy || buttonTalk.Recording || !MicrophoneAllowed()) return;
             if (NeedsCaptureRecovery)
@@ -727,8 +744,9 @@ namespace Boopy.Quest
                 scene?.Clear();
                 if (console != null) scene?.PlaceConsole(console);
             }
-            // Resolve the correction target before the listening stage hides review hit areas.
-            var ray = hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward);
+            // Resolve the correction target before the listening stage hides review hit areas; a held pinch on the reader aims
+            // where it began.
+            var ray = aim ?? (hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward));
             var targetId = fromButton ? null : pendingEvidence.SpokenOnly
                 ? (console?.ReaderOpen == true ? console.HitTarget(ray, out _) : null)
                 : scene?.ChipHitBy(ray, 5f, out _)?.ItemId ?? console?.HitTarget(ray, out _);

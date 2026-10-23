@@ -36,7 +36,7 @@ namespace Boopy.Quest.Editor
                 Set(app, "pendingCues", new Cues { TargetItemId = "synthetic-stale" });
                 typeof(BoopyApp).GetMethod("Capture", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(app, new object[] { new HandInput(true, null, null), latched!, true });
                 Require(Get(app, "pending") == null, "Unready synthetic camera produced pixels.");
-                console.Activate(ConsoleAction.NextItem);
+                console.NextPage();
                 Require(console.SelectedItemId == "synthetic-b", "Synthetic focus did not change.");
                 Require((string?)Get(app, "pendingTarget") == "synthetic-a" && ((Cues)Get(app, "pendingCues")!).TargetItemId == "synthetic-a", "Focus change retargeted the pending spoken turn.");
                 Require(((Voice)Get(app, "voice")!).Recording == false, "Synthetic reference validation started microphone.");
@@ -45,14 +45,39 @@ namespace Boopy.Quest.Editor
                 Require(!console.GetComponentsInChildren<TextMeshPro>().Any(text => text.text.Contains("Correcting this item")), "Old correction-specific wording survived.");
                 console.Render(view);
                 Require(console.SelectedItemId == "synthetic-b", "Unchanged reference overwrote reader navigation.");
-                console.Activate(ConsoleAction.PreviousItem);
+                // Listening closed the reader; reopened, its pinch shows the other item.
+                console.Activate(ConsoleAction.Review); console.NextPage();
                 Require(console.SelectedItemId == "synthetic-a", "Reader navigation fixture failed.");
                 var changed = View("synthetic-b"); console.Render(changed);
                 Require(console.SelectedItemId == "synthetic-b", "Explicit changed referent left reader on the old item.");
                 Require(ContextReview.WorldItems(changed)[0].Id == "synthetic-b", "Changed referent failed room-label priority.");
                 Require(changed.Items.All(item => item.Status == "proposed" && item.Confidence == .4f), "Selecting a referent changed verification or confidence.");
-                console.Activate(ConsoleAction.PreviousItem); console.Render(View("synthetic-b"));
+                console.NextPage(); console.Render(View("synthetic-b"));
                 Require(console.SelectedItemId == "synthetic-a", "Repeated same referent overwrote independent reader focus.");
+                // Through the app's own pinch handling: a tap on the reader's card pages it and records nothing; a pinch held past
+                // the hold threshold leaves the card on its item and starts the turn aimed at it (the editor's unready camera stops
+                // it before any microphone).
+                var strip = DialogueStrip.Create(root.transform, eyes);
+                Set(app, "head", eyes); Set(app, "console", console); Set(app, "dialogue", strip);
+                if (!console.ReaderOpen) console.Activate(ConsoleAction.Review);
+                console.RefreshVisuals(1f); Physics.SyncTransforms();
+                eyes.rotation = Quaternion.LookRotation(hit.transform.TransformPoint(hit.center) - eyes.position);
+                var hand = new HandInput(true, null, null);
+                var shown = console.SelectedItemId;
+                Handle(app, PinchEvent.Began, hand);
+                Require(console.SelectedItemId == shown && Get(app, "pendingEvidence") == null, "A pinch on the reader's card paged it, or started a turn, before it was a tap or a hold.");
+                Handle(app, PinchEvent.Tapped, hand);
+                Require(console.SelectedItemId != shown && console.ReaderOpen && Get(app, "active") == null && Get(app, "pendingEvidence") == null
+                    && !((Voice)Get(app, "voice")!).Recording, "A tap on the reader's card does not page it, or it recorded.");
+                // Let go after a slow frame spans the hold threshold, the pinch comes back released, never held: it pages too.
+                shown = console.SelectedItemId;
+                Handle(app, PinchEvent.Began, hand); Handle(app, PinchEvent.Released, hand);
+                Require(console.SelectedItemId != shown && console.ReaderOpen && Get(app, "active") == null && Get(app, "pendingEvidence") == null
+                    && !((Voice)Get(app, "voice")!).Recording, "A pinch on the reader's card released without a hold does not page it, or it recorded.");
+                shown = console.SelectedItemId;
+                Handle(app, PinchEvent.Began, hand); Handle(app, PinchEvent.Holding, hand);
+                Require(console.SelectedItemId == shown && strip.Stage == DialogueStage.Error && strip.FullText.Contains("Camera not ready")
+                    && !((Voice)Get(app, "voice")!).Recording, "A held pinch on the reader's card does not start the turn aimed at its item: " + strip.FullText);
                 Debug.Log("Boopy spatial reference validation passed (synthetic capture boundary; no microphone/camera/device test).");
             }
             finally { UnityEngine.Object.DestroyImmediate(root); }
@@ -67,6 +92,8 @@ namespace Boopy.Quest.Editor
             });
             return view;
         }
+        private static void Handle(BoopyApp app, PinchEvent pinch, HandInput hand) =>
+            typeof(BoopyApp).GetMethod("Handle", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(app, new object[] { pinch, hand });
         private static void Set(object target, string name, object? value) => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
         private static object? Get(object target, string name) => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(target);
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }

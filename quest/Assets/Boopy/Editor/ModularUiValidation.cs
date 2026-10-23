@@ -28,7 +28,10 @@ namespace Boopy.Quest.Editor
                 Companion(console);
                 Geometry(console);
                 console.Activate(ConsoleAction.Settings); Ready(console);
-                Require(Active(console, ConsoleAction.Speech) && Controls(console).Single(control=>control.Action==ConsoleAction.Speech).AccessibleLabel=="Voice unavailable", "Settings conceal unavailable voice before any session.");
+                for (var page = 0; page < 3; page++) console.NextPage();
+                Ready(console);
+                Require(!Active(console, ConsoleAction.Speech) && console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Comfort options").BodyText.Contains("Voice is unavailable."),
+                    "Settings conceal unavailable voice before any session.");
                 console.Activate(ConsoleAction.Settings); Ready(console);
                 var view = SyntheticSession();
                 var selected = view.Items[1];
@@ -45,8 +48,7 @@ namespace Boopy.Quest.Editor
                 console.Activate(ConsoleAction.Options);
                 console.Activate(ConsoleAction.Review);
                 Ready(console);
-                Actions(console, ConsoleAction.NextItem, ConsoleAction.ToggleDetails,
-                    ConsoleAction.ToggleIncluded, ConsoleAction.Review);
+                Actions(console, ConsoleAction.ToggleIncluded);
                 Geometry(console);
                 var fixedTargets = Positions(console);
                 console.Inspect(selected);
@@ -60,8 +62,7 @@ namespace Boopy.Quest.Editor
 
                 console.Activate(ConsoleAction.ToggleDetails);
                 Ready(console);
-                Actions(console, ConsoleAction.ToggleDetails, ConsoleAction.NextText,
-                    ConsoleAction.Confirm, ConsoleAction.Review);
+                Actions(console, ConsoleAction.Confirm);
                 Geometry(console);
                 var firstPage = Reader(console);
                 console.Inspect(view.Items[2]);
@@ -77,26 +78,26 @@ namespace Boopy.Quest.Editor
                     Geometry(console);
                     exact.Append(Reader(console));
                     Require(++pages <= 256, "Synthetic reader navigation did not reach its bounded end.");
-                    if (!Active(console, ConsoleAction.NextText)) break;
-                    console.Activate(ConsoleAction.NextText);
+                    var (index, count) = SourcePage(console);
+                    if (index == count - 1) break;
+                    Require(console.HitPage(RayTo(console, console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Evidence instrument").transform.position)),
+                        "A pinch on the source does not page it.");
+                    console.NextPage();
                 } while (true);
                 Require(pages > 1, "Long synthetic evidence did not exercise text paging.");
                 Require(exact.ToString() == ExpectedSources(view, selected),
                     "Measured reader pages lost or rewrote source text.");
-                Actions(console, ConsoleAction.ToggleDetails, ConsoleAction.PreviousText,
-                    ConsoleAction.Confirm, ConsoleAction.Review);
-                var lastPage = Reader(console);
-                console.Activate(ConsoleAction.NextText);
-                Require(Reader(console) == lastPage, "Text paging wrapped at the last page.");
+                Actions(console, ConsoleAction.Confirm);
+                console.NextPage();
+                Require(Reader(console) == firstPage, "Text paging did not wrap to the first page.");
                 console.Activate(ConsoleAction.ToggleDetails);
-                console.Activate(ConsoleAction.NextItem);
-                console.Activate(ConsoleAction.NextItem);
+                console.NextPage();
+                console.NextPage();
                 Ready(console);
                 Require(console.SelectedItemId == "question", "Item navigation skipped evidence.");
-                Actions(console, ConsoleAction.PreviousItem, ConsoleAction.ToggleDetails, ConsoleAction.ToggleIncluded,
-                    ConsoleAction.Review);
-                console.Activate(ConsoleAction.NextItem);
-                Require(console.SelectedItemId == "question", "Item navigation wrapped at the end.");
+                Actions(console, ConsoleAction.ToggleIncluded);
+                console.NextPage();
+                Require(console.SelectedItemId == "notes", "Item navigation did not wrap to the first item.");
 
                 console.Activate(ConsoleAction.Review);
                 console.Activate(ConsoleAction.Options);
@@ -159,7 +160,7 @@ namespace Boopy.Quest.Editor
                 Companion(console);
                 Geometry(console);
                 var cancel = Controls(console).Single(action => action.Action == ConsoleAction.Cancel);
-                Require(!cancel.IconOnly && cancel.AccessibleLabel == "Stop", "Stopping the wait must have a visible action label.");
+                Require(cancel.AccessibleLabel == "Stop", "Stopping the wait must have a visible action label.");
                 Require(cancel.GetComponent<BoxCollider>().size.x >= .060f, "Cancel target is too small.");
                 var beforeStop = Wire.Write(view);
                 console.Activate(ConsoleAction.Cancel);
@@ -221,6 +222,12 @@ namespace Boopy.Quest.Editor
 
         private static string Reader(ContextConsole console) => console.GetComponentsInChildren<SpatialSurface>(true)
             .Single(surface => surface.name == "Evidence instrument").BodyText;
+        // The source page shown and the count, from the console's own navigator.
+        private static (int Index, int Count) SourcePage(ContextConsole console)
+        {
+            var navigator = (EvidenceNavigator)typeof(ContextConsole).GetField("navigator", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(console)!;
+            return (navigator.PageIndex, navigator.PageCount);
+        }
         private static void HeaderInstruction(ContextConsole console, string expected, string? identity = null)
         {
             Ready(console);

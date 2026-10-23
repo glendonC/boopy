@@ -64,6 +64,8 @@ namespace Boopy.Quest.Editor
                 Require(!console.VoiceEnabled, "Unavailable voice could be enabled.");
                 var view = new SessionView { Id = "synthetic", SpeechOutputAvailable = true };
                 console.Render(view); console.Activate(ConsoleAction.Options); console.Activate(ConsoleAction.Settings);
+                // Voice is the fourth setting, one per page.
+                for (var page = 0; page < 3; page++) console.NextPage();
                 Require(console.VoiceEnabled, "Available voice did not use the requested default.");
                 Require(console.GetComponentsInChildren<SpatialAction>(true).Single(action => action.Action == ConsoleAction.Speech).gameObject.activeSelf,
                     "Available voice has no separate option.");
