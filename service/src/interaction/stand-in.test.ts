@@ -25,7 +25,7 @@ const referent: Item = {
 
 const facts: TaskTurn = {
   turn: { utteranceId: 'utt_3', words: 'What is this?', observationId: 'obs_2', frameSha256: SHA },
-  dialogue: { text: 'A desert photo with camels.', utteranceId: 'utt_3', at: AT },
+  dialogue: { text: 'A desert photo with camels.', utteranceId: 'utt_3', at: AT, choice: false },
   referent,
 };
 
@@ -71,6 +71,7 @@ describe('local stand-in for a first completed turn', () => {
       ['no visual turn', { ...facts, turn: null }],
       ['no reply', { ...facts, dialogue: null }],
       ['a reply to another turn', { ...facts, dialogue: { ...dialogue, utteranceId: 'utt_9' } }],
+      ['a reply with a choice card', { ...facts, dialogue: { ...dialogue, choice: true } }],
       ['no referent', { ...facts, referent: null }],
       ['a rejected referent', { ...facts, referent: { ...referent, status: 'rejected' } }],
       ['an ignored referent', { ...facts, referent: { ...referent, status: 'ignored' } }],

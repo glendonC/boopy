@@ -15,10 +15,11 @@ const LINE = displayText(200);
 
 /**
  * The opening and the first result for a session's first completed visual turn, or null when the
- * session lacks something they need. Boopy's latest reply must answer that turn, the selected
- * subject must stand on that turn's view, and the person's words must already be one line of at
- * most 400 characters. A label or reply the display rules refuse is left out, never shortened or
- * rewritten. The result id comes from the reply, so a retry names the same result.
+ * session lacks something they need. Boopy's latest reply must answer that turn without a choice
+ * card, the selected subject must stand on that turn's view, and the person's words must already
+ * be one line of at most 400 characters. A label or reply the display rules refuse is left out,
+ * never shortened or rewritten. The result id comes from the reply, so a retry names the same
+ * result.
  */
 export function standIn(
   sessionId: string,
@@ -26,7 +27,14 @@ export function standIn(
   facts: TaskTurn,
 ): { readonly open: OpenTask; readonly result: ProviderResult } | null {
   const { turn, dialogue, referent } = facts;
-  if (turn === null || dialogue === null || dialogue.utteranceId !== turn.utteranceId) return null;
+  // A choice card is the reply's own action, so the task would put a second one beside it.
+  if (
+    turn === null ||
+    dialogue === null ||
+    dialogue.utteranceId !== turn.utteranceId ||
+    dialogue.choice
+  )
+    return null;
   if (
     referent === null ||
     referent.status === 'rejected' ||

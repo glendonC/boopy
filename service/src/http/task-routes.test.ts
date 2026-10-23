@@ -373,6 +373,26 @@ describe('open the session task', () => {
           assert.equal(session.dialogue, undefined);
         },
       },
+      {
+        name: 'a reply that carries a choice card',
+        change: (output) => ({
+          ...output,
+          response: 'Which one do you mean?',
+          choice: {
+            kind: 'choice',
+            prompt: 'Which one do you mean?',
+            options: [
+              { label: 'The camels', value: 'The camels' },
+              { label: 'The tents', value: 'The tents' },
+            ],
+          },
+        }),
+        check: (session) => {
+          assert.ok(session.dialogue?.choice && session.model);
+          const referent = session.items.find((item) => item.id === session.referentId);
+          assert.equal(referent?.grounding.observationId, session.observations[0]?.id);
+        },
+      },
     ];
     for (const item of cases) {
       const ctx = setup(item.change, { segmenter: item.segmenter });

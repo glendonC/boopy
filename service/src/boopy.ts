@@ -114,6 +114,8 @@ export interface TaskTurn {
     readonly text: string;
     readonly utteranceId: string;
     readonly at: string;
+    /** Whether the reply carries a choice card, supported by the headset or not. */
+    readonly choice: boolean;
   } | null;
   /** The session's selected subject. */
   readonly referent: Item | null;
@@ -201,7 +203,12 @@ export class Boopy {
       dialogue:
         dialogue === null
           ? null
-          : { text: dialogue.text, utteranceId: dialogue.utteranceId, at: dialogue.at },
+          : {
+              text: dialogue.text,
+              utteranceId: dialogue.utteranceId,
+              at: dialogue.at,
+              choice: dialogue.choice !== undefined,
+            },
       referent: referent === undefined ? null : structuredClone(referent),
     };
   }
