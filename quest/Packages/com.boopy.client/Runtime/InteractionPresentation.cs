@@ -58,7 +58,7 @@ namespace Boopy.Client
         /// <summary>
         /// The label of the one control the headset draws: a voice reply's prompt without one trailing
         /// period. Null for a choice or a task step (no person action in protocol v1), a wrong item,
-        /// or a cancelled task.
+        /// a cancelled task, or once the line shows the person's answer.
         /// </summary>
         public string? AnswerLabel { get; private set; }
 
@@ -163,7 +163,8 @@ namespace Boopy.Client
             presentation.StatusLine = "Not sent";
             presentation.SpeakerLine = (lastAttempt == null ? "Boopy" : lastAttempt.RecognitionUncertain ? "You, as heard" : "You") + NotSent;
             presentation.Caption = lastAttempt != null ? lastAttempt.Text : presentation.Dialogue;
-            presentation.AnswerLabel = phase == "open" && action?.Type == "voice_reply" ? WithoutOnePeriod(action.Label) : null;
+            // The control sits only under Boopy's line that asks: once the line shows the person's answer, it goes away.
+            presentation.AnswerLabel = phase == "open" && action?.Type == "voice_reply" && lastAttempt == null ? WithoutOnePeriod(action.Label) : null;
             return presentation;
         }
 

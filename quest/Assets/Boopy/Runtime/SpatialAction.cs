@@ -31,6 +31,10 @@ namespace Boopy.Quest
         private static Material Satin => satin != null ? satin : satin = new Material(Resources.Load<Shader>("ControlSatin") ?? Shader.Find("Boopy/ControlSatin"));
         public ConsoleAction Action { get; private set; }
 
+        /// <summary>The one filled control in a view. Talk and Finish by default; the console moves it.</summary>
+        public bool Primary { get; private set; }
+        public void SetPrimary(bool on) => Primary = on;
+
         private void OnDestroy()
         {
             if (face == null || face.sharedMesh == null) return;
@@ -42,6 +46,7 @@ namespace Boopy.Quest
             if (action == ConsoleAction.Options) width = Mathf.Max(width, .105f);
             var go = new GameObject("Action " + action); go.transform.SetParent(parent, false);
             var control = go.AddComponent<SpatialAction>(); control.Action = action;
+            control.Primary = action == ConsoleAction.Talk || action == ConsoleAction.FinishTalk;
             control.block = new MaterialPropertyBlock(); control.controlWidth = width;
             control.visual = new GameObject("Press visual").transform; control.visual.SetParent(go.transform, false);
             var plate = new GameObject("Action surface"); plate.transform.SetParent(control.visual, false);
@@ -144,7 +149,7 @@ namespace Boopy.Quest
             hit.enabled = interactable && opacity >= .95f;
             hoverAmount = reduced ? (hovered ? 1f : 0f) : Mathf.MoveTowards(hoverAmount, hovered ? 1f : 0f, delta / .12f);
             pressAmount = reduced ? (pressed ? 1f : 0f) : Mathf.MoveTowards(pressAmount, pressed ? 1f : 0f, delta / .09f);
-            var primary = Action == ConsoleAction.Talk || Action == ConsoleAction.FinishTalk;
+            var primary = Primary;
             var size = new Vector2(hit.size.x,hit.size.y);
             if (face != null && faceSize != size)
             {

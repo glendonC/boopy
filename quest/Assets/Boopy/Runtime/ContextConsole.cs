@@ -422,8 +422,11 @@ namespace Boopy.Quest
                 }
                 else if (reviewing && taskActionLabel != null)
                 {
-                    // One row in the follow-ups' place: same control kind, same gap under the line, same backing.
-                    var rowHeight = ConfigureQuestion(ConsoleAction.AnswerTask, taskActionLabel);
+                    // One row in the follow-ups' place: same control kind, same gap under the line, same backing. Its label
+                    // is one word with Talk's mic at its left, on one line, so the row is one target high.
+                    var answer = actions[ConsoleAction.AnswerTask];
+                    answer.Label(taskActionLabel); answer.SetLeftAligned(true);
+                    var rowHeight = SpatialTheme.Target;
                     conversationPanelHeight = rowHeight;
                     header.ReserveHeight(dockedDialogue?.ConversationPanelHeight(conversationPanelHeight) ?? .160f + conversationPanelHeight);
                     var top = header.Size.y / 2f - .080f + (dockedDialogue?.ConversationAnswerBottom ?? -.064f) - .016f;
@@ -531,6 +534,10 @@ namespace Boopy.Quest
             var y = -bar.Size.y / 2f;
             foreach (var surface in modules) { surface.transform.localPosition = new Vector3(0, y + surface.Size.y / 2f, 0); y += surface.Size.y + SpatialTheme.Gap; }
             if(controlsOnly) { header.gameObject.SetActive(false); card.gameObject.SetActive(false); dock.gameObject.SetActive(false); headerHit.enabled=false; }
+            // One filled control per view: the task's answer exactly while it shows, otherwise Talk. Finish keeps its own.
+            var answerShown = header.gameObject.activeSelf && actions[ConsoleAction.AnswerTask].gameObject.activeSelf;
+            actions[ConsoleAction.AnswerTask].SetPrimary(answerShown);
+            actions[ConsoleAction.Talk].SetPrimary(!answerShown);
             transform.localScale = Vector3.one * ComfortScale;
             RefreshVisuals(0f);
         }

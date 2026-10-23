@@ -33,11 +33,14 @@ namespace Boopy.Quest.Editor
         internal const string ObservationId = "synthetic-observation";
         internal const string TaskId = "tsk_0000000000000000000000000000a001";
         internal const string Line = "It looks like a stone marker.";
+        // A task that offers a voice reply asks the person something, as the Mac's stand-in does; a statement offers none.
+        internal const string Asked = "What do you think it marks?";
         internal const string Annotation = "Stone marker";
         internal const string FirstAnswer = "A stone marker by the trail.";
         internal const string SecondAnswer = "어제 본 돌이에요.";
         // The app's thinking phrases come in this seeded order, so the working line is exact under test.
         internal const int PhraseSeed = 17;
+        private const string OpenPath = "/v1/sessions/" + SessionId + "/task";
         private const string Health = "{\"ok\":true,\"service\":\"boopy\",\"interpreter\":{\"provider\":\"fixture\",\"model\":\"synthetic\"}}";
         private static readonly ConsoleAction[] Global = { ConsoleAction.Talk, ConsoleAction.FinishTalk, ConsoleAction.PauseScene,
             ConsoleAction.Options, ConsoleAction.Settings, ConsoleAction.Cancel };
@@ -55,7 +58,8 @@ namespace Boopy.Quest.Editor
                 NotOffered();
                 ThinkingWithoutPictureOrMotion();
                 Debug.Log("Boopy task presentation validation passed: one chip on the outlined subject at its session placement, " +
-                    "the dialogue line with \"Boopy · Not sent\", one \"Answer aloud\" control under it and no follow-ups, no overlap, " +
+                    "the dialogue line with \"Boopy · Not sent\", one \"Answer\" control with Talk's mic under it and no follow-ups, no overlap, " +
+                    "no control under the line and Talk filled when the task offers no reply or the line shows the person's answer, " +
                     "answers as \"You · Not sent\" after \"Saving on your Mac…\", the thinking line changes on its own, " +
                     "a turn with no photo never says Boopy is looking, wrong item, retry with the same ids, standard and large text (synthetic).");
             }
@@ -95,6 +99,18 @@ namespace Boopy.Quest.Editor
                     SessionShown(partial, sessionHome, "A task without its chip or its line");
                 }
 
+            // Boopy's line asks the person nothing, so the task offers no reply: its chip and its line, no control in
+            // the dialogue box, and Talk as the one filled control.
+            using (var lineOnly = new Fixture(large))
+            {
+                lineOnly.Transport.Open.Enqueue(() => Reply(HttpStatusCode.OK, TaskView(components: Parts(action: null))));
+                lineOnly.Start();
+                Presented(lineOnly, Line, "Boopy · Not sent", false, sessionHome);
+                Require(lineOnly.Root.GetComponentsInChildren<SpatialAction>(true)
+                    .All(control => control.Action != ConsoleAction.AnswerTask || !control.gameObject.activeInHierarchy),
+                    "A task that asks nothing shows a reply control.");
+            }
+
             // The task arriving while a recording runs leaves the session's own presentation.
             using (var recording = new Fixture(large))
             {
@@ -130,11 +146,11 @@ namespace Boopy.Quest.Editor
             Require(open.Properties().Select(property => property.Name).SequenceEqual(new[] { "eventId", "taskId" })
                 && Regex.IsMatch((string?)open["eventId"] ?? "", "^evt_[0-9a-f]{32}$") && Regex.IsMatch((string?)open["taskId"] ?? "", "^tsk_[0-9a-f]{32}$"),
                 "The open request does not carry headset-made ids only.");
-            Presented(f, Line, "Boopy · Not sent", true, sessionHome);
+            Presented(f, Asked, "Boopy · Not sent", true, sessionHome);
 
             // Focus lost and regained keeps the same task on the same session view.
             Invoke(f.App, "OnFocusLost"); Invoke(f.App, "OnFocusAcquired");
-            Presented(f, Line, "Boopy · Not sent", true, sessionHome);
+            Presented(f, Asked, "Boopy · Not sent", true, sessionHome);
 
             // A Talk recording cancelled with the bar's Cancel gives back the task's line. No microphone opens.
             var buttonTalk = (ButtonTalk)Get(f.App, "buttonTalk")!;
@@ -148,14 +164,42 @@ namespace Boopy.Quest.Editor
             Set(f.App, "pendingControl", ConsoleAction.Cancel); Set(f.App, "pendingUsesHandRay", true);
             Invoke(f.App, "ReleaseControl", hand);
             Require(!buttonTalk.Recording, "Cancel kept the recording.");
-            Presented(f, Line, "Boopy · Not sent", true, sessionHome);
+            Presented(f, Asked, "Boopy · Not sent", true, sessionHome);
 
             // Finish with no audio: the answer's own words, nothing sent, the control stays.
             buttonTalk.Begin(0f); Set(f.App, "answeringTask", true); f.Console.ShowListening(false); f.Console.SetButtonRecording(true);
             Invoke(f.App, "FinishRecording");
             Require(!buttonTalk.Recording && f.Transport.Count("/v1/tasks/" + TaskId + "/answers") == 0, "An empty answer was sent.");
-            Require(f.Strip.Stage == DialogueStage.Error && f.Strip.FullText == "No speech recorded. Tap Answer aloud to try again.",
+            Require(f.Strip.Stage == DialogueStage.Error && f.Strip.FullText == "No speech recorded. Tap Answer to try again.",
                 "An empty answer lacks its retry words.");
+            Settle(f); Only(f.Console, ConsoleAction.AnswerTask);
+
+            // Answers the Mac does not record, while Boopy's line still asks: each keeps the task and the control.
+            // The Mac heard no words: the retry line, the same task, the control stays.
+            f.Transport.Answers.Enqueue(() => Reply((HttpStatusCode)422, Refusal("no_words")));
+            Answer(f, (InteractionPresentation)Get(f.App, "task")!);
+            Require(f.Strip.Stage == DialogueStage.Error && f.Strip.FullText == "No speech recorded. Tap Answer to try again.",
+                "No words lacks its retry line.");
+            Require(((InteractionPresentation)Get(f.App, "task")!).Revision == 1, "No words changed the task.");
+            Settle(f); Only(f.Console, ConsoleAction.AnswerTask);
+            Require(SingleChip(f).ItemId == SubjectId, "No words removed the chip.");
+
+            // Any other refusal shows the Mac's words. The task is not read again and stays as it was.
+            foreach (var (status, code) in new[] { (422, "answer_unusable"), (503, "recognizer_unavailable"), (502, "speech_failed"), (409, "cancelled") })
+            {
+                f.Transport.Answers.Enqueue(() => Reply((HttpStatusCode)status, Refusal(code)));
+                Answer(f, (InteractionPresentation)Get(f.App, "task")!);
+                Require(f.Strip.Stage == DialogueStage.Error && f.Strip.FullText == "Synthetic refusal for " + code + ".", code + " lacks the Mac's words.");
+                Require(((InteractionPresentation)Get(f.App, "task")!).Revision == 1 && f.Transport.Count("/v1/tasks/" + TaskId) == 0,
+                    code + " changed or read the task again.");
+                Settle(f); Only(f.Console, ConsoleAction.AnswerTask);
+            }
+
+            // The connection is lost twice: the existing failure words, the task stays.
+            f.Transport.Answers.Enqueue(Drop); f.Transport.Answers.Enqueue(Drop);
+            Answer(f, (InteractionPresentation)Get(f.App, "task")!);
+            Require(f.Strip.Stage == DialogueStage.Error && f.Strip.FullText == "The Mac connection was interrupted. Your answer may still be recorded there.",
+                "A lost answer hid its uncertainty.");
             Settle(f); Only(f.Console, ConsoleAction.AnswerTask);
 
             // An answer: the wait line, the current revision, base64 audio, no frame. A lost reply is the same event again.
@@ -167,6 +211,7 @@ namespace Boopy.Quest.Editor
                 waits.Add(f.Strip.Stage + ": " + f.Strip.FullText);
                 if (waits.Count == 1) answerWait = WorkingProblem(f, "Saving on your Mac…", "Saving on your Mac…");
             };
+            var earlier = f.Transport.Bodies("/v1/tasks/" + TaskId + "/answers").Count;
             f.Transport.Answers.Enqueue(Drop);
             f.Transport.Answers.Enqueue(() => Reply(HttpStatusCode.OK, TaskView(2, Attempts(FirstAnswer))));
             // Whatever time has passed on the line before, its working state starts the shimmer on the first glyph.
@@ -176,7 +221,7 @@ namespace Boopy.Quest.Editor
             Require(waits.Count == 2 && waits.All(wait => wait == "Working: Saving on your Mac…"),
                 "The answer's wait line is not Saving on your Mac: " + string.Join(" | ", waits));
             Require(answerWait == null, "The answer's working line: " + answerWait);
-            var answers = f.Transport.Bodies("/v1/tasks/" + TaskId + "/answers");
+            var answers = f.Transport.Bodies("/v1/tasks/" + TaskId + "/answers").Skip(earlier).ToList();
             Require(answers.Count == 2 && answers[0] == answers[1], "The answer retry was not the same event.");
             var answer = JObject.Parse(answers[0]);
             Require(answer.Properties().Select(property => property.Name).SequenceEqual(new[] { "eventId", "sessionId", "expectedRevision", "speech" })
@@ -186,42 +231,16 @@ namespace Boopy.Quest.Editor
                 && (string?)answer["speech"]!["wav"] == Convert.ToBase64String(SpeechValidation.SyntheticWav()),
                 "The answer is not this recording against the current revision, or it carries more than audio.");
             Require(f.Transport.Count("/v1/sessions") == 1, "An answer sent the frame or the capture again.");
-            Presented(f, FirstAnswer, "You · Not sent", true, sessionHome);
+            // The line now shows the person's answer, so the answer control is gone and Talk is filled.
+            Presented(f, FirstAnswer, "You · Not sent", false, sessionHome);
 
-            // The Mac heard no words: the retry line, the same task, the control stays.
-            f.Transport.Answers.Enqueue(() => Reply((HttpStatusCode)422, Refusal("no_words")));
-            Answer(f, (InteractionPresentation)Get(f.App, "task")!);
-            Require(f.Strip.Stage == DialogueStage.Error && f.Strip.FullText == "No speech recorded. Tap Answer aloud to try again.",
-                "No words lacks its retry line.");
-            Require(((InteractionPresentation)Get(f.App, "task")!).Revision == 2, "No words changed the task.");
-            Settle(f); Only(f.Console, ConsoleAction.AnswerTask);
-            Require(SingleChip(f).ItemId == SubjectId, "No words removed the chip.");
-
-            // Any other refusal shows the Mac's words. The task is not read again and stays as it was.
-            foreach (var (status, code) in new[] { (422, "answer_unusable"), (503, "recognizer_unavailable"), (502, "speech_failed"), (409, "cancelled") })
-            {
-                f.Transport.Answers.Enqueue(() => Reply((HttpStatusCode)status, Refusal(code)));
-                Answer(f, (InteractionPresentation)Get(f.App, "task")!);
-                Require(f.Strip.Stage == DialogueStage.Error && f.Strip.FullText == "Synthetic refusal for " + code + ".", code + " lacks the Mac's words.");
-                Require(((InteractionPresentation)Get(f.App, "task")!).Revision == 2 && f.Transport.Count("/v1/tasks/" + TaskId) == 0,
-                    code + " changed or read the task again.");
-                Settle(f); Only(f.Console, ConsoleAction.AnswerTask);
-            }
-
-            // Stale: the Mac's current task is read and presented.
+            // Stale: the Mac's current task is read and presented. Its line shows an answer, so there is no control.
             f.Transport.Answers.Enqueue(() => Reply(HttpStatusCode.Conflict, Refusal("stale_revision")));
             f.Transport.Read.Enqueue(() => Reply(HttpStatusCode.OK, TaskView(3, Attempts(FirstAnswer, SecondAnswer))));
             Answer(f, (InteractionPresentation)Get(f.App, "task")!);
             Require(f.Transport.Count("/v1/tasks/" + TaskId) == 1, "A stale answer did not read the task.");
             Require(((InteractionPresentation)Get(f.App, "task")!).Revision == 3, "A stale answer did not present the Mac's task.");
-            Presented(f, SecondAnswer, "You · Not sent", true, sessionHome);
-
-            // The connection is lost twice: the existing failure words, the task stays.
-            f.Transport.Answers.Enqueue(Drop); f.Transport.Answers.Enqueue(Drop);
-            Answer(f, (InteractionPresentation)Get(f.App, "task")!);
-            Require(f.Strip.Stage == DialogueStage.Error && f.Strip.FullText == "The Mac connection was interrupted. Your answer may still be recorded there.",
-                "A lost answer hid its uncertainty.");
-            Settle(f); Only(f.Console, ConsoleAction.AnswerTask);
+            Presented(f, SecondAnswer, "You, as heard · Not sent", false, sessionHome);
 
             // Choice and task step have no person action in protocol v1; a cancelled task takes no answer.
             foreach (var view in new[] { TaskView(4, components: Components(Choice)), TaskView(4, components: Components(Step)), TaskView(4, phase: "cancelled") })
@@ -374,10 +393,15 @@ namespace Boopy.Quest.Editor
             Require(f.Console.SuggestedAction(ConsoleAction.FollowUpOne) == null, "A follow-up stays selectable under a task.");
             foreach (var global in new[] { ConsoleAction.Talk, ConsoleAction.PauseScene, ConsoleAction.Options, ConsoleAction.Settings })
                 Require(Control(f.Console, global).gameObject.activeInHierarchy, "The global bar changed: " + global);
-            if (!control) return;
+            if (!control)
+            {
+                Require(Control(f.Console, ConsoleAction.Talk).Primary, "Talk is not the filled control when Answer is hidden.");
+                return;
+            }
 
             var action = Control(f.Console, ConsoleAction.AnswerTask);
-            Require(action.AccessibleLabel == "Answer aloud", "The control is not labeled Answer aloud.");
+            Require(action.AccessibleLabel == "Answer", "The control is not labeled with the prompt, Answer: " + action.AccessibleLabel);
+            Require(action.Primary && !Control(f.Console, ConsoleAction.Talk).Primary, "Answer is not the one filled control.");
             var verb = action.GetComponentsInChildren<TextMeshPro>(true).Single(text => text.name == "Verb");
             verb.ForceMeshUpdate(true, true);
             var box = action.GetComponent<BoxCollider>();
@@ -390,6 +414,19 @@ namespace Boopy.Quest.Editor
                 Require(low.x >= -box.size.x / 2f && high.x <= box.size.x / 2f && low.y >= -box.size.y / 2f && high.y <= box.size.y / 2f,
                     "A label glyph leaves its target.");
             }
+            // Talk's mic sits at the label's left, inside the target: answering is speaking.
+            var mic = action.GetComponentsInChildren<SpatialActionIcon>(true).SingleOrDefault();
+            Require(mic != null && mic.gameObject.activeInHierarchy && mic.Kind == "talk", "The answer control lacks Talk's mic glyph.");
+            var labelLeft = verb.textInfo.characterInfo.Take(verb.textInfo.characterCount).Where(glyph => glyph.isVisible)
+                .Min(glyph => action.transform.InverseTransformPoint(verb.transform.TransformPoint(glyph.bottomLeft)).x);
+            var micPoints = mic!.GetComponentsInChildren<LineRenderer>(true).SelectMany(line =>
+            {
+                var points = new Vector3[line.positionCount]; line.GetPositions(points);
+                return points.Select(point => action.transform.InverseTransformPoint(line.transform.TransformPoint(point)));
+            }).ToArray();
+            Require(micPoints.Length > 0 && micPoints.Max(point => point.x) < labelLeft
+                && micPoints.All(point => Mathf.Abs(point.x) <= box.size.x / 2f && Mathf.Abs(point.y) <= box.size.y / 2f),
+                "The mic is not at the label's left inside the target.");
             Require(action.transform.parent == f.Strip.transform.parent, "The control left the answer's group.");
             var bounds = box.bounds;
             var lineBottom = f.Strip.transform.TransformPoint(new Vector3(0f, f.Strip.ConversationAnswerBottom, 0f)).y;
@@ -508,6 +545,19 @@ namespace Boopy.Quest.Editor
             return view;
         }
 
+        // The session's own presentation: Boopy's line under "Boopy", its follow-ups, and its chip on the outlined subject.
+        private static void SessionShown(Fixture f, Vector3 sessionHome, string cause)
+        {
+            Settle(f);
+            Require(Get(f.App, "task") == null && !f.Console.TaskShown, cause + " took over the session's presentation.");
+            Require(f.Strip.gameObject.activeInHierarchy && f.Strip.FullText == Line && f.Strip.SpeakerText == "Boopy", cause + " hid Boopy's answer.");
+            var chip = SingleChip(f);
+            Require(chip.ItemId == SubjectId && Label(chip) == Annotation && (chip.Home - sessionHome).sqrMagnitude < 1e-8f && Overlays(f) == 1,
+                cause + " moved or hid the session's chip or outline.");
+            Only(f.Console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo);
+        }
+
+        private const string VoiceReply = "{\"type\":\"voice_reply\",\"prompt\":\"Answer.\"}";
         private const string StandIn =
             "{\"type\":\"subject\",\"sourceId\":\"src_synthetic-observation\",\"maskId\":null}," +
             "{\"type\":\"annotation\",\"text\":\"" + Annotation + "\",\"evidenceIds\":[\"" + SubjectId + "\"]}," +
@@ -515,6 +565,17 @@ namespace Boopy.Quest.Editor
         private const string Choice = "{\"type\":\"choice\",\"prompt\":\"Which one?\",\"options\":[{\"id\":\"opt_a\",\"label\":\"The stone\"}]}";
         private const string Step = "{\"type\":\"task_step\",\"text\":\"Look at the base.\",\"evidenceIds\":[\"" + SubjectId + "\"]}";
         private static string Components(string action) => "[" + StandIn + "," + action + ",{\"type\":\"status\",\"code\":\"not-sent\"}]";
+
+        /// <summary>The stand-in's parts. The service leaves out a label over 80 or a line over 200 characters.</summary>
+        internal static string Parts(bool annotation = true, bool dialogue = true, string? annotationText = null, string? action = VoiceReply) =>
+            "[" + string.Join(",", new[]
+            {
+                "{\"type\":\"subject\",\"sourceId\":\"src_synthetic-observation\",\"maskId\":null}",
+                annotation ? "{\"type\":\"annotation\",\"text\":\"" + (annotationText ?? Annotation) + "\",\"evidenceIds\":[\"" + SubjectId + "\"]}" : null,
+                dialogue ? "{\"type\":\"dialogue\",\"text\":\"" + (action == VoiceReply ? Asked : Line) + "\",\"evidenceIds\":[\"" + SubjectId + "\"]}" : null,
+                action,
+                "{\"type\":\"status\",\"code\":\"not-sent\"}",
+            }.Where(part => part != null)) + "]";
 
         internal static string Attempts(params string[] words) => new JArray(words.Select((text, index) => new JObject
         {
@@ -527,7 +588,7 @@ namespace Boopy.Quest.Editor
             ",\"source\":{\"sourceId\":\"src_synthetic-observation\",\"sourceRevision\":1,\"sha256\":\"" + new string('c', 64) + "\"}" +
             ",\"intent\":\"consult_source\",\"utterance\":\"What is this?\",\"phase\":\"" + phase + "\"" +
             ",\"continuity\":\"local-only\",\"delivery\":\"not-sent\",\"subjectCorrected\":false" +
-            ",\"components\":" + (components ?? Components("{\"type\":\"voice_reply\",\"prompt\":\"Answer aloud.\"}")) +
+            ",\"components\":" + (components ?? Parts()) +
             ",\"attempts\":" + attempts + ",\"lastRejection\":null}";
 
         internal static Task<HttpResponseMessage> Reply(HttpStatusCode status, string body) =>

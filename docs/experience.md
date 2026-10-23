@@ -32,9 +32,11 @@ show those stage words. An answer to a task reads "Saving on your Mac…" instea
 
 After a first turn about a grounded subject, the headset asks the Mac for the session's task.
 A first turn that offers a choice opens no task; the choice stays on the console.
-The task uses the same parts: the chip on the outlined subject, Boopy's line on the console,
-and one Answer aloud control under the line. The line's speaker reads "Boopy · Not sent".
-While Answer aloud shows, it is the one filled control and Talk is plain; otherwise Talk is filled.
+The task uses the same parts: the chip on the outlined subject and Boopy's line on the console.
+The line's speaker reads "Boopy · Not sent". Only when the line asks the person something does
+one Answer control, with Talk's mic at its left and labeled with the prompt the Mac sends, sit under
+it. While it shows, it is the one filled control and Talk is plain. Once the line shows the
+person's answer, or when the line asks nothing, there is no control under it and Talk is filled.
 A task without its chip or its line, with no answer and not marked wrong item, is not shown:
 the conversation keeps its own line and chip. A wrong item clears the chip and the outline and
 says "Wrong item."

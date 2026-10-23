@@ -10,7 +10,8 @@ namespace Boopy.Quest
         private readonly List<LineRenderer> strokes=new List<LineRenderer>();
         public string Kind {get;private set;}="";
         public static bool Supports(ConsoleAction action)=>action==ConsoleAction.Talk || action==ConsoleAction.FinishTalk
-            || action==ConsoleAction.PauseScene || action==ConsoleAction.Options || action==ConsoleAction.Settings || action==ConsoleAction.Cancel;
+            || action==ConsoleAction.PauseScene || action==ConsoleAction.Options || action==ConsoleAction.Settings || action==ConsoleAction.Cancel
+            || action==ConsoleAction.AnswerTask;
         public static SpatialActionIcon Create(Transform parent)
         {
             var host=new GameObject("Action pictogram");host.transform.SetParent(parent,false);
@@ -20,7 +21,7 @@ namespace Boopy.Quest
         {
             var kind=action==ConsoleAction.PauseScene?(label.StartsWith("Resume",System.StringComparison.Ordinal)?"resume":"pause")
                 :action==ConsoleAction.Cancel?(label.StartsWith("Cancel",System.StringComparison.Ordinal)?"cancel":"stop")
-                :action==ConsoleAction.Talk?"talk":action==ConsoleAction.FinishTalk?"finish":action==ConsoleAction.Options?"context":"settings";
+                :action==ConsoleAction.Talk || action==ConsoleAction.AnswerTask?"talk":action==ConsoleAction.FinishTalk?"finish":action==ConsoleAction.Options?"context":"settings";
             if(Kind==kind)return;Kind=kind;
             foreach(var stroke in strokes){stroke.gameObject.SetActive(false);if(Application.isPlaying)Destroy(stroke.gameObject);else DestroyImmediate(stroke.gameObject);}strokes.Clear();
             switch(kind)

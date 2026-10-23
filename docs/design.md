@@ -44,7 +44,7 @@ conversation already uses. A task adds no panel, tray, or card.
 | Annotation | A chip on saved evidence, with a solid hairline border; proposed shows in its words and tone, not in dashes. A task's chip sits where that item's chip goes, keeps the item's kind, and stays proposed. It keeps the item's gloss, confidence, and emphasis only when its text is the item's label. An item that is not in this room gets no chip. Live names are display only. |
 | Dialogue | A caption on the console, with optional local speech. A task's dialogue uses the same line. |
 | Choice | Buttons on the console for a conversation. A first turn with a choice opens no task. A task's choice draws no control yet. |
-| VoiceReply | One control under the task's line, labeled with the prompt, such as "Answer aloud". It records a spoken answer on the task. While it shows, it is the view's one filled control and Talk is plain. |
+| VoiceReply | One control under the task's line, only when Boopy's line asks the person something: "Answer", the prompt the Mac sends, with Talk's mic glyph at its left. The prompt is one short word: the row is one target high and draws its label on one line. It records a spoken answer on the task. While it shows, it is the view's one filled control and Talk is plain. Once the line shows the person's answer, the control goes away. A task that asks nothing shows its chip and line with no control, and Talk is filled. |
 | TaskStep | Not built. A task's step draws no control. |
 | Detail | The evidence reader on the console. |
 | Status | Console notices. A task's status is the line's speaker: "Boopy · Not sent", or over an answer "You, as heard · Not sent" when recognition is uncertain and "You · Not sent" otherwise. |

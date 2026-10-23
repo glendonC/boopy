@@ -326,7 +326,7 @@ namespace Boopy.Client.Tests
             var view = InteractionPresentation.Read(Answered("[" + FirstAttempt + "," + SecondAttempt + "]", 3));
             Assert.That(view.SpeakerLine, Is.EqualTo("You, as heard · Not sent"), "Uncertain recognition stays visible.");
             Assert.That(view.Caption, Is.EqualTo("1970-01-01T00:00:00.000Z"));
-            Assert.That(view.AnswerLabel, Is.EqualTo("Answer aloud about this picture"), "The person can answer again.");
+            Assert.That(view.AnswerLabel, Is.Null, "The line shows the person's answer, so the answer control goes away.");
             Assert.That(view.Dialogue, Is.EqualTo("이 사진에 뭐가 있어요?"), "Boopy's line stays on the task.");
             Assert.That(view.ChipItem()!.Status, Is.EqualTo("proposed"), "Answering does not confirm the annotation.");
         }

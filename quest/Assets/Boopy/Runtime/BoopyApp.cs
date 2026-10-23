@@ -529,7 +529,7 @@ namespace Boopy.Quest
             var answer = answeringTask;
             DiscardRecording(); active = null; pendingControl = ConsoleAction.None;
             marker?.Hide(); RestoreConsole();
-            dialogue?.Show(DialogueStage.Error, answer ? "Recording stopped. Tap Answer aloud to try again." : "Recording stopped. Tap Talk to try again.");
+            dialogue?.Show(DialogueStage.Error, answer ? TryAnswerAgain("Recording stopped.", PresentedTask) : "Recording stopped. Tap Talk to try again.");
         }
 
         private void FinishRecording()
@@ -552,6 +552,10 @@ namespace Boopy.Quest
             feedback?.Play(AudioCue.CaptureOff);
             _ = Send(wav);
         }
+
+        // The retry words name the control the person sees, labeled with the Mac's prompt.
+        private static string TryAnswerAgain(string what, InteractionPresentation? answered) =>
+            what + " Tap " + (answered?.AnswerLabel ?? "Answer") + " to try again.";
 
         /// <summary>
         /// The task's one action: the same button recording Talk uses, with its listening caption
@@ -589,7 +593,7 @@ namespace Boopy.Quest
             if (wav == null || answered == null)
             {
                 DiscardRecording(); RestoreConsole();
-                dialogue?.Show(DialogueStage.Error, "No speech recorded. Tap Answer aloud to try again.");
+                dialogue?.Show(DialogueStage.Error, TryAnswerAgain("No speech recorded.", answered));
                 feedback?.Play(AudioCue.Failure); return;
             }
             feedback?.Play(AudioCue.CaptureOff);
@@ -624,7 +628,7 @@ namespace Boopy.Quest
             catch (OperationCanceledException) { failure = "Stopped waiting. The Mac may still record this answer."; }
             catch (ServiceException refused) when (refused.Status == 422 && refused.Code == "no_words")
             {
-                failure = "No speech recorded. Tap Answer aloud to try again.";
+                failure = TryAnswerAgain("No speech recorded.", answered);
             }
             catch (ServiceException refused) when (refused.Status == 409 && refused.Code == "stale_revision")
             {

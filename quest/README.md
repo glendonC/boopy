@@ -81,12 +81,14 @@ returns an actual answer with an optional local voice. One active source annotat
 
 When that first answer is about a grounded subject, the headset shows the session's task from the
 Mac. The chip on the outlined subject shows the task's label and stays proposed. The line beside
-the companion shows Boopy's words under "Boopy · Not sent". One control, **Answer aloud**, sits
-under the line; while it shows it is the filled control and **Talk** is plain. Pinch it, speak,
-then tap **Finish**. The line reads "Saving on your Mac…" while
-the Mac records your words on the task, then shows them under "You, as heard · Not sent".
-Nothing reaches your own assistant. A first answer that offers a choice shows its choice and no
-task. A later Talk turn returns to the conversation's own line.
+the companion shows Boopy's words under "Boopy · Not sent". Only when the line asks you something
+does one control sit under it: **Answer**, the prompt the Mac sends, with Talk's mic at its left;
+while it shows it is the filled control and **Talk** is plain. Pinch it, speak, then tap
+**Finish**. The line reads "Saving on your Mac…" while the Mac records your words on the task,
+then shows them under "You, as heard · Not sent", and the control goes away. When the line asks
+nothing, there is no control under it. Nothing reaches your own assistant. A first answer that
+offers a choice shows its choice and no task. A later Talk turn returns to the conversation's
+own line.
 
 Without a task, a response may offer up to two contextual questions. Pinching one continues the
 same conversation against its recorded evidence; it does not open the microphone, capture another
