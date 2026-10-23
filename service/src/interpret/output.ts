@@ -111,7 +111,17 @@ export function parseModelText(text: string): ModelOutput {
   } catch {
     throw new InterpretError('The model returned JSON that does not parse.', text);
   }
-  const parsed = ModelOutput.safeParse(value);
+  let parsed = ModelOutput.safeParse(value);
+  // Follow-ups are an optional extra, like a choice: a malformed list is dropped, never reshaped,
+  // and the rest of the answer is checked as strictly as before.
+  if (
+    !parsed.success &&
+    parsed.error.issues.every((issue) => issue.path[0] === 'followUps') &&
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value)
+  )
+    parsed = ModelOutput.safeParse({ ...value, followUps: null });
   if (!parsed.success) {
     throw new InterpretError(
       `The model's JSON does not match: ${parsed.error.issues[0]?.message}`,
