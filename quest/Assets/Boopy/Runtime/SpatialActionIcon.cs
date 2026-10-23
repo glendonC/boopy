@@ -6,10 +6,14 @@ namespace Boopy.Quest
 {
     /// <summary>
     /// Small code-native pictograms, filled as Meta's buttons are in mixed reality; labels remain the accessible action
-    /// names. Every tile carries one, the same for its action in every state: a solid mic with a stroke stand on Talk,
-    /// Answer and Finish; two solid bars on Pause and a solid triangle on Resume; a solid square on Stop; three solid dots
-    /// on More; a circular arrow on Check; a plus on New; two cards on Context; a gear on Settings; a left chevron on
-    /// Back; a cross on Cancel.
+    /// names. Every tile carries one, one meaning each and the same for its action everywhere: a solid mic with a stroke
+    /// stand on Talk, Answer and Finish; two solid bars on Pause and a solid triangle on Resume; a solid square on Stop;
+    /// three solid dots on More; a circular arrow on Check and Retry; a plus on New and Include and a minus on Exclude; two
+    /// cards on Context; a gear on Settings; a left chevron on Back; a cross on Cancel and Dismiss; a camera on View and a
+    /// camera with a slash on No view; a check mark on Choose, Use and Confirm; a speech bubble on Ask; a tray with an up
+    /// arrow on Prepare; three short bars on Review; an i in a circle on Status; a framed picture on Source; and on each
+    /// setting's Turn on or Turn off its own glyph: a T for Large text, a speaker for Sound, a dot with speed lines for
+    /// Reduced motion, a waveform for Voice and the camera for Photo.
     /// </summary>
     public sealed class SpatialActionIcon : MonoBehaviour
     {
@@ -19,9 +23,33 @@ namespace Boopy.Quest
         private Color tint=Color.white;
         /// <summary>True when this action's current label carries a glyph.</summary>
         public bool Drawn => strokes.Count>0;
-        public static bool Supports(ConsoleAction action)=>action==ConsoleAction.Talk || action==ConsoleAction.FinishTalk || action==ConsoleAction.AnswerTask
-            || action==ConsoleAction.PauseScene || action==ConsoleAction.Cancel || action==ConsoleAction.More || action==ConsoleAction.CheckCapture
-            || action==ConsoleAction.DismissCapture || action==ConsoleAction.Options || action==ConsoleAction.Settings || action==ConsoleAction.ShelfBack;
+        /// <summary>The glyph an action carries under a label; empty for none.</summary>
+        public static string KindFor(ConsoleAction action,string label)=>action switch
+        {
+            ConsoleAction.PauseScene=>label.StartsWith("Resume",System.StringComparison.Ordinal)?"resume":"pause",
+            ConsoleAction.Cancel=>label.StartsWith("Stop",System.StringComparison.Ordinal)?"stop":"cancel",
+            ConsoleAction.Talk or ConsoleAction.AnswerTask or ConsoleAction.FinishTalk=>"talk",
+            ConsoleAction.More=>"more",
+            ConsoleAction.CheckCapture=>"check",
+            ConsoleAction.DismissCapture=>label=="New"?"new":label=="Dismiss"?"cancel":"",
+            ConsoleAction.Options=>"context",
+            ConsoleAction.Settings=>"settings",
+            ConsoleAction.ShelfBack or ConsoleAction.Back=>"back",
+            ConsoleAction.UseSpokenOnly=>"no-camera",
+            ConsoleAction.UseCurrentView or ConsoleAction.EvidenceSource=>"camera",
+            ConsoleAction.SendChoice or ConsoleAction.Save or ConsoleAction.Confirm=>"confirm",
+            ConsoleAction.FollowUpOne or ConsoleAction.FollowUpTwo=>"ask",
+            ConsoleAction.PrepareSave=>"prepare",
+            ConsoleAction.Review=>"review",
+            ConsoleAction.Handoff=>label=="Check" || label=="Retry"?"check":label=="Prepare"?"prepare":label=="Status"?"status":"",
+            ConsoleAction.ToggleIncluded=>label=="Include"?"include":label=="Exclude"?"minus":"",
+            ConsoleAction.ToggleDetails=>"source",
+            ConsoleAction.Size=>"text",
+            ConsoleAction.Sound=>"sound",
+            ConsoleAction.Motion=>"motion",
+            ConsoleAction.Speech=>"voice",
+            _=>"",
+        };
         public static SpatialActionIcon Create(Transform parent)
         {
             var host=new GameObject("Action pictogram");host.transform.SetParent(parent,false);
@@ -29,12 +57,7 @@ namespace Boopy.Quest
         }
         public void Configure(ConsoleAction action,string label)
         {
-            var kind=action==ConsoleAction.PauseScene?(label.StartsWith("Resume",System.StringComparison.Ordinal)?"resume":"pause")
-                :action==ConsoleAction.Cancel?(label.StartsWith("Stop",System.StringComparison.Ordinal)?"stop":"cancel")
-                :action==ConsoleAction.Talk || action==ConsoleAction.AnswerTask || action==ConsoleAction.FinishTalk?"talk"
-                :action==ConsoleAction.More?"more":action==ConsoleAction.CheckCapture?"check"
-                :action==ConsoleAction.DismissCapture?(label=="New"?"new":"")
-                :action==ConsoleAction.Options?"context":action==ConsoleAction.Settings?"settings":action==ConsoleAction.ShelfBack?"back":"";
+            var kind=KindFor(action,label);
             if(Kind==kind)return;Kind=kind;
             foreach(var stroke in strokes){stroke.gameObject.SetActive(false);if(Application.isPlaying)Destroy(stroke.gameObject);else DestroyImmediate(stroke.gameObject);}strokes.Clear();
             switch(kind)
@@ -50,11 +73,10 @@ namespace Boopy.Quest
                 case "more":foreach(var x in new[]{-.0065f,0f,.0065f})Solid(new Vector2(x-.0001f,0),new Vector2(x+.0001f,0),.0035f,true);break;
                 case "check":
                     // Three quarters of a ring, thick, ending in an arrowhead: check again.
-                    var ring=new Vector2[13];
-                    for(var i=0;i<ring.Length;i++){var a=(60f+i*270f/(ring.Length-1))*Mathf.Deg2Rad;ring[i]=new Vector2(Mathf.Cos(a),Mathf.Sin(a))*.0055f;}
-                    Thick(ring);
+                    Thick(Arc(Vector2.zero,.0055f,60f,330f,13));
                     Solid(new Vector2(.0028f,.0048f),new Vector2(.0028f,.0002f),.0055f,false).widthCurve=AnimationCurve.Linear(0f,1f,1f,0f);break;
-                case "new":Solid(new Vector2(-.0065f,0),new Vector2(.0065f,0),.003f,false);Solid(new Vector2(0,-.0065f),new Vector2(0,.0065f),.003f,false);break;
+                case "new":case "include":Solid(new Vector2(-.0065f,0),new Vector2(.0065f,0),.003f,false);Solid(new Vector2(0,-.0065f),new Vector2(0,.0065f),.003f,false);break;
+                case "minus":Solid(new Vector2(-.0065f,0),new Vector2(.0065f,0),.003f,false);break;
                 case "context":
                     // Two cards: the one behind as a stroke, the one in front solid.
                     Path(true,new Vector2(-.0075f,-.0015f),new Vector2(-.0075f,.0075f),new Vector2(.0015f,.0075f),new Vector2(.0015f,-.0015f));
@@ -66,8 +88,55 @@ namespace Boopy.Quest
                     Thick(teeth,true);break;
                 case "back":Thick(new[]{new Vector2(.003f,.0065f),new Vector2(-.003f,0),new Vector2(.003f,-.0065f)});break;
                 case "cancel":Solid(new Vector2(-.0055f,-.0055f),new Vector2(.0055f,.0055f),.0028f,false);Solid(new Vector2(-.0055f,.0055f),new Vector2(.0055f,-.0055f),.0028f,false);break;
+                case "camera":case "no-camera":
+                    // A camera body in a thick stroke, its viewfinder bump and its lens ring; No view crosses it out.
+                    Thick(new[]{new Vector2(-.0072f,-.0058f),new Vector2(.0072f,-.0058f),new Vector2(.0072f,.0038f),new Vector2(-.0072f,.0038f)},true);
+                    Solid(new Vector2(-.0028f,.0052f),new Vector2(.0028f,.0052f),.0026f,false);
+                    Thick(Arc(new Vector2(0,-.001f),.0026f,0f,360f,16),true);
+                    if(kind=="no-camera")Solid(new Vector2(-.0085f,-.0078f),new Vector2(.0085f,.0072f),.0024f,false);break;
+                case "confirm":Thick(new[]{new Vector2(-.0058f,-.0002f),new Vector2(-.0018f,-.0042f),new Vector2(.0062f,.0048f)});break;
+                case "ask":
+                    // A solid speech bubble with its tail down and left.
+                    Solid(new Vector2(-.0035f,.0015f),new Vector2(.0035f,.0015f),.0085f,true);
+                    Solid(new Vector2(-.0032f,-.0022f),new Vector2(-.0052f,-.0068f),.0042f,false).widthCurve=AnimationCurve.Linear(0f,1f,1f,0f);break;
+                case "prepare":
+                    // A tray, and an arrow up out of it.
+                    Thick(new[]{new Vector2(-.0068f,-.0012f),new Vector2(-.0068f,-.0068f),new Vector2(.0068f,-.0068f),new Vector2(.0068f,-.0012f)});
+                    Thick(new[]{new Vector2(0,-.0035f),new Vector2(0,.0068f)});
+                    Thick(new[]{new Vector2(-.0036f,.0032f),new Vector2(0,.0068f),new Vector2(.0036f,.0032f)});break;
+                case "review":foreach(var y in new[]{.0048f,0f,-.0048f})Solid(new Vector2(-.0062f,y),new Vector2(.0062f,y),.0026f,false);break;
+                case "status":
+                    // An i in a ring.
+                    Thick(Arc(Vector2.zero,.0068f,0f,360f,24),true);
+                    Solid(new Vector2(0,.0033f),new Vector2(.0001f,.0033f),.0026f,true);
+                    Solid(new Vector2(0,-.0040f),new Vector2(0,.0008f),.0026f,false);break;
+                case "source":
+                    // A framed picture: a frame, a ridge and a sun.
+                    Thick(new[]{new Vector2(-.0072f,-.0060f),new Vector2(.0072f,-.0060f),new Vector2(.0072f,.0060f),new Vector2(-.0072f,.0060f)},true);
+                    Thick(new[]{new Vector2(-.0058f,-.0042f),new Vector2(-.0018f,.0004f),new Vector2(.0008f,-.0020f),new Vector2(.0030f,-.0002f),new Vector2(.0058f,-.0042f)});
+                    Solid(new Vector2(.0030f,.0030f),new Vector2(.0031f,.0030f),.0026f,true);break;
+                case "text":Solid(new Vector2(-.0065f,.0058f),new Vector2(.0065f,.0058f),.0030f,false);Solid(new Vector2(0,.0058f),new Vector2(0,-.0070f),.0034f,false);break;
+                case "sound":
+                    // A speaker: a box, its cone, and one wave.
+                    Solid(new Vector2(-.0072f,0),new Vector2(-.0042f,0),.0050f,false);
+                    Solid(new Vector2(-.0042f,0),new Vector2(-.0002f,0),.0120f,false).widthCurve=AnimationCurve.Linear(0f,.42f,1f,1f);
+                    Thick(Arc(new Vector2(.0002f,0),.0058f,-50f,50f,7));break;
+                case "motion":
+                    // A dot moving right, speed lines behind it.
+                    Solid(new Vector2(.0034f,0),new Vector2(.0035f,0),.0068f,true);
+                    foreach(var y in new[]{.0026f,-.0026f})Solid(new Vector2(-.0074f,y),new Vector2(-.0016f,y),.0022f,true);break;
+                case "voice":
+                    // A waveform: five bars, tallest in the middle.
+                    var heights=new[]{.0030f,.0080f,.0120f,.0080f,.0030f};
+                    for(var i=0;i<heights.Length;i++){var x=(i-2)*.0033f;Solid(new Vector2(x,-heights[i]/2f),new Vector2(x,heights[i]/2f),.0021f,true);}break;
             }
             Tint(tint);
+        }
+        private static Vector2[] Arc(Vector2 center,float radius,float from,float to,int count)
+        {
+            var points=new Vector2[count];
+            for(var i=0;i<count;i++){var a=(from+i*(to-from)/(count-1))*Mathf.Deg2Rad;points[i]=center+new Vector2(Mathf.Cos(a),Mathf.Sin(a))*radius;}
+            return points;
         }
         // A filled shape: one wide stroke, with round caps for a capsule or a dot, square for a bar or a square.
         private LineRenderer Solid(Vector2 from,Vector2 to,float width,bool round)

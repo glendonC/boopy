@@ -15,12 +15,23 @@ namespace Boopy.Quest.Editor
             {
                 // A filled glyph on every tile, the same for its action in every state: the mic on Talk, Finish and Answer,
                 // Pause's bars and Resume's triangle, More's dots, Context's cards, Settings' gear, Back's chevron, Stop's
-                // square, Cancel's cross, Check's circular arrow, New's plus. Every tile is one slot wide.
+                // square, the cross on Cancel and Dismiss, the circular arrow on Check and Retry, the plus on New and Include,
+                // the minus on Exclude, the camera on View and crossed out on No view, the check mark on Choose, Use and
+                // Confirm, the bubble on Ask, the tray on Prepare, the bars on Review, the i on Status, the picture on Source, and
+                // each setting's own glyph on its Turn on or Turn off. Every tile is one slot wide.
                 foreach(var fixture in new[]{(ConsoleAction.Talk,"Talk","talk"),(ConsoleAction.FinishTalk,"Finish","talk"),(ConsoleAction.AnswerTask,"Answer","talk"),
                     (ConsoleAction.PauseScene,"Pause","pause"),(ConsoleAction.PauseScene,"Resume","resume"),(ConsoleAction.More,"More","more"),
                     (ConsoleAction.Options,"Context","context"),(ConsoleAction.Settings,"Settings","settings"),(ConsoleAction.ShelfBack,"Back","back"),
                     (ConsoleAction.Cancel,"Stop","stop"),(ConsoleAction.Cancel,"Cancel","cancel"),
-                    (ConsoleAction.CheckCapture,"Check","check"),(ConsoleAction.DismissCapture,"New","new")})
+                    (ConsoleAction.CheckCapture,"Check","check"),(ConsoleAction.DismissCapture,"New","new"),(ConsoleAction.DismissCapture,"Dismiss","cancel"),
+                    (ConsoleAction.Back,"Back","back"),(ConsoleAction.UseSpokenOnly,"No view","no-camera"),(ConsoleAction.UseCurrentView,"View","camera"),
+                    (ConsoleAction.SendChoice,"Choose","confirm"),(ConsoleAction.Save,"Use","confirm"),(ConsoleAction.Confirm,"Confirm","confirm"),
+                    (ConsoleAction.FollowUpOne,"Ask","ask"),(ConsoleAction.FollowUpTwo,"Ask","ask"),(ConsoleAction.PrepareSave,"Prepare","prepare"),
+                    (ConsoleAction.Review,"Review","review"),(ConsoleAction.Handoff,"Check","check"),(ConsoleAction.Handoff,"Prepare","prepare"),
+                    (ConsoleAction.Handoff,"Retry","check"),(ConsoleAction.Handoff,"Status","status"),(ConsoleAction.ToggleIncluded,"Exclude","minus"),
+                    (ConsoleAction.ToggleIncluded,"Include","include"),(ConsoleAction.ToggleDetails,"Source","source"),(ConsoleAction.Size,"Turn on","text"),
+                    (ConsoleAction.Sound,"Turn off","sound"),(ConsoleAction.Motion,"Turn on","motion"),(ConsoleAction.Speech,"Turn off","voice"),
+                    (ConsoleAction.EvidenceSource,"Turn off","camera")})
                 {
                     var control=SpatialAction.Create(root.transform,fixture.Item1,fixture.Item2,SpatialTheme.ShelfSlot);
                     var target=control.GetComponent<BoxCollider>();var size=target.size;var center=target.center;

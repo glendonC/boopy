@@ -74,11 +74,8 @@ namespace Boopy.Quest
                         control.Stroke(new Vector3(dot * .009f, 0, -.004f), new Vector3(dot * .009f + .0001f, 0, -.004f), .004f);
                 }
             }
-            if (SpatialActionIcon.Supports(action))
-            {
-                control.pictogram = SpatialActionIcon.Create(control.visual);
-                control.pictogram.Configure(action, words);
-            }
+            control.pictogram = SpatialActionIcon.Create(control.visual);
+            control.pictogram.Configure(action, words);
             var boundary = new GameObject("Action boundary"); boundary.transform.SetParent(control.visual, false);
             control.outline = Visuals.Line(boundary, .0018f, true, Visuals.Solid);
             control.outline.useWorldSpace = false; control.outline.positionCount = 36; control.outline.sortingOrder = 2;

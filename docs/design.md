@@ -68,10 +68,14 @@ The segment follows the source mask or region. A saved photo does not become a 3
 Every control is one tile: the control plate, 0.124 m by 0.060 m with a 0.014 m corner, a filled
 glyph and its label in IBM Plex Sans Regular at the body size, centered as one group inside the
 tile. Nothing is filled and nothing is borderless. The recommended action is the row's first tile;
-that is the only difference. Each action keeps its glyph in every state: a mic on Talk, Answer and
-Finish, two bars on Pause and a triangle on Resume, a square on Stop, a cross on Cancel, three dots
-on More, two cards on Context, a gear on Settings, a left chevron on Back, a circular arrow on Check
-and a plus on New.
+that is the only difference. Each glyph has one meaning and stays with its action in every state: a mic on Talk, Answer and
+Finish, two bars on Pause and a triangle on Resume, a square on Stop, a cross on Cancel and Dismiss,
+three dots on More, two cards on Context, a gear on Settings, a left chevron on Back, a circular
+arrow on Check and Retry, a plus on New and Include, a minus on Exclude, a camera on View and the
+camera crossed out on No view, a check mark on Choose, Use and Confirm, a speech bubble on Ask, a
+tray with an up arrow on Prepare, three bars on Review, an i in a circle on Status, a framed picture
+on Source, and on each setting's Turn on or Turn off its own glyph: a T for Large text, a speaker
+for Sound, a moving dot for Reduced motion, a waveform for Voice and the camera for Photo.
 
 One row under the console's panel holds the tiles. Its left edge sits on the panel's text column,
 so the orb stays to its left, and it has three slots 0.014 m apart. Pause, the privacy stop, keeps
