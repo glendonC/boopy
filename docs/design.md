@@ -43,7 +43,7 @@ conversation already uses. A task adds no panel, tray, or card.
 | Subject | One outlined subject in the room: a soft solid Ember edge with no dashes or corners and a brighter inner rim. A task outlines the grounded item its annotation names. A box with no mask is a rounded outline about 7 mrad outside the box as seen from where the person stands, its corners rounded at three times that, on one plane at the depth measured at its center, not at its corners, with no fill, so it stays approximate. A mask is outlined along its own contour and gets a low fill on the object, nothing past it. One sweep of light, about 0.6 s, crosses the subject itself from Boopy's side when it first appears and when Boopy starts working on it (the box itself, not the margin); reduced motion has no sweep. Up to four live outlines that cannot be tapped, unchanged. |
 | Annotation | A chip on saved evidence, with a solid hairline border; proposed shows in its words and tone, not in dashes. A task's chip sits where that item's chip goes, keeps the item's kind, and stays proposed. It keeps the item's gloss, confidence, and emphasis only when its text is the item's label. An item that is not in this room gets no chip. Live names are display only. |
 | Dialogue | A caption on the console, with optional local speech. A task's dialogue uses the same line. |
-| Choice | Buttons on the console for a conversation. A first turn with a choice opens no task. A task's choice draws no control yet. |
+| Choice | Boopy's prompt with one option at a time, paged on the panel; Choose in the row sends the one shown. A first turn with a choice opens no task. A task's choice draws no control yet. |
 | VoiceReply | The first tile of the row, labeled Answer, only while Boopy's line asks the person something: the prompt the Mac sends, with Talk's mic glyph, in Talk's place. The prompt is one short word on one line. It records a spoken answer on the task. Once the line shows the person's answer, or when the line asks nothing, Talk is the first tile again. |
 | TaskStep | Not built. A task's step draws no control. |
 | Detail | The evidence reader on the console. |
@@ -88,7 +88,9 @@ Context sheet. The row never moves: the panel above it holds only Boopy's line, 
 right above its line. Paging the line is a pinch on its panel, never on the row. The panel's
 question and choice rows stay left-aligned, as content. Sheets and cards sit on the line's
 column: their dark panel spans the text column with the line's 12 mm side margin, and their
-words start on the text column.
+words start on the text column. Under a choice the row reads Talk, Pause and Choose: the panel holds
+Boopy's prompt and, as its own paragraph one gap (0.014 m) under it, one option, and Choose sends
+the option shown.
 
 A capture left pending by a restart is a dialog on the line's dark panel: "Earlier capture" and
 one sentence, with no speaker line; Check and New sit on either side of Pause in the row under it.

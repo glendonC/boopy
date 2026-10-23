@@ -62,21 +62,16 @@ namespace Boopy.Quest.Editor
                 var label=SpatialTheme.Text(root.transform,"Preview disclosure",SpatialTheme.Utility,SpatialTheme.Ivory);label.text="REAL HTTP + LOCAL MODEL · SYNTHETIC SCENE · EDITOR PREVIEW";label.rectTransform.sizeDelta=new Vector2(1.35f,.06f);label.transform.position=new Vector3(-.45f,-.45f,1.35f);
                 Apply(app,initial);Frame("01-question");
                 console.ShowControlsOnly(console.transform.position);strip.SetFallback(true);
-                Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null,"Protected presentation exposes choice input.");Frame("02-protected");
+                Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Protected presentation exposes choice input.");Frame("02-protected");
                 console.Place(new Vector3(0,-.12f,1.35f));strip.SetFallback(false);
                 // Stop the actual dispatch before waiting; no synthetic handler intercepts network activity.
-                var stopped=Choose(app,ConsoleAction.ChoiceOne);var wait=(CancellationTokenSource?)Get(app,"captureRequest");
-                Require(wait!=null,"Real selection did not own a cancellable wait.");wait!.Cancel();await stopped;
+                var stopped=Choose(app,ConsoleAction.SendChoice);var wait=(CancellationTokenSource?)Get(app,"captureRequest");
+                Require(wait!=null,"Real choice did not own a cancellable wait.");wait!.Cancel();await stopped;
                 Require(ReferenceEquals(Get(app,"session"),initial)&&strip.FullText.Contains("Stopped waiting"),"Cancelled request changed the session or omitted the caption.");Frame("03-cancelled");
                 // Explicit read, never mutation retry: reconcile the same isolated session before the next human-equivalent choice.
                 var canonical=await client.ReadSessionAsync(initial.Id);Apply(app,canonical);Frame("04-restored");
-                await Choose(app,ConsoleAction.ChoiceOne);
-                var selected=(SessionView)Get(app,"session")!;
-                var selectedDialogue=selected.Dialogue??throw new ChoiceValidationException("Selected reply missing.");
-                var selectedCard=selectedDialogue.Choice??throw new ChoiceValidationException("Selected card missing.");
-                Require(selected.Id==initial.Id&&selectedCard.SelectedOptionId==initial.Dialogue.Choice.Options[0].Id,"Real HTTP selection did not preserve exact option.");
-                Require(selected.Committed==null && canonical.Items.All(item=>selected.Items.Any(current=>current.Id==item.Id && current.Status==item.Status && current.Confidence==item.Confidence)),"Selection confirmed or changed evidence.");
-                Require(selected.Utterances.Count==canonical.Utterances.Count&&selectedDialogue.UtteranceId==canonical.Dialogue!.UtteranceId,"Selection invoked an interpretation turn.");Frame("05-selected");
+                // One tap sends the option the line shows: the Mac records the selection, then answers it.
+                Require(console.SelectedChoice(ConsoleAction.SendChoice)?.OptionId==initial.Dialogue.Choice.Options[0].Id,"Choose does not offer the option shown.");Frame("05-shown");
                 var submitted=Choose(app,ConsoleAction.SendChoice);
                 Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Submitted card remains actionable.");Frame("06-sending");
                 var lastProgress=strip.FullText;var progressFrames=0;Exception? progressFailure=null;
@@ -90,11 +85,16 @@ namespace Boopy.Quest.Editor
                 Require(progressFailure==null,"Actual progress render failed its geometry guards.");
                 var final=(SessionView)Get(app,"session")!;
                 var finalDialogue=final.Dialogue??throw new ChoiceValidationException("Final reply missing.");
-                Require(final.InterpretationFailure==null && final.Utterances.Count==selected.Utterances.Count+1 && final.Model?.Provider==initial.Model?.Provider && final.Model?.Id==initial.Model?.Id && final.Model?.Provider=="ollama","Submit did not preserve successful configured provider provenance.");
-                Require(final.Id==initial.Id&&finalDialogue.UtteranceId!=selectedDialogue.UtteranceId,"Actual submit did not return a new answer.");
+                Require(final.InterpretationFailure==null && final.Utterances.Count==canonical.Utterances.Count+1 && final.Model?.Provider==initial.Model?.Provider && final.Model?.Id==initial.Model?.Id && final.Model?.Provider=="ollama","Submit did not preserve successful configured provider provenance.");
+                Require(final.Id==initial.Id&&finalDialogue.UtteranceId!=canonical.Dialogue!.UtteranceId,"Actual submit did not return a new answer.");
+                // The reply is a new model turn with its own proposed items. Choosing confirmed nothing: nothing is committed, and every
+                // item that is not proposed was already so in the canonical read. A selection changing no evidence is pinned on the
+                // service side (service/src/interactive-choice.test.ts).
+                Require(final.Committed==null && final.Items.All(item=>item.Status=="proposed"||canonical.Items.Any(prior=>prior.Id==item.Id && prior.Status==item.Status)),"Choosing confirmed evidence.");
+                Require(final.Utterances.Last().Text.EndsWith("Selected: "+initial.Dialogue.Choice.Options[0].Value),"The Mac did not receive the option shown.");
                 Require(strip.FullText==finalDialogue.Text&&!(bool)Get(app,"busy")!&&Get(app,"captureRequest")==null,"Actual answer lost text or retained lock.");Frame("07-reply");
-                File.WriteAllText(Path.Combine(output,"summary.json"),new JObject{["syntheticScene"]=true,["realHttp"]=true,["newUtteranceCount"]=final.Utterances.Count-selected.Utterances.Count,["exactVisibleAnswer"]=strip.FullText==finalDialogue.Text,["selectedOptionId"]=selectedCard.SelectedOptionId,["actualProgressFrames"]=progressFrames,["externalDelivery"]=false}.ToString());
-                Debug.Log("Boopy real isolated HTTP Choose passed; fictional scene, selection/submit/protected/cancel/reply, no headset or consumer delivery. Artifacts: "+output);
+                File.WriteAllText(Path.Combine(output,"summary.json"),new JObject{["syntheticScene"]=true,["realHttp"]=true,["newUtteranceCount"]=final.Utterances.Count-canonical.Utterances.Count,["exactVisibleAnswer"]=strip.FullText==finalDialogue.Text,["chosenOptionId"]=initial.Dialogue.Choice.Options[0].Id,["actualProgressFrames"]=progressFrames,["externalDelivery"]=false}.ToString());
+                Debug.Log("Boopy real isolated HTTP Choose passed; fictional scene, one-tap select and submit/protected/cancel/reply, no headset or consumer delivery. Artifacts: "+output);
                 void Frame(string name)
                 {
                     console.RefreshVisuals(2);strip.RefreshVisuals(2);

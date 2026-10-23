@@ -357,13 +357,28 @@ namespace Boopy.Quest.Editor
             return null;
         }
 
-        // A turn without a referent grounded on an observation never asks for a task.
+        // A turn without a referent grounded on an observation, or with a choice on its line, never asks for a task.
         private static void NotOffered()
         {
+            using (var choosing = new Fixture(false))
+            {
+                choosing.Transport.SessionView = Session(choice: true);
+                choosing.Start();
+                Require(choosing.Transport.Count(OpenPath) == 0 && !choosing.Console.TaskShown, "A turn with a choice asked for a task.");
+                Only(choosing.Console, ConsoleAction.SendChoice);
+            }
+            // A choice card the console cannot draw still makes the turn a choice, not a task.
+            using (var unsupported = new Fixture(false))
+            {
+                unsupported.Transport.SessionView = Session(choice: true);
+                unsupported.Transport.SessionView.Dialogue!.Choice!.Options.RemoveAt(1);
+                unsupported.Start();
+                Require(unsupported.Transport.Count(OpenPath) == 0 && !unsupported.Console.TaskShown, "A turn with an unsupported choice asked for a task.");
+            }
             using var f = new Fixture(false);
             f.Transport.SessionView = Session(grounded: false);
             f.Start();
-            Require(f.Transport.Count("/v1/sessions/" + SessionId + "/task") == 0 && !f.Console.TaskShown, "An ungrounded turn asked for a task.");
+            Require(f.Transport.Count(OpenPath) == 0 && !f.Console.TaskShown, "An ungrounded turn asked for a task.");
             Only(f.Console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo);
         }
 
@@ -530,7 +545,7 @@ namespace Boopy.Quest.Editor
         }
         private static N.Vector3 Num(Vector3 value) => new N.Vector3(value.x, value.y, value.z);
 
-        internal static SessionView Session(bool grounded = true)
+        internal static SessionView Session(bool grounded = true, bool choice = false)
         {
             var view = new SessionView
             {
@@ -539,6 +554,19 @@ namespace Boopy.Quest.Editor
             };
             view.Dialogue.Actions.Add(new ContextualAction { Id = "question-origin", Question = "Who placed this marker?", TargetItemId = SubjectId, ObservationId = ObservationId });
             view.Dialogue.Actions.Add(new ContextualAction { Id = "question-sign", Question = "What does the nearby sign say?", ObservationId = ObservationId });
+            if (choice)
+            {
+                view.Dialogue.Text = "Which one do you mean?";
+                view.Dialogue.Choice = new ChoiceCard
+                {
+                    Id = "choice-subject", Kind = "choice", Prompt = "Which one do you mean?",
+                    Options = new List<ChoiceOption>
+                    {
+                        new ChoiceOption { Id = "option-stone", Label = "The stone", Value = "The stone" },
+                        new ChoiceOption { Id = "option-sign", Label = "The sign", Value = "The sign" },
+                    },
+                };
+            }
             view.Utterances.Add(new UtteranceRef { Id = "synthetic-turn", Text = "What is this?", Kind = "ask" });
             view.Observations.Add(new ObservationRef { Id = ObservationId, CapturedAt = "1970-01-01T12:00:00Z" });
             // Unknown confidence stays unknown: the session chip and the task chip read the same.

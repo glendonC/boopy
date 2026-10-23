@@ -34,25 +34,16 @@ namespace Boopy.Quest.Editor
                     var view=new SessionView{Id="synthetic-session",State="review",Utterances=new List<UtteranceRef>{new UtteranceRef{Id="synthetic-turn"}},Dialogue=new DialogueView{UtteranceId="synthetic-turn",At="1970-01-01T00:00:00Z",Text=choice.Prompt,Choice=choice}};
                     var strip=DialogueStrip.Create(root.transform,eyes);console.DockDialogue(strip);
                     console.Render(view);strip.Show(DialogueStage.Response,view.Dialogue!.Text);console.RefreshVisuals(1);strip.RefreshVisuals(2);
-                    Require(console.SelectedChoice(ConsoleAction.ChoiceOne)?.OptionId=="a","Choice unavailable.");
-                    var backingRenderer=strip.GetComponentsInChildren<MeshRenderer>().Single(r=>r.name=="Speech contrast backing");
-                    var backing=backingRenderer.bounds;
-                    var controls=console.GetComponentsInChildren<SpatialAction>().Where(a=>a.Action==ConsoleAction.ChoiceOne||a.Action==ConsoleAction.ChoiceTwo||a.Action==ConsoleAction.ChoiceThree||a.Action==ConsoleAction.SendChoice).ToArray();
-                    foreach(var action in controls)
-                    {
-                        Require(action.transform.parent==strip.transform.parent,"Choice detached from answer surface.");
-                        Require(backingRenderer.sortingOrder<action.GetComponentsInChildren<MeshRenderer>().Single(r=>r.name=="Action surface").sortingOrder,"Conversation backing obscures native action fill feedback.");
-                        Require(!strip.GetComponent<BoxCollider>().bounds.Intersects(action.GetComponent<BoxCollider>().bounds),"Caption pager overlaps choice input.");
-                        var bounds=action.GetComponent<BoxCollider>().bounds;
-                        Require(bounds.min.x>=backing.min.x-.001f && bounds.max.x<=backing.max.x+.001f && bounds.min.y>=backing.min.y-.001f && bounds.max.y<=backing.max.y+.001f,"Choice leaves shared panel.");
-                    }
-                    var firstRow=controls.Single(a=>a.Action==ConsoleAction.ChoiceOne).GetComponent<BoxCollider>().bounds;
-                    var answerLower=strip.transform.TransformPoint(new Vector3(0,strip.ConversationAnswerBottom,0)).y;
-                    Require(Mathf.Abs((answerLower-firstRow.max.y)/console.ComfortScale-.016f)<.002f,"Choice gap does not follow actual answer glyphs.");
-                    for(var i=0;i<controls.Length;i++)for(var j=i+1;j<controls.Length;j++)
-                    {var a=controls[i].GetComponent<BoxCollider>().bounds;var b=controls[j].GetComponent<BoxCollider>().bounds;Require(a.max.y<=b.min.y||b.max.y<=a.min.y,"Choice hit targets overlap.");}
-                    Require((console.SelectedChoice(ConsoleAction.SendChoice)!=null)==selected,"Send did not require persisted selection.");
-                    if(selected)Require(console.GetComponentsInChildren<SpatialAction>().Any(a=>a.AccessibleLabel=="Selected · "+choice.Options[1].Label),"Selected choice lost visible state.");
+                    // The prompt with one option under it and "1 of 3" on the speaker line; Choose, a tile of the row, sends the one
+                    // shown. A selection the Mac kept changes nothing shown.
+                    Require(console.SelectedChoice(ConsoleAction.SendChoice)?.OptionId=="a" && strip.VisibleText.Contains(choice.Prompt) && strip.VisibleText.Contains(choice.Options[0].Label)
+                        && strip.SpeakerText.EndsWith(" · 1 of 3"),"Choice unavailable: "+strip.SpeakerText+" / "+strip.VisibleText);
+                    var backing=strip.GetComponentsInChildren<MeshRenderer>().Single(r=>r.name=="Speech contrast backing").bounds;
+                    var choose=console.GetComponentsInChildren<SpatialAction>().Single(a=>a.Action==ConsoleAction.SendChoice);
+                    Require(choose.transform.parent.name=="Control bar" && choose.AccessibleLabel=="Choose","Choose is not a tile of the row.");
+                    Require(!strip.GetComponent<BoxCollider>().bounds.Intersects(choose.GetComponent<BoxCollider>().bounds),"Caption pager overlaps choice input.");
+                    Require(choose.GetComponent<BoxCollider>().bounds.max.y<backing.min.y,"Choose sits on the line's panel.");
+                    Require(console.GetComponentsInChildren<SpatialAction>().All(a=>a.transform.parent.name=="Control bar"),"A choice control sits off the row.");
                     foreach(var text in console.GetComponentsInChildren<TextMeshPro>())
                     {
                         text.ForceMeshUpdate(true,true);Require(!text.isTextOverflowing,"Choice text overflow: "+text.text);
@@ -61,8 +52,8 @@ namespace Boopy.Quest.Editor
                     }
                     camera.Render();RenderTexture.active=target;pixels.ReadPixels(new Rect(0,0,1600,1000),0,0);pixels.Apply();
                     var path=Path.Combine(Path.GetTempPath(),"boopy-SYNTHETIC-choice-"+(large?"large":"standard")+"-"+(selected?"selected":"unselected")+(reduced?"-reduced":"")+".png");File.WriteAllBytes(path,pixels.EncodeToPNG());Debug.Log("Synthetic authored choice render: "+path);
-                    var hoverControl=controls.Single(a=>a.Action==ConsoleAction.ChoiceOne);
-                    var sample=camera.WorldToScreenPoint(hoverControl.transform.TransformPoint(new Vector3(.190f,0,0)));
+                    var hoverControl=choose;
+                    var sample=camera.WorldToScreenPoint(hoverControl.transform.TransformPoint(new Vector3(.054f,0,0)));
                     var sx=Mathf.Clamp(Mathf.RoundToInt(sample.x),0,pixels.width-1);var sy=Mathf.Clamp(Mathf.RoundToInt(sample.y),0,pixels.height-1);
                     var restingPixel=pixels.GetPixel(sx,sy);
                     hoverControl.Focus(true);hoverControl.Refresh(.3f,1f,reduced);
@@ -71,14 +62,22 @@ namespace Boopy.Quest.Editor
                     Require(hoverPixel.grayscale-restingPixel.grayscale>.015f,"Actual conversation backing obscures whole-face hover contrast.");
                     File.WriteAllBytes(path.Replace(".png","-hover.png"),pixels.EncodeToPNG());
                     hoverControl.Focus(false);hoverControl.Refresh(.3f,1f,reduced);
+                    // A pinch on the panel shows the next option, and the last wraps to the first.
+                    strip.NextPage();
+                    Require(console.SelectedChoice(ConsoleAction.SendChoice)?.OptionId=="b" && strip.VisibleText.Contains(choice.Options[1].Label) && strip.SpeakerText.EndsWith(" · 2 of 3"),"Paging does not show the next option.");
+                    strip.NextPage();strip.NextPage();
+                    Require(console.SelectedChoice(ConsoleAction.SendChoice)?.OptionId=="a" && strip.SpeakerText.EndsWith(" · 1 of 3"),"Paging does not wrap to the first option.");
+                    strip.NextPage();
                     strip.ShowNotice("Stopped waiting. The Mac may still finish this choice.",0);
-                    Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null && console.SelectedChoice(ConsoleAction.SendChoice)==null,"Stopped-wait caption retained choice input without its question.");
+                    Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Stopped-wait caption retained choice input without its question.");
+                    // The choice still stands under the notice: nothing takes its slot.
+                    Require(!console.GetComponentsInChildren<SpatialAction>().Any(tile=>tile.gameObject.activeInHierarchy&&(tile.Action==ConsoleAction.More||tile.Action==ConsoleAction.SendChoice)),"A notice over a choice lets a tile take the choice's slot.");
                     strip.ClearNotice();console.RefreshVisuals(1);strip.RefreshVisuals(1);
-                    Require(console.SelectedChoice(ConsoleAction.ChoiceOne)?.OptionId=="a" && choice.SelectedOptionId==(selected?"b":null),"Restored caption lost the choice or its selection.");
-                    console.ShowControlsOnly(console.transform.position);Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null,"Protected UI accepted choice.");console.Place(new Vector3(0,-.05f,1.35f));
-                    console.SetBusy(true,true);Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null,"Busy choice remained live.");console.SetBusy(false);
-                    view.Dialogue!.UtteranceId="stale";console.Render(view);Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null,"Stale response accepted choice.");view.Dialogue.UtteranceId="synthetic-turn";
-                    choice.Kind="unsupported";console.Render(view);Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null,"Unsupported UI did not fall back.");
+                    Require(console.SelectedChoice(ConsoleAction.SendChoice)?.OptionId=="b" && choice.SelectedOptionId==(selected?"b":null),"Restored caption lost the option shown or the kept selection.");
+                    console.ShowControlsOnly(console.transform.position);Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Protected UI accepted choice.");console.Place(new Vector3(0,-.05f,1.35f));
+                    console.SetBusy(true);Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Busy choice remained live.");console.SetBusy(false);
+                    view.Dialogue!.UtteranceId="stale";console.Render(view);Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Stale response accepted choice.");view.Dialogue.UtteranceId="synthetic-turn";
+                    choice.Kind="unsupported";console.Render(view);Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Unsupported UI did not fall back.");
                 }
                 finally{RenderTexture.active=old;UnityEngine.Object.DestroyImmediate(root);UnityEngine.Object.DestroyImmediate(pixels);UnityEngine.Object.DestroyImmediate(target);}
             }
@@ -108,10 +107,10 @@ namespace Boopy.Quest.Editor
                     {
                         var selected=view.Dialogue!.Choice!.SelectedOptionId;
                         strip.Show(DialogueStage.Error,"Stopped waiting. The Mac may still finish this choice.");console.ShowError("Stopped waiting. The Mac may still finish this choice.");
-                        Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null&&console.SelectedChoice(ConsoleAction.SendChoice)==null,"Recorded stopped notice exposes card without its question.");
+                        Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Recorded stopped notice exposes card without its question.");
                         if(state=="restoredSelected")
                         {
-                            console.Render(view);strip.Show(DialogueStage.Response,view.Dialogue.Text);Require(console.SelectedChoice(ConsoleAction.SendChoice)?.OptionId==selected,"Saved caption did not restore the selection.");
+                            console.Render(view);strip.Show(DialogueStage.Response,view.Dialogue.Text);Require(console.SelectedChoice(ConsoleAction.SendChoice)!=null,"Saved caption did not offer the choice again.");
                         }
                         Require(view.Dialogue.Choice.SelectedOptionId==selected,"Notice erased journaled selection.");
                     }
@@ -138,39 +137,70 @@ namespace Boopy.Quest.Editor
             var previous=System.Threading.SynchronizationContext.Current;System.Threading.SynchronizationContext.SetSynchronizationContext(null);
             try
             {
-                foreach(var submit in new[]{false,true}) foreach(var outcome in new[]{"accepted","cancelled","focus-lost","failed","replaced"})
+                // One tap is two posts, the selection and then the send; an outcome strikes at either.
+                foreach(var atSend in new[]{false,true}) foreach(var outcome in new[]{"accepted","cancelled","focus-lost","failed","replaced","superseded","unreadable","broken","refused","busy"})
                 {
                     var root=new GameObject("Synthetic choice dispatch");
                     try
                     {
                         var eyes=new GameObject("Eyes").transform;eyes.SetParent(root.transform,false);
                         var console=ContextConsole.Create(root.transform,eyes);var strip=DialogueStrip.Create(root.transform,eyes);
-                        var view=new SessionView{Id="synthetic",State="review",Utterances=new List<UtteranceRef>{new UtteranceRef{Id="utterance"}},Dialogue=new DialogueView{UtteranceId="utterance",At="1970-01-01T00:00:00Z",Text="What interests you?",Choice=new ChoiceCard{Id="card",Kind="choice",Prompt="What interests you?",Options=new List<ChoiceOption>{Option("a","Dunes"),Option("b","Light")},SelectedOptionId=submit?"b":null}}};
+                        var view=new SessionView{Id="synthetic",State="review",Utterances=new List<UtteranceRef>{new UtteranceRef{Id="utterance"}},Dialogue=new DialogueView{UtteranceId="utterance",At="1970-01-01T00:00:00Z",Text="What interests you?",Choice=new ChoiceCard{Id="card",Kind="choice",Prompt="What interests you?",Options=new List<ChoiceOption>{Option("a","Dunes"),Option("b","Light")}}}};
                         console.DockDialogue(strip);console.Render(view);strip.Show(DialogueStage.Response,view.Dialogue!.Text);var app=root.AddComponent<BoopyApp>();Set(app,"console",console);Set(app,"dialogue",strip);Set(app,"session",view);
                         var handler=new ChoiceHandler{View=view};
                         handler.OnPost=()=>
                         {
                             Require((bool)Get(app,"busy")! && Get(app,"captureRequest")!=null,"Choice lacks request lock.");
-                            Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null,"Choice remained actionable during dispatch.");
+                            Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Choice remained actionable during dispatch.");
+                            if(atSend && handler.Posts==1)return;
                             if(outcome=="cancelled")((System.Threading.CancellationTokenSource)Get(app,"captureRequest")!).Cancel();
                             if(outcome=="focus-lost")typeof(BoopyApp).GetMethod("OnFocusLost",Flags)!.Invoke(app,null);
                             if(outcome=="replaced") { Set(app,"captureRequest",new System.Threading.CancellationTokenSource());strip.Show(DialogueStage.Response,"A newer reply.");throw new System.Net.Http.HttpRequestException("late synthetic drop"); }
                             if(outcome=="failed")throw new System.Net.Http.HttpRequestException("synthetic drop");
+                            // A newer request takes over while this one is answered normally: a selection overtaken this way is never sent.
+                            if(outcome=="superseded") { Set(app,"captureRequest",new System.Threading.CancellationTokenSource());strip.Show(DialogueStage.Response,"A newer reply."); }
+                            // The Mac answers with words the headset cannot read.
+                            if(outcome=="unreadable")handler.Body="unreadable";
+                            // The Mac refuses the choice as no longer available, or as busy with the last request, in its own words.
+                            if(outcome=="refused"){handler.Status=System.Net.HttpStatusCode.Conflict;handler.Body="{\"error\":{\"code\":\"stale_choice\",\"message\":\"That choice is no longer available. Ask again.\"}}";}
+                            if(outcome=="busy"){handler.Status=System.Net.HttpStatusCode.Conflict;handler.Body="{\"error\":{\"code\":\"busy\",\"message\":\"Still working on the last request.\"}}";}
+                            // The answer fails in a way the connection does not explain.
+                            if(outcome=="broken")throw new InvalidOperationException("synthetic broken reply");
                         };
                         using var client=new ServiceClient(handler:handler);Set(app,"client",client);
-                        ((System.Threading.Tasks.Task)typeof(BoopyApp).GetMethod("Choose",Flags)!.Invoke(app,new object[]{submit?ConsoleAction.SendChoice:ConsoleAction.ChoiceOne})!).GetAwaiter().GetResult();
-                        Require(handler.Posts==1,"Choice mutation replayed.");if(outcome=="replaced") { Require((bool)Get(app,"busy")! && Get(app,"captureRequest")!=null && strip.FullText=="A newer reply.","Late choice changed newer request.");((System.Threading.CancellationTokenSource)Get(app,"captureRequest")!).Dispose();Set(app,"captureRequest",null); }
+                        ((System.Threading.Tasks.Task)typeof(BoopyApp).GetMethod("Choose",Flags)!.Invoke(app,new object[]{ConsoleAction.SendChoice})!).GetAwaiter().GetResult();
+                        Require(handler.Posts==(outcome=="accepted"||atSend?2:1) && handler.Paths[0].EndsWith("/choice-selection") && (handler.Posts==1||handler.Paths[1].EndsWith("/choice-submit")),
+                            "One tap is not one selection and then one send ("+outcome+(atSend?" at the send":" at the selection")+"): "+string.Join(", ",handler.Paths));if(outcome=="replaced"||outcome=="superseded") { Require((bool)Get(app,"busy")! && Get(app,"captureRequest")!=null && strip.FullText=="A newer reply.","Late choice changed newer request.");((System.Threading.CancellationTokenSource)Get(app,"captureRequest")!).Dispose();Set(app,"captureRequest",null); }
                         else Require(!(bool)Get(app,"busy")! && Get(app,"captureRequest")==null,"Choice retained lock.");
                         if(outcome!="accepted")Require(ReferenceEquals(Get(app,"session"),view),"Late choice replaced original session.");
-                        if(submit)Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Dispatched card offered unsafe retry.");
-                        if(!submit && (outcome=="cancelled"||outcome=="failed"||outcome=="focus-lost"))
+                        // From the send on the card is gone for every outcome. Before it, a card whose selection failed or was cancelled
+                        // stays: its line says so for a moment, and once those words end the card is offered again.
+                        var before=!atSend&&(outcome=="cancelled"||outcome=="failed"||outcome=="unreadable"||outcome=="broken"||outcome=="busy");
+                        if(!before)Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"Dispatched card offered unsafe retry.");
+                        else
                         {
-                            Require(console.SelectedChoice(ConsoleAction.ChoiceOne)==null && console.SelectedChoice(ConsoleAction.SendChoice)==null,"Stopped or hidden caption retained choice input.");
-                            if(outcome!="focus-lost")
-                            {
-                                console.Render(view);strip.Show(DialogueStage.Response,view.Dialogue!.Text);
-                                Require(console.SelectedChoice(ConsoleAction.ChoiceOne)?.OptionId=="a" && view.Dialogue.Choice!.SelectedOptionId==null,"Canonical caption restoration erased selection state or card binding.");
-                            }
+                            var said=outcome=="cancelled"?"Stopped waiting. You can choose again."
+                                : outcome=="busy"?"Still working on the last request."
+                                : "Boopy didn't hear back from your Mac. Reconnect, then choose again.";
+                            Require(strip.FullText==said&&console.SelectedChoice(ConsoleAction.SendChoice)==null,"Before the send the line does not say the card stays ("+outcome+"): "+strip.FullText);
+                            // The choice still stands under the words: nothing takes its slot, so no tile turns into Choose under a hand.
+                            var tiles=console.GetComponentsInChildren<SpatialAction>().Where(tile=>tile.gameObject.activeInHierarchy).Select(tile=>tile.Action).ToArray();
+                            Require(!tiles.Contains(ConsoleAction.More)&&!tiles.Contains(ConsoleAction.SendChoice)&&!tiles.Contains(ConsoleAction.FollowUpOne),"While the words show, the choice's slot holds a tile ("+outcome+"): "+string.Join(", ",tiles));
+                            strip.ClearNotice();console.RefreshVisuals(1);strip.RefreshVisuals(1);
+                            Require(console.SelectedChoice(ConsoleAction.SendChoice)?.OptionId=="a"&&strip.FullText==view.Dialogue!.Text,"A card whose selection failed or was cancelled is not offered again ("+outcome+").");
+                        }
+                        if(atSend&&outcome=="cancelled")Require(strip.FullText=="Stopped waiting. The Mac may still finish this choice.","A stop after the send reads: "+strip.FullText);
+                        // From the send on, Boopy did not hear back from a lost connection or a broken answer; a refusal keeps the Mac's words.
+                        const string unheard="Boopy didn't hear back from your Mac. The Mac may still finish this choice. Reconnect, then Talk to answer.";
+                        if(atSend&&(outcome=="broken"||outcome=="failed"))Require(strip.FullText==unheard,"A "+outcome+" answer after the send reads: "+strip.FullText);
+                        if(atSend&&outcome=="busy")Require(strip.FullText=="Still working on the last request.","A busy Mac after the send reads: "+strip.FullText);
+                        // A choice the Mac says is no longer available goes at either stage, its words on the line, and stays gone after the
+                        // canonical read: offered again, every tap would be refused the same way.
+                        if(outcome=="refused")
+                        {
+                            Require(strip.FullText=="That choice is no longer available. Ask again." && console.SelectedChoice(ConsoleAction.SendChoice)==null,"A stale choice reads: "+strip.FullText);
+                            console.Render(view);strip.Show(DialogueStage.Response,view.Dialogue!.Text);console.RefreshVisuals(1);strip.RefreshVisuals(1);
+                            Require(console.SelectedChoice(ConsoleAction.SendChoice)==null,"A stale choice is offered again after the canonical read ("+(atSend?"at the send":"at the selection")+").");
                         }
                     }
                     finally{UnityEngine.Object.DestroyImmediate(root);}
@@ -180,11 +210,12 @@ namespace Boopy.Quest.Editor
         }
         private sealed class ChoiceHandler:System.Net.Http.HttpMessageHandler
         {
-            public SessionView View=new SessionView();public Action? OnPost;public int Posts;
+            public SessionView View=new SessionView();public Action? OnPost;public int Posts;public string? Body;public System.Net.HttpStatusCode Status=System.Net.HttpStatusCode.OK;public readonly List<string> Paths=new List<string>();
             protected override System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,System.Threading.CancellationToken cancel)
             {
                 if(request.Method==System.Net.Http.HttpMethod.Get)return System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK){Content=new System.Net.Http.StringContent("{\"ok\":true,\"service\":\"boopy\",\"interpreter\":{\"provider\":\"fixture\",\"model\":\"synthetic\"}}")});
-                Posts++;OnPost?.Invoke();
+                Posts++;Paths.Add(request.RequestUri!.AbsolutePath);OnPost?.Invoke();
+                if(Body!=null)return System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(Status){Content=new System.Net.Http.StringContent(Body)});
                 var returned=Wire.Read<SessionView>(Wire.Write(View));returned.Dialogue!.Choice!.SelectedOptionId="a";
                 return System.Threading.Tasks.Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK){Content=new System.Net.Http.StringContent(Wire.Write(returned),System.Text.Encoding.UTF8,"application/json")});
             }

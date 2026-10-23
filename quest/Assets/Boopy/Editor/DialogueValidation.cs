@@ -33,7 +33,7 @@ namespace Boopy.Quest.Editor
                 var longText = new string('가', 180);
                 strip.Show(DialogueStage.Response, longText);
                 Require(strip.FullText == longText, "Caption rewrote source response.");
-                Require(strip.PageCount > 1 && strip.SpeakerText.Contains("Next page"), "Long caption has no explicit full-text access.");
+                Require(strip.PageCount > 1 && strip.SpeakerText.EndsWith(" · 1 of " + strip.PageCount), "Long caption has no explicit full-text access.");
                 Require(strip.VisibleText.Length < longText.Length, "Long caption exceeded compact strip.");
                 var reconstructed = "";
                 for (var index = 0; index < strip.PageCount; index++) { reconstructed += strip.VisibleText; strip.NextPage(); }

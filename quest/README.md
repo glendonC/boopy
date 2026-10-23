@@ -86,7 +86,9 @@ is the first tile of the row under it **Answer**, the prompt the Mac sends, with
 **Talk**'s place. Pinch it, speak, then tap **Finish**. The line reads "Saving on your Mac…"
 while the Mac records your words on the task, then shows them under "You, as heard · Not sent",
 and **Talk** is the first tile again. When the line asks nothing, Talk stays first. Nothing reaches your own assistant. A first answer that
-offers a choice shows its choice and no task. A later Talk turn returns to the conversation's
+offers a choice shows its prompt with one option and no task. Pinch the line's panel for the
+next option, then tap **Choose** to send the one shown. If the choice stops or fails before Boopy
+answers, it stays, unless the Mac says it is no longer available. A later Talk turn returns to the conversation's
 own line.
 
 Without a task, a response may offer up to two contextual questions. Pinching one continues the

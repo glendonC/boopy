@@ -1021,14 +1021,14 @@ namespace Boopy.Quest
         }
 
         // The Mac decides whether a task exists. The headset asks only when the first turn ends
-        // with Boopy's line and a referent grounded on an observation.
+        // with Boopy's line, no choice on that line, and a referent grounded on an observation.
         private static bool TaskTurn(SessionView view)
         {
             var latest = view.Utterances.LastOrDefault()?.Id;
             var referent = view.Items.FirstOrDefault(item => item.Id == view.ReferentId);
             return view.State == "review" && !string.IsNullOrWhiteSpace(latest) && view.Dialogue != null
                 && view.Dialogue.Speaker == "boopy" && view.Dialogue.UtteranceId == latest
-                && !string.IsNullOrWhiteSpace(view.Dialogue.Text)
+                && !string.IsNullOrWhiteSpace(view.Dialogue.Text) && view.Dialogue.Choice == null
                 && referent != null && !ContextReview.IsExcluded(referent) && referent.Grounding.ObservationId != null;
         }
 
@@ -1174,7 +1174,7 @@ namespace Boopy.Quest
             }
             else if (control == ConsoleAction.CheckCapture) _ = CheckCapture();
             else if (control == ConsoleAction.DismissCapture) { if (console?.HandoffRecoveryVisible == true) DismissHandoffRecovery(); else DismissCapture(); }
-            else if (control == ConsoleAction.ChoiceOne || control == ConsoleAction.ChoiceTwo || control == ConsoleAction.ChoiceThree || control == ConsoleAction.SendChoice) _ = Choose(control);
+            else if (control == ConsoleAction.SendChoice) _ = Choose(control);
             else if (control == ConsoleAction.FollowUpOne || control == ConsoleAction.FollowUpTwo) _ = FollowUp(control);
             else if (control == ConsoleAction.Save) _ = Commit();
             else if (control == ConsoleAction.Back && handoffReturnSession != null) RestoreHandoffReturn();
@@ -1353,32 +1353,58 @@ namespace Boopy.Quest
             }
         }
 
+        // A lost connection or a timeout is not the Mac's own refusal: Boopy did not hear back, so the service's words for a capture
+        // do not fit a choice.
+        private static bool Unheard(ServiceException failure) => failure.Code == "connection_lost" || failure.Code == "request_timeout";
+
         private async Task Choose(ConsoleAction control)
         {
             if (client == null || session == null || console == null || busy || NeedsCaptureRecovery || !inputAllowed || !isActiveAndEnabled) return;
             var selection = console.SelectedChoice(control);
             if (selection == null) return;
-            var prior = session;
-            var submit = control == ConsoleAction.SendChoice;
-            if (submit) console.SuppressDispatchedChoice();
-            StopSpeech(); busy = true; console.SetBusy(true, !submit);
-            if (submit) { console.ShowProcessing(false); dialogue?.ShowThinking(Thinking(false)); }
+            var prior = session; var sending = false;
+            // Boopy did not hear back: before the send the person can choose again; from the send on the Mac may still answer.
+            const string unheardBefore = "Boopy didn't hear back from your Mac. Reconnect, then choose again.";
+            const string unheard = "Boopy didn't hear back from your Mac. The Mac may still finish this choice. Reconnect, then Talk to answer.";
+            StopSpeech(); busy = true; console.SetBusy(true);
+            console.ShowProcessing(false); dialogue?.ShowThinking(Thinking(false));
             using var request = new CancellationTokenSource(); captureRequest = request;
             dialogue?.SetCancelableWait(true);
             SessionView? speechView = null;
+            // Before the send nothing was answered: the card stays. The headset's own line comes back with it, and the words
+            // show over it for a moment.
+            void Offer(string words)
+            {
+                feedback?.Play(AudioCue.Failure);
+                console?.Render(prior); dialogue?.Show(DialogueStage.Response, prior.Dialogue!.Text); dialogue?.ShowNotice(words, 5f);
+            }
             try
             {
-                var returned = submit
-                    ? await client.SubmitChoiceStreamingAsync(prior.Id, selection, TurnProgressFor(request, prior.Id), request.Token)
-                    : await client.SelectChoiceAsync(prior.Id, selection, request.Token);
+                // One tap sends the option shown: the Mac records it as the selection, then answers it.
+                await client.SelectChoiceAsync(prior.Id, selection, request.Token);
+                request.Token.ThrowIfCancellationRequested();
+                // A selection overtaken by a newer request, or answered after focus left, is never sent.
+                if (!ReferenceEquals(captureRequest, request) || !inputAllowed || !isActiveAndEnabled || !ReferenceEquals(session, prior)) return;
+                // From the send on the card is gone, so it is never sent twice.
+                console.SuppressDispatchedChoice(); sending = true;
+                var returned = await client.SubmitChoiceStreamingAsync(prior.Id, selection, TurnProgressFor(request, prior.Id), request.Token);
                 request.Token.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(captureRequest, request) || !inputAllowed || !isActiveAndEnabled || !ReferenceEquals(session, prior)) return;
                 Apply(returned);
-                if (submit) speechView = returned;
+                speechView = returned;
             }
+            catch (OperationCanceledException) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior) && !sending) { Offer("Stopped waiting. You can choose again."); }
+            catch (ServiceException failure) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior) && !sending)
+            {
+                // The Mac says the choice is no longer available: offered again it would be refused the same way, so it goes, as
+                // from the send on.
+                if (failure.Code == "stale_choice") { console.SuppressDispatchedChoice(); cancelledWaitNotice = failure.Message; ReportFailure(failure.Message); }
+                else Offer(Unheard(failure) ? unheardBefore : failure.Message);
+            }
+            catch (Exception) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior) && !sending) { Offer(unheardBefore); }
             catch (OperationCanceledException) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = "Stopped waiting. The Mac may still finish this choice."; ReportFailure(cancelledWaitNotice); }
-            catch (ServiceException failure) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = failure.Message; ReportFailure(failure.Message); }
-            catch (Exception) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = "Could not check this choice. Reconnect before choosing again."; ReportFailure(cancelledWaitNotice); }
+            catch (ServiceException failure) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = Unheard(failure) ? unheard : failure.Message; ReportFailure(cancelledWaitNotice); }
+            catch (Exception) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = unheard; ReportFailure(cancelledWaitNotice); }
             catch (Exception) { /* A replaced request cannot change the current presentation. */ }
             finally { if (ReferenceEquals(captureRequest, request)) { captureRequest = null; dialogue?.SetCancelableWait(false); busy = false; console.SetBusy(false); } }
             if (speechView != null && ReferenceEquals(session, speechView) && inputAllowed && isActiveAndEnabled) _ = Speak(speechView);

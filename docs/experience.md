@@ -37,7 +37,9 @@ never spoken. The Mac still records each stage of the turn in its journal; the l
 show those stage words. An answer to a task reads "Saving on your Mac…" instead.
 
 After a first turn about a grounded subject, the headset asks the Mac for the session's task.
-A first turn that offers a choice opens no task; the choice stays on the console.
+A first turn that offers a choice opens no task. The panel shows the prompt with one option, and
+Choose sends the option shown. If it stops or fails before Boopy answers, the choice stays, unless
+the Mac says the choice is no longer available.
 The task uses the same parts: the chip on the outlined subject and Boopy's line on the console.
 The line's speaker reads "Boopy · Not sent". Only while the line asks the person something is the
 row's first tile Answer, with Talk's mic and labeled with the prompt the Mac sends, in Talk's

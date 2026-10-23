@@ -398,10 +398,8 @@ namespace Boopy.Quest
             {
                 var questionRows = reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered;
                 var choice = questionRows ? ActiveChoice() : null;
-                var rowHeights = suggestions.Select((suggestion, index) => ConfigureQuestion(index == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo, suggestion.Question)).ToArray();
+                var rowHeights = choice == null ? suggestions.Select((suggestion, index) => ConfigureQuestion(index == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo, suggestion.Question)).ToArray() : System.Array.Empty<float>();
                 var questionHeight = questionRows ? rowHeights.Sum() + SpatialTheme.Gap * rowHeights.Length : 0f;
-                var choiceHeights = choice?.Options.Select((option, index) => ConfigureQuestion(ChoiceControl(index),
-                    (choice.SelectedOptionId == option.Id ? "Selected · " : "") + option.Label)).ToArray();
                 dock.Configure("", "", "", bottomSpace: choice == null ? questionHeight + .070f : .015f);
                 if (mode == "processing") { }
                 else if (recoveryOffered)
@@ -435,24 +433,7 @@ namespace Boopy.Quest
                 else if (reviewing && readerOpen) Put(ConsoleAction.Review, 0, 0, true);
                 else if (reviewing && choice != null)
                 {
-                    conversationPanelHeight = choiceHeights!.Sum() + SpatialTheme.Gap * choiceHeights.Length + SpatialTheme.Target;
-                    header.ReserveHeight(dockedDialogue?.ConversationPanelHeight(conversationPanelHeight) ?? .160f+conversationPanelHeight);
-                    var bottom = -header.Size.y / 2f;
-                    foreach (var choiceAction in new[] { ConsoleAction.ChoiceOne, ConsoleAction.ChoiceTwo, ConsoleAction.ChoiceThree, ConsoleAction.SendChoice })
-                    {
-                        actions[choiceAction].transform.SetParent(header.transform, false);
-                        actions[choiceAction].SetInteractable(!busy && (choiceAction != ConsoleAction.SendChoice || choice.SelectedOptionId != null));
-                    }
-                    actions[ConsoleAction.SendChoice].Label(choice.SelectedOptionId == null ? "Choose one" : "Send to Boopy");
-                    Put(ConsoleAction.SendChoice, .065f, bottom + .012f + SpatialTheme.Target/2f, true);
-                    var choiceY = bottom + .012f + SpatialTheme.Target + SpatialTheme.Gap;
-                    for (var index = choice.Options.Count - 1; index >= 0; index--)
-                    {
-                        actions[ChoiceControl(index)].SetSelected(choice.SelectedOptionId == choice.Options[index].Id);
-                        Put(ChoiceControl(index), .065f, choiceY + choiceHeights[index] / 2f, true);
-                        choiceY += choiceHeights[index] + SpatialTheme.Gap;
-                    }
-                    dockedDialogue?.SetConversationContentHeight(conversationPanelHeight);
+                    // The option shown is a paragraph of the line. Choose is a tile of the row, named below.
                     dock.gameObject.SetActive(false);
                 }
                 else if (reviewing && taskActionLabel != null)
@@ -533,14 +514,30 @@ namespace Boopy.Quest
             foreach(var action in Shelved) actions[action].transform.SetParent(bar.transform,false);
             var asks = reviewing && taskActionLabel != null && !captureRecovery;
             var stop = mode=="processing" || (busy && keepChoiceVisible) || (busy && (handoffState == "preparing-local" || handoffState == "checking"));
-            if (busy || captureRecovery || mode=="listening") moreOpen = false;
+            var choiceOnLine = reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered && !controlsOnly ? ActiveChoice() : null;
+            // A notice over a line that offers a choice leaves the choice standing: nothing takes its slot until the line returns.
+            var choiceUnderNotice = choiceOnLine == null && reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered
+                && dockedDialogue?.NoticeShown == true && view?.Dialogue?.Choice?.Supported == true && dockedDialogue.LineText == view.Dialogue.Text;
+            if (dockedDialogue != null)
+            {
+                if (choiceOnLine != null) dockedDialogue.SetItems(choiceOnLine.Options.Select(option => option.Label).ToArray(), true);
+                else dockedDialogue.SetItems(System.Array.Empty<string>(), false);
+            }
+            if (choiceOnLine != null || choiceUnderNotice || busy || captureRecovery || mode=="listening") moreOpen = false;
             // Pause, the privacy stop, keeps slot 2 in every state; each state names its first and third tiles.
             var (first, third) = buttonRecording ? (ConsoleAction.FinishTalk, ConsoleAction.Cancel)
                 : stop ? (ConsoleAction.Cancel, ConsoleAction.None)
                 : recoveryOffered ? (ConsoleAction.CheckCapture, ConsoleAction.DismissCapture)
                 : busy || captureRecovery || mode=="listening" ? (ConsoleAction.None, ConsoleAction.None)
                 : moreOpen ? (ConsoleAction.Options, ConsoleAction.ShelfBack)
+                : choiceOnLine != null && (dockedDialogue?.ShownItem ?? -1) >= 0 ? (ConsoleAction.Talk, ConsoleAction.SendChoice)
+                : choiceUnderNotice ? (ConsoleAction.Talk, ConsoleAction.None)
                 : (asks ? ConsoleAction.AnswerTask : ConsoleAction.Talk, ConsoleAction.More);
+            if (third == ConsoleAction.SendChoice)
+            {
+                actions[ConsoleAction.SendChoice].transform.SetParent(bar.transform, false);
+                actions[ConsoleAction.SendChoice].Label("Choose");
+            }
             var shelf = new[] { first, ConsoleAction.PauseScene, third };
             if (recoveryOffered)
             {
@@ -559,7 +556,8 @@ namespace Boopy.Quest
             headerHit.enabled = !dialogueVisible && !recoveryOffered && !evidenceOffered && reviewing && !savePreview && !busy && view?.IntentId != null;
             // A line alone keeps the subtitle's full paging target; with rows under it the panel is exactly the line and its
             // rows, so it ends one gap above the shelf.
-            if (conversationPanelHeight <= 0f && !recoveryOffered) header.ReserveHeight(.160f);
+            if (choiceOnLine != null && dockedDialogue != null) header.ReserveHeight(dockedDialogue.PanelHeight);
+            else if (conversationPanelHeight <= 0f && !recoveryOffered) header.ReserveHeight(.160f);
             if (companion != null)
             {
                 // Beside the line: level with its first words when rows sit under it, otherwise with the middle of a line
@@ -627,9 +625,9 @@ namespace Boopy.Quest
                 && shownSuggestionIds.TryGetValue(action, out var id) && suggestions[index].Id == id
                 && actions[action].AccessibleLabel == suggestions[index].Question ? suggestions[index] : null;
         }
-        private static ConsoleAction ChoiceControl(int index) => index == 0 ? ConsoleAction.ChoiceOne : index == 1 ? ConsoleAction.ChoiceTwo : ConsoleAction.ChoiceThree;
+        // A choice shows only on Boopy's line, its options paged under its prompt.
         private ChoiceCard? ActiveChoice() => !taskShown && view?.Dialogue?.Choice is ChoiceCard choice && choice.Supported
-            && (dockedDialogue == null || dialogueVisible && dockedDialogue.FullText == view.Dialogue.Text)
+            && dockedDialogue != null && dialogueVisible && dockedDialogue.FullText == view.Dialogue.Text
             && view.Dialogue.Text.Trim() == choice.Prompt.Trim()
             && view.Dialogue.Speaker == "boopy" && view.Dialogue.UtteranceId == view.Utterances.LastOrDefault()?.Id
             && view.Committed == null && !(view.Id == suppressedCardSession && choice.Id == suppressedCardId) && mode == "review" ? choice : null;
@@ -637,16 +635,14 @@ namespace Boopy.Quest
         {
             suppressedCardSession = view?.Id; suppressedCardId = view?.Dialogue?.Choice?.Id; Compose();
         }
+        /// <summary>The option the line shows, which Choose sends; null when no choice is offered.</summary>
         public ChoiceSelection? SelectedChoice(ConsoleAction control)
         {
             var choice = ActiveChoice();
-            if (choice == null || busy || controlsOnly || !actions.TryGetValue(control, out var button) || !button.gameObject.activeInHierarchy) return null;
-            var index = control == ConsoleAction.ChoiceOne ? 0 : control == ConsoleAction.ChoiceTwo ? 1 : control == ConsoleAction.ChoiceThree ? 2 : -1;
-            var option = control == ConsoleAction.SendChoice ? choice.Options.FirstOrDefault(o => o.Id == choice.SelectedOptionId)
-                : index >= 0 && index < choice.Options.Count ? choice.Options[index] : null;
-            if (control == ConsoleAction.SendChoice && choice.SelectedOptionId == null) return null;
-            if (option == null || control != ConsoleAction.SendChoice && button.AccessibleLabel != (choice.SelectedOptionId == option.Id ? "Selected · " : "") + option.Label) return null;
-            return new ChoiceSelection { UtteranceId = view!.Dialogue!.UtteranceId, ResponseAt = view.Dialogue.At, CardId = choice.Id, OptionId = option.Id };
+            if (choice == null || busy || controlsOnly || control != ConsoleAction.SendChoice || !actions[control].gameObject.activeInHierarchy || dockedDialogue == null) return null;
+            var index = dockedDialogue.ShownItem;
+            if (index < 0 || index >= choice.Options.Count || index >= dockedDialogue.Items.Count || dockedDialogue.Items[index] != choice.Options[index].Label) return null;
+            return new ChoiceSelection { UtteranceId = view!.Dialogue!.UtteranceId, ResponseAt = view.Dialogue.At, CardId = choice.Id, OptionId = choice.Options[index].Id };
         }
 
         private float ConfigureQuestion(ConsoleAction action, string question)
@@ -831,6 +827,8 @@ namespace Boopy.Quest
         public bool HitNext(Ray ray, out Vector3 point) => Hit(ConsoleAction.NextItem, ray, out point);
         public bool HitConfirm(Ray ray, out Vector3 point) => Hit(ConsoleAction.Confirm, ray, out point);
         private bool Hit(ConsoleAction action, Ray ray, out Vector3 point) { point = default; return !busy && actions[action].Hit(ray, out point); }
+        /// <summary>The docked line shows another page: the row follows the item it shows.</summary>
+        public void LinePaged() => Compose();
         public bool HitEvidence(Ray ray, out Vector3 point) => BodyHit(evidenceHit, ray, out point);
         public string? HitTarget(Ray ray, out Vector3 point)
         { if (BodyHit(headerHit, ray, out point)) return view?.IntentId; return BodyHit(evidenceHit, ray, out point) ? SelectedItemId : null; }
