@@ -180,6 +180,10 @@ export class TaskStore {
       return { status: 'rejected', code: 'cancelled', task: present(state) };
     if (state.revision !== input.expectedRevision)
       return { status: 'rejected', code: 'stale_revision', task: present(state) };
+    // Only a task whose current parts ask for a spoken answer takes one. Any change to the parts
+    // moves the revision, so an answer checked here and recorded after transcription stays safe.
+    if (!state.providerComponents.some((component) => component.type === 'voice_reply'))
+      return { status: 'rejected', code: 'answer_not_offered', task: present(state) };
     return undefined;
   }
 

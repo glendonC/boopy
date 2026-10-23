@@ -336,6 +336,7 @@ export type TaskOutcome =
         | 'duplicate_conflict'
         | 'stale_revision'
         | 'cancelled'
-        | 'source_mismatch';
+        | 'source_mismatch'
+        | 'answer_not_offered';
       readonly task: TaskView | null;
     };

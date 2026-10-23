@@ -61,6 +61,9 @@ function followUp(said: string) {
 
 type Change = (output: ModelOutput) => ModelOutput;
 
+/** Boopy's line asks the person something, so the task offers an answer. */
+const ASKS: Change = (output) => ({ ...output, response: 'Is this your desert photo?' });
+
 /** A Boopy on the recorded fixture interpretation, a fake recognizer, and no way off the Mac. */
 function setup(
   change: Change = (output) => output,
@@ -633,7 +636,7 @@ describe('open the session task', () => {
 
 describe('answer a task aloud', () => {
   it('records the transcript as an uncertain practice attempt that stays local and not sent', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session, task } = await ctx.opened();
       const before = ctx.journal.all().length;
@@ -680,7 +683,7 @@ describe('answer a task aloud', () => {
   });
 
   it('an empty transcript has no words and journals nothing', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session, task } = await ctx.opened();
       const before = ctx.journal.all().length;
@@ -698,7 +701,7 @@ describe('answer a task aloud', () => {
   });
 
   it('an answer that is not one line of at most 400 characters is refused and journals nothing', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session, task } = await ctx.opened();
       const before = ctx.journal.all().length;
@@ -717,7 +720,7 @@ describe('answer a task aloud', () => {
   });
 
   it('without a recognizer on this Mac an answer is refused and journals nothing', async () => {
-    const ctx = setup(undefined, { recognizer: false });
+    const ctx = setup(ASKS, { recognizer: false });
     try {
       const { session, task } = await ctx.opened();
       const before = ctx.journal.all().length;
@@ -733,7 +736,7 @@ describe('answer a task aloud', () => {
   });
 
   it('a stale revision is refused before transcribing, and the task and journal do not change', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session, task } = await ctx.opened();
       const before = ctx.journal.all().length;
@@ -754,7 +757,7 @@ describe('answer a task aloud', () => {
   });
 
   it('a retry with the same event id returns the first outcome without transcribing again', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session } = await ctx.opened();
       const first = await ctx.post(ANSWERS, answer(session.id, 1));
@@ -782,7 +785,7 @@ describe('answer a task aloud', () => {
   });
 
   it('a reused event id with other audio is a conflict, before transcribing', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session } = await ctx.opened();
       const first = await ctx.post(ANSWERS, answer(session.id, 1));
@@ -799,7 +802,7 @@ describe('answer a task aloud', () => {
   });
 
   it('an event id that another journal event holds is a conflict, before transcribing', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session, task } = await ctx.opened();
       const taken = boopyEventId(ctx.journal);
@@ -826,7 +829,7 @@ describe('answer a task aloud', () => {
   it('a retry that arrives while the first is transcribing waits for it', {
     timeout: 5000,
   }, async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session } = await ctx.opened();
       let release = () => {};
@@ -861,7 +864,7 @@ describe('answer a task aloud', () => {
   it('an action that reuses the event id of an answer still being transcribed is a conflict', {
     timeout: 5000,
   }, async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session } = await ctx.opened();
       let release = () => {};
@@ -892,7 +895,7 @@ describe('answer a task aloud', () => {
   });
 
   it('refuses an unknown task or another session before transcribing', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session } = await ctx.opened();
       const before = ctx.journal.all().length;
@@ -912,7 +915,7 @@ describe('answer a task aloud', () => {
   });
 
   it('a recognizer failure journals nothing', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const { session, task } = await ctx.opened();
       const before = ctx.journal.all().length;
@@ -927,6 +930,47 @@ describe('answer a task aloud', () => {
       assert.deepEqual((await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json(), task);
     } finally {
       await ctx.close();
+    }
+  });
+
+  it('refuses an answer before transcribing when the task asks for none', async () => {
+    // The fixture's own line is a statement, so its task offers no answer.
+    const statement = setup();
+    try {
+      const { session, task } = await statement.opened();
+      assert.equal(
+        task.components.some((part: { type: string }) => part.type === 'voice_reply'),
+        false,
+      );
+      const before = statement.journal.all().length;
+      const refused = await statement.post(ANSWERS, answer(session.id, 1));
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal(refused.json().error.code, 'answer_not_offered');
+      assert.equal(statement.transcriptions(), 0);
+      assert.equal(statement.journal.all().length, before);
+      assert.deepEqual((await statement.get(`/v1/tasks/${OPEN.taskId}`)).json(), task);
+    } finally {
+      await statement.close();
+    }
+    // Wrong item clears the parts, so the answer the line offered is gone too.
+    const asking = setup(ASKS);
+    try {
+      const { session } = await asking.opened();
+      const wrong = await asking.post(ACTIONS, {
+        eventId: 'evt_wrong_subject',
+        sessionId: session.id,
+        expectedRevision: 1,
+        action: { type: 'wrong_subject' },
+      });
+      assert.equal(wrong.statusCode, 200, wrong.body);
+      const before = asking.journal.all().length;
+      const refused = await asking.post(ANSWERS, answer(session.id, 2));
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal(refused.json().error.code, 'answer_not_offered');
+      assert.equal(asking.transcriptions(), 0);
+      assert.equal(asking.journal.all().length, before);
+    } finally {
+      await asking.close();
     }
   });
 });
@@ -1251,7 +1295,7 @@ describe('task routes on the headset boundary', () => {
   });
 
   it('the open and action routes take at most 16 KiB, and answers keep the headset limit', async () => {
-    const ctx = setup();
+    const ctx = setup(ASKS);
     try {
       const session = await ctx.start();
       const before = ctx.journal.all().length;

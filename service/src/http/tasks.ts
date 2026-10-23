@@ -51,6 +51,7 @@ const REFUSALS = {
   stale_revision: [409, 'This task has changed. Read it again before acting.'],
   cancelled: [409, 'This task is closed.'],
   source_mismatch: [409, 'This result names another source.'],
+  answer_not_offered: [409, 'This task does not ask for an answer.'],
 } as const;
 
 const UNKNOWN: TaskOutcome = { status: 'rejected', code: 'unknown_task', task: null };

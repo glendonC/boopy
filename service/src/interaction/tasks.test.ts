@@ -866,4 +866,64 @@ describe('a task opened together with its first result', () => {
     );
     assert.equal(journal.all().length, count);
   });
+
+  it('refuses an answer when the task asks for none, appending nothing', () => {
+    const journal = Journal.open(':memory:');
+    const tasks = new TaskStore(journal);
+    const answer = {
+      eventId: 'evt_spoken',
+      sessionId: SESSION,
+      taskId: 'tsk_capture',
+      expectedRevision: 1,
+      audioSha256: 'd'.repeat(64),
+    };
+    // A statement: the result shows a line and asks nothing.
+    const statement = tasks.openWithResult(
+      opening,
+      {
+        ...first,
+        components: [
+          { type: 'subject', sourceId: 'src_sahara_still', maskId: null },
+          { type: 'dialogue', text: 'A desert photo.', evidenceIds: ['ev_photo'] },
+        ],
+      },
+      AT,
+    );
+    assert.equal(statement.status, 'accepted');
+    const before = journal.all().length;
+    assert.equal(kind(tasks.checkAnswer(answer)), 'answer_not_offered');
+    // A stale answer still learns that the task changed.
+    assert.equal(kind(tasks.checkAnswer({ ...answer, expectedRevision: 0 })), 'stale_revision');
+    // A task still waiting for its first result asks for nothing either.
+    tasks.open({ ...opening, eventId: 'evt_open_bare', taskId: 'tsk_bare' }, AT);
+    assert.equal(
+      kind(tasks.checkAnswer({ ...answer, taskId: 'tsk_bare', expectedRevision: 0 })),
+      'answer_not_offered',
+    );
+    const asking = tasks.openWithResult(
+      { ...opening, eventId: 'evt_open_asking', taskId: 'tsk_asking' },
+      { ...first, resultId: 'res_asking', taskId: 'tsk_asking' },
+      AT,
+    );
+    assert.equal(asking.status, 'accepted');
+    const asked = { ...answer, taskId: 'tsk_asking' };
+    assert.equal(tasks.checkAnswer(asked), undefined);
+    const wrong = tasks.act(
+      {
+        eventId: 'evt_wrong',
+        sessionId: SESSION,
+        taskId: 'tsk_asking',
+        expectedRevision: 1,
+        action: { type: 'wrong_subject' },
+      },
+      AT,
+    );
+    assert.equal(wrong.status, 'accepted');
+    const after = journal.all().length;
+    // Wrong item clears the parts, so the answer it offered is gone too.
+    assert.equal(kind(tasks.checkAnswer({ ...asked, expectedRevision: 2 })), 'answer_not_offered');
+    assert.equal(journal.all().length, after);
+    // The bare opening, the asking task's opening and result, and the correction; no answer check.
+    assert.equal(after, before + 4);
+  });
 });

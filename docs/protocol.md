@@ -118,10 +118,13 @@ one. The journal keeps the SHA-256 of the audio and the recognizer's name with t
 audio itself is not stored. The attempt in the task view has only its event id, text,
 `recognitionUncertain`, and kind.
 
-The route checks the event id, the task, the session, and the revision before the audio is
-transcribed. A cancelled task gets 409 `cancelled`. A revision other than the task's gets 409
-`stale_revision`. Neither refusal transcribes anything or appends to the journal. An event id
-that another journal event already holds gets 409 `duplicate_conflict`.
+The route checks the event id, the task, the session, the revision, and whether the task asks
+for an answer before the audio is transcribed. A cancelled task gets 409 `cancelled`. A
+revision other than the task's gets 409 `stale_revision`. A task whose current parts hold no
+voice reply gets 409 `answer_not_offered`, so a line that asks nothing, a task still waiting
+for its first result, or a "Wrong item" view takes no answer. None of these refusals transcribes
+anything or appends to the journal. An event id that another journal event already holds gets
+409 `duplicate_conflict`.
 
 A retry with the same event id, task, session, revision, and audio returns the recorded
 outcome without transcribing again. The same event id with other audio gets 409
@@ -142,10 +145,10 @@ event id that an answer is still using gets 409 `duplicate_conflict`.
 
 Both routes answer 200 with the task view. An unknown task gets 404 `unknown_task`. A refusal
 from the store gets 409 with its code: `stale_revision`, `cancelled`, `session_mismatch`, or
-`duplicate_conflict`. A body with a field the route does not know gets 400, so no request can
-set delivery or continuity. The open and action routes take a body of at most 16 KiB. An
-answer has the headset API's 8 MiB limit. A 200 means the Mac recorded the change. It does not
-mean anything was delivered.
+`duplicate_conflict`, and on the answers route also `answer_not_offered`. A body with a field
+the route does not know gets 400, so no request can set delivery or continuity. The open and
+action routes take a body of at most 16 KiB. An answer has the headset API's 8 MiB limit. A 200
+means the Mac recorded the change. It does not mean anything was delivered.
 
 `GET /v1/tasks/{taskId}` returns one task view, or `null`.
 
