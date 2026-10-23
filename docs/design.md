@@ -82,7 +82,9 @@ busy. More swaps the same row in place to Context, Pause and Back, and Settings 
 Context sheet. The row never moves: the panel above it holds only Boopy's line, ends one gap
 (0.014 m) over the row in every state and grows upward with its line, and the speaker label sits
 right above its line. Paging the line is a pinch on its panel, never on the row. The panel's
-question and choice rows stay left-aligned, as content.
+question and choice rows stay left-aligned, as content. Sheets and cards sit on the line's
+column: their dark panel spans the text column with the line's 12 mm side margin, and their
+words start on the text column.
 
 A capture left pending by a restart is a dialog on the line's dark panel: "Earlier capture" and
 one sentence, with no speaker line; Check and New sit on either side of Pause in the row under it.

@@ -24,7 +24,8 @@ One grounded subject and its label can sit in the room. The spoken line, choices
 are on a console under the companion. Live proposed names are visible and not tappable.
 Under the console, one row holds at most three tiles of one style, Pause always in the middle:
 Talk, Pause and More, which shows Context, Pause and Back in its place, Settings on the Context
-sheet. While recording it holds Finish, Pause and Cancel, and while Boopy works, Stop and Pause.
+sheet. The Context sheet and the reader sit on the line's column, the same text width as the
+line. While recording it holds Finish, Pause and Cancel, and while Boopy works, Stop and Pause.
 After a restart before Boopy heard back about a capture, the console says "Earlier capture" with
 one sentence, and the row holds Check, Pause and New.
 

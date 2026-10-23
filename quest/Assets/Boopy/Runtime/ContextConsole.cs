@@ -90,6 +90,8 @@ namespace Boopy.Quest
             console.card = SpatialSurface.Create(go.transform, "Evidence instrument");
             console.dock = SpatialSurface.Create(go.transform, "Save dock");
             console.options = SpatialSurface.Create(go.transform, "Comfort options");
+            // Sheets and cards take the line's column, as Boopy's line and its words do.
+            console.card.SetColumn(true); console.options.SetColumn(true);
             console.dock.SetChrome(false);
             console.bar = SpatialSurface.Create(go.transform, "Control bar");
             // The shelf's surface is exactly one control tall, so the panel above it sits one gap above the controls.
@@ -380,7 +382,7 @@ namespace Boopy.Quest
                     pageCount.transform.localPosition = new Vector3(-.006f, bottom + .102f, -.005f);
                 }
                 evidenceHit.center = new Vector3(0, .062f, -.004f);
-                evidenceHit.size = new Vector3(.410f, Mathf.Max(.060f, card.Size.y - .150f), .012f);
+                evidenceHit.size = new Vector3(card.Size.x, Mathf.Max(.060f, card.Size.y - .150f), .012f);
                 evidenceHit.enabled = !busy;
             }
             if (savePreview || handoffOpen)
@@ -578,7 +580,7 @@ namespace Boopy.Quest
             height = modules.Sum(surface => surface.Size.y) + SpatialTheme.Gap * Mathf.Max(0, modules.Length - 1);
             // The bar stays put. Requested content unfolds upward from it.
             var y = -bar.Size.y / 2f;
-            foreach (var surface in modules) { surface.transform.localPosition = new Vector3(0, y + surface.Size.y / 2f, 0); y += surface.Size.y + SpatialTheme.Gap; }
+            foreach (var surface in modules) { surface.transform.localPosition = new Vector3(surface.CenterX, y + surface.Size.y / 2f, 0); y += surface.Size.y + SpatialTheme.Gap; }
             if(controlsOnly) { header.gameObject.SetActive(false); card.gameObject.SetActive(false); dock.gameObject.SetActive(false); headerHit.enabled=false; }
             transform.localScale = Vector3.one * ComfortScale;
             RefreshVisuals(0f);
@@ -802,7 +804,7 @@ namespace Boopy.Quest
             while (start < words.Length)
             {
                 var low = 1; var high = words.Length - start;
-                while (low < high) { var mid = (low + high + 1) / 2; if (SpatialTheme.Height(probe, words.Substring(start, mid), .410f) <= .110f) low = mid; else high = mid - 1; }
+                while (low < high) { var mid = (low + high + 1) / 2; if (SpatialTheme.Height(probe, words.Substring(start, mid), SpatialTheme.ShelfWidth) <= .110f) low = mid; else high = mid - 1; }
                 var length = low; if (start + length < words.Length && length > 1 && char.IsHighSurrogate(words[start + length - 1])) length--;
                 if (start + length < words.Length)
                 {

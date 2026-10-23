@@ -20,9 +20,12 @@ namespace Boopy.Quest
         private bool textVisible = true;
         private bool companionInset;
         private bool trailingInset;
+        private bool column;
         private bool wasShimmering;
         private Color? identityAccent;
         public Vector2 Size { get; private set; }
+        /// <summary>Where the surface's middle sits across the console: on the line's column, or the console's middle.</summary>
+        public float CenterX => column ? SpatialTheme.ShelfLeft + SpatialTheme.ShelfWidth / 2f : 0f;
         public float Opacity => amount;
         public string BodyText => body?.text ?? "";
         public string StateText => eyebrow?.text ?? "";
@@ -58,17 +61,21 @@ namespace Boopy.Quest
         public void Configure(string state, string heading, string words, float maxBodyHeight = 0.078f, float bottomSpace = 0f, bool intent = false, float maxTitleHeight = .072f)
         {
             if (eyebrow == null || title == null || body == null) return;
-            var width = SpatialTheme.Width - SpatialTheme.Padding * 2f - (companionInset ? .13f : 0f) - (trailingInset ? .07f : 0f);
+            var measure = SpatialTheme.Width - SpatialTheme.Padding * 2f - (companionInset ? .13f : 0f) - (trailingInset ? .07f : 0f);
+            // On the line's column the words start on the text column and keep every word the full measure would show: the
+            // panel grows to hold them, and nothing pads it under its last words.
+            var width = column ? SpatialTheme.ShelfWidth : measure;
             eyebrow.text = state;
-            title.text = SpatialTheme.Summary(title, heading, width, maxTitleHeight);
+            title.text = SpatialTheme.Summary(title, heading, measure, maxTitleHeight);
             title.color = intent ? SpatialTheme.Sand : SpatialTheme.Ivory;
-            body.text = SpatialTheme.Summary(body, words, width, maxBodyHeight);
+            body.text = SpatialTheme.Summary(body, words, measure, maxBodyHeight);
             var stateHeight = string.IsNullOrEmpty(state) ? 0f : Mathf.Max(0.017f, SpatialTheme.Height(eyebrow, state, width));
             var titleHeight = string.IsNullOrEmpty(heading) ? 0f : Mathf.Max(0.024f, SpatialTheme.Height(title, title.text, width));
             var bodyHeight = string.IsNullOrEmpty(words) ? 0f : Mathf.Max(0.020f, SpatialTheme.Height(body, body.text, width));
             var h = stateHeight + titleHeight + bodyHeight + SpatialTheme.Padding * 2f
-                + (stateHeight > 0f ? 0.008f : 0f) + (bodyHeight > 0f ? 0.009f : 0f) + bottomSpace;
-            Size = new Vector2(SpatialTheme.Width, h);
+                + (stateHeight > 0f ? 0.008f : 0f) + (bodyHeight > 0f && (titleHeight > 0f || !column) ? 0.009f : 0f) + bottomSpace;
+            // The column's panel spans the text column with the line's 12 mm side margin.
+            Size = new Vector2(column ? SpatialTheme.ShelfWidth + .024f : SpatialTheme.Width, h);
             var top = h / 2f - SpatialTheme.Padding;
             Arrange(eyebrow, width, stateHeight, ref top, 0.008f);
             Arrange(title, width, titleHeight, ref top, 0.009f);
@@ -89,6 +96,8 @@ namespace Boopy.Quest
 
         public void SetIdentityAccent(Color? color) { identityAccent = color; Refresh(0f); }
         public void SetTrailingInset(bool on) => trailingInset = on;
+        /// <summary>A sheet or card on the line's column: its dark panel across the text column, as the line's own.</summary>
+        public void SetColumn(bool on) => column = on;
         public void SetChrome(bool visible) { chrome = visible; Refresh(0f); }
         public void SetCompanionInset(bool on) => companionInset = on;
         public void SetTextVisible(bool visible)
