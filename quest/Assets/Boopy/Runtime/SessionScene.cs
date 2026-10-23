@@ -344,13 +344,16 @@ namespace Boopy.Quest
                 var observation = item.Grounding.ObservationId;
                 if (observation == null || !snapshots.TryGetValue(observation, out var snapshot)) continue;
                 if (!overlays.TryGetValue(item.Id, out var overlay))
-                { overlay = GroundedOverlay.Create(transform); overlay.SetReducedMotion(reducedMotion); overlays[item.Id] = overlay; }
+                { overlay = GroundedOverlay.Create(transform, attended: true); overlay.SetReducedMotion(reducedMotion); overlays[item.Id] = overlay; }
                 var positions = room.PlaceBoundary(item.Grounding, snapshot, out var capturedDepth);
-                if (accents.TryGet(item.Id, out var slot)) overlay.SetIdentityAccent(slot);
                 overlay.SetFocus(item.Id == focusedItemId, focusedItemId != null);
-                overlay.Show(item.Grounding, positions, capturedDepth, item.Id == referentId);
+                var appeared = overlay.Show(item.Grounding, positions, capturedDepth, item.Id == referentId, head != null ? head.position : (Vector3?)null);
+                if (head != null) overlay.SetViewer(head.position);
+                // An outline that first appears gets one sweep, from Boopy's side.
+                if (appeared) overlay.Sweep(console != null ? console.transform.position : head != null ? head.position : transform.position);
             }
         }
+
 
         private void EnsureLayoutFrame()
         {

@@ -22,6 +22,8 @@ namespace Boopy.Quest
         public static readonly Color Cyan = new Color(.43f,.89f,.94f,1f);
         public static readonly Color ActionRest = new Color(.43f,.89f,.94f,.55f);
         public static readonly Color Amber = new Color(.914f,.773f,.541f,1f);
+        /// <summary>docs/design.md Ember, #E5B98C: the attended subject's edge and Boopy's working light.</summary>
+        public static readonly Color Ember = new Color(229f / 255f, 185f / 255f, 140f / 255f, 1f);
         public const float RevealSeconds = .320f;
         public const float KeepoutMargin = .04f;
         public const float Width = 0.56f, Padding = 0.015f, Gap = 0.014f;

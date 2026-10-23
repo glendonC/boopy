@@ -128,7 +128,8 @@ namespace Boopy.Quest
             gloss.transform.localPosition = new Vector3(0f, size.y / 2f - Padding - labelHeight - glossHeight / 2f, -0.001f);
             state.transform.localPosition = new Vector3(0f, -size.y / 2f + Padding + stateHeight / 2f, -0.001f);
             plate.transform.localScale = new Vector3(size.x, size.y, 1f);
-            border.sharedMaterial = style.Tone == ChipTone.Proposed || style.Tone == ChipTone.Question ? Visuals.Dashed : Visuals.Solid;
+            // A solid hairline in the tone's color on every chip; proposed shows in the words and the tone, not in dashes.
+            border.sharedMaterial = Visuals.Solid;
             border.widthMultiplier = style.Emphasis ? 0.002f : 0.0012f;
             var w = size.x / 2f;
             var h = size.y / 2f;
@@ -158,7 +159,7 @@ namespace Boopy.Quest
             caption.rectTransform.sizeDelta = new Vector2(width, height);
             caption.transform.localPosition = new Vector3(0f, 0f, -.001f);
             plate.transform.localScale = new Vector3(size.x, size.y, 1f);
-            border.sharedMaterial = Visuals.Dashed; border.widthMultiplier = .0012f;
+            border.sharedMaterial = Visuals.Solid; border.widthMultiplier = .0012f;
             var w = size.x / 2f; var h = size.y / 2f; const float cut = .005f;
             var corners = new[] { new Vector2(-w + cut, -h), new Vector2(w - cut, -h),
                 new Vector2(w, -h + cut), new Vector2(w, h - cut), new Vector2(w - cut, h),
