@@ -21,20 +21,6 @@ namespace Boopy.Quest
         private ContextConsole? host;
         private Transform? fallbackParent;
         private bool fallback, cancelableWait;
-        private float conversationContentHeight;
-        public float ConversationAnswerBottom { get; private set; } = -.064f;
-        public float ConversationPanelHeight(float rowsHeight) => .080f - ConversationAnswerBottom + .016f + rowsHeight + .012f;
-        public void SetConversationContentHeight(float height)
-        {
-            conversationContentHeight = Mathf.Max(0f, height);
-            if(pageHit != null)
-            {
-                var lower=conversationContentHeight > 0f ? ConversationAnswerBottom-.004f : -Height/2f;
-                pageHit.center=new Vector3(0,(Height/2f+lower)/2f,0);
-                pageHit.size=new Vector3(CaptionWidth,Height/2f-lower,.012f);
-            }
-            if(dock != null && !fallback) transform.localPosition = new Vector3(.065f, conversationContentHeight > 0f ? dock.Size.y / 2f - .080f : 0f, -.004f);
-        }
         private SpatialAction? fallbackStop;
         private bool noticeActive, restoreVisible, voicePreparing;
         // A task line's speaker and delivery state, in place of the stage words. Null for every other line.
@@ -129,11 +115,12 @@ namespace Boopy.Quest
             if (value) { if (!PlaceFallback()) { transform.position = Target(); Face(); } velocity = Vector3.zero; }
             else
             {
-                transform.localPosition = new Vector3(.065f - (Width - CaptionWidth) / 2f, conversationContentHeight > 0f ? dock.Size.y / 2f - .080f : 0f, -.004f);
+                transform.localPosition = new Vector3(.065f - (Width - CaptionWidth) / 2f, 0f, -.004f);
                 transform.localRotation = Quaternion.identity;
             }
             if (speaker != null) speaker.alpha = 1f;
             if (caption != null) caption.alpha = 1f;
+            if (shownItem != null) shownItem.alpha = 1f;
             RefreshFallbackAction();
         }
 
@@ -175,7 +162,6 @@ namespace Boopy.Quest
             // A new line's items are its own: the console names them again for this line.
             items.Clear(); itemsUnderLine = false; itemSpeaker = null;
             Paginate();
-            MeasureAnswerPages();
             if (dock == null && !gameObject.activeSelf) { transform.position = Target(); velocity = Vector3.zero; }
             host?.SetDialogueVisible(true);
             gameObject.SetActive(true); RefreshFallbackAction(); Face(); RefreshVisuals(0f);
@@ -210,10 +196,10 @@ namespace Boopy.Quest
             var savedPage = previousPage;
             Show(previousStage, previousText);
             taskSpeaker = previousTaskSpeaker; thinking = previousThinking; stageStartedAt = previousStartedAt;
-            // The console names the line's items again, which builds the pages, then the page that was showing returns.
-            host?.LinePaged();
+            // The console rebuilds the line's pages, then the page that was covered comes back.
             page = Mathf.Clamp(savedPage, 0, Mathf.Max(0, pages.Count - 1));
             DrawPage();
+            host?.LinePaged();
         }
         /// <summary>Only an actual cancellable local wait may offer this fallback action.</summary>
         public void SetCancelableWait(bool value) { cancelableWait = value; RefreshFallbackAction(); }
@@ -243,10 +229,8 @@ namespace Boopy.Quest
         {
             if (offered.Count == 0 && items.Count == 0) return;
             if (underLine == itemsUnderLine && speaker == itemSpeaker && offered.SequenceEqual(items)) return;
-            var kept = page;
             items.Clear(); items.AddRange(offered); itemsUnderLine = underLine && offered.Count > 0; itemSpeaker = speaker;
             Paginate();
-            if (kept > 0 && kept < pages.Count) { page = kept; DrawPage(); }
         }
 
         // The line's pages: its words in pieces that fit the caption, then each item's alone, every source character kept.
@@ -258,7 +242,7 @@ namespace Boopy.Quest
             pages.Clear(); pageItems.Clear(); pageHeights.Clear(); page = 0;
             if (caption == null) return;
             itemsUnder = itemsUnderLine;
-            var tallest = itemsUnder && items.Count > 0 ? Mathf.Max(CaptionHeight, items.Max(Under)) : CaptionHeight;
+            var tallest = itemsUnder ? Mathf.Max(CaptionHeight, items.Max(Under)) : CaptionHeight;
             if (!itemsUnder) Pieces(FullText, -1, CaptionHeight);
             for (var item = 0; item < items.Count; item++)
                 if (!itemsUnder) Pieces(items[item], item, CaptionHeight + ItemRoom);
@@ -329,18 +313,6 @@ namespace Boopy.Quest
         private float Extra => page < pageHeights.Count ? pageHeights[page] - CaptionHeight : 0f;
         /// <summary>The panel's full height for the page shown: the line's, and a choice page's extra room.</summary>
         public float PanelHeight => Height + Extra;
-        private void MeasureAnswerPages()
-        {
-            if(caption==null)return;
-            var saved=caption.text;var lower=float.PositiveInfinity;
-            foreach(var words in pages)
-            {
-                caption.text=words;caption.ForceMeshUpdate(true,true);
-                if(caption.textBounds.size.y>0)lower=Mathf.Min(lower,caption.textBounds.min.y+caption.transform.localPosition.y);
-            }
-            caption.text=saved;caption.ForceMeshUpdate(true,true);
-            ConversationAnswerBottom=float.IsPositiveInfinity(lower)?-.040f:lower;
-        }
         private bool VoicePreparationStage => Stage == DialogueStage.Response || Stage == DialogueStage.Clarification
             || Stage == DialogueStage.FreshView || Stage == DialogueStage.LocalSave;
         public void SetVoicePreparing(bool preparing)
@@ -434,29 +406,30 @@ namespace Boopy.Quest
         }
 
         /// <summary>The panel's height for this line alone: its ink with the backing's margins.</summary>
-        public float VisibleHeight => Ink(out var bounds) ? Mathf.Min(Height/2f,bounds.max.y+.008f)-Mathf.Max(-Height/2f,bounds.min.y-.008f) : 0f;
+        public float VisibleHeight => Ink(out var bounds) ? Mathf.Min(Height/2f,bounds.max.y+.008f)-Mathf.Max(-Height/2f-Extra,bounds.min.y-.008f) : 0f;
 
         private void RefreshBacking(float opacity)
         {
             if(captionBacking==null || backingRenderer==null || backingTint==null)return;
             var found=Ink(out var bounds);
-            backingRenderer.sortingOrder=conversationContentHeight>0f && !fallback ? 0 : 2;
+            backingRenderer.sortingOrder=2;
             backingRenderer.enabled=found;
             if(!found)return;
-            var left=conversationContentHeight > 0f && !fallback ? -Width/2f-.012f : Mathf.Max(-CaptionWidth/2f-.012f,bounds.min.x-.012f);
-            var right=conversationContentHeight > 0f && !fallback ? Width/2f+.012f : Mathf.Min(CaptionWidth/2f+.012f,bounds.max.x+.012f);
-            var bottom=conversationContentHeight > 0f && !fallback ? ConversationAnswerBottom-.016f-conversationContentHeight-.012f : Mathf.Max(-Height/2f - Extra,bounds.min.y-.008f);
+            var left=Mathf.Max(-CaptionWidth/2f-.012f,bounds.min.x-.012f);
+            var right=Mathf.Min(CaptionWidth/2f+.012f,bounds.max.x+.012f);
+            var bottom=Mathf.Max(-Height/2f-Extra,bounds.min.y-.008f);
             var top=Mathf.Min(Height/2f,bounds.max.y+.008f);
-            captionBacking.localPosition=new Vector3((left+right)/2f,(bottom+top)/2f,conversationContentHeight > 0f && !fallback ? .006f : .002f);
+            captionBacking.localPosition=new Vector3((left+right)/2f,(bottom+top)/2f,.002f);
             captionBacking.localScale=new Vector3(Mathf.Max(.01f,right-left),Mathf.Max(.01f,top-bottom),1f);
-            // Docked with nothing under it, the line's panel sits on the console panel's bottom edge, one gap above the
-            // shelf, and grows upward with the line; the shelf never moves.
-            if(dock!=null && !fallback && conversationContentHeight<=0f)
+            // Docked, the line's panel sits on the console panel's bottom edge, one gap above the row, and grows upward with
+            // the line; the row never moves.
+            if(dock!=null && !fallback)
             {
                 transform.localPosition=new Vector3(transform.localPosition.x,-dock.Size.y/2f-bottom,transform.localPosition.z);
                 // Paging is a pinch on the panel itself, never on the row of tiles under it.
                 if(pageHit!=null){pageHit.center=new Vector3(0,(top+bottom)/2f,0);pageHit.size=new Vector3(CaptionWidth,top-bottom,.012f);}
             }
+            else if(pageHit!=null){pageHit.center=Vector3.zero;pageHit.size=new Vector3(CaptionWidth,Height,.012f);}
             var panel=SpatialTheme.Panel;panel.a*=opacity;backingTint.SetColor("_Color",panel);backingRenderer.SetPropertyBlock(backingTint);
         }
         private void OnDestroy()

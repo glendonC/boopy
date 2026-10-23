@@ -29,7 +29,7 @@ namespace Boopy.Quest.Editor
                         foreach(var primary in new[]{false,true})
                         {
                             var words=primary?"Talk":state.StartsWith("Selected")?"Selected · A visible option":"A visible option";
-                            var action=SpatialAction.Create(layout,primary?ConsoleAction.Talk:ConsoleAction.ChoiceOne,words,primary ? .14f : .36f);action.transform.localPosition=new Vector3(primary ? .46f : .12f,rowY,0);
+                            var action=SpatialAction.Create(layout,primary?ConsoleAction.Talk:ConsoleAction.FollowUpOne,words,primary ? .14f : .36f);action.transform.localPosition=new Vector3(primary ? .46f : .12f,rowY,0);
                             var box=action.GetComponent<BoxCollider>();var size=box.size;var center=box.center;var position=action.transform.localPosition;
                             var selected=state.StartsWith("Selected");action.SetSelected(selected);
                             action.Focus(state.Contains("Hover")||state.Contains("hover")||state=="Pressed");action.Press(state=="Pressed");action.Refresh(.3f,1f,reduced);
@@ -41,7 +41,8 @@ namespace Boopy.Quest.Editor
                             var boundary=action.GetComponentsInChildren<LineRenderer>(true).Single(r=>r.name=="Action boundary");Require(boundary.enabled==selected,"Transient hover/press resembles persistent selection.");
                             Require(boundary.positionCount>16,"Selected boundary is still four square segments.");
                             if(!primary && state=="Rest")Require(Near(color,SpatialTheme.Control),"Secondary rest lost approved control token.");
-                            if(primary && state=="Rest")Require(Near(color,SpatialTheme.Porcelain),"Primary rest lost approved porcelain token.");
+                            // One tile style: Talk rests on the control token like every tile (ControlGrammarValidation.OneStyle checks the row).
+                            if(primary && state=="Rest")Require(Near(color,SpatialTheme.Control),"Talk at rest leaves the one tile style's control token.");
                             if(!primary && state=="Hover")Require(Near(color,SpatialTheme.Emphasis),"Hover does not affect the whole control face.");
                             if(state=="Pressed")Require(block.GetFloat("_Press")>.99f,"Pressed state lost explicit material feedback.");
                             if(reduced)Require(action.transform.Find("Press visual").localPosition==Vector3.zero,"Reduced state retains material displacement.");

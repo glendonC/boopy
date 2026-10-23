@@ -95,7 +95,7 @@ namespace Boopy.Quest.Editor
                 Require(caption.transform.localScale == Vector3.one, "Comfort scale applied twice to caption.");
                 console.Hide(); Require(!caption.gameObject.activeInHierarchy && !caption.HitPage(ray), "Hidden HUD leaves caption active.");
                 console.Place(Vector3.forward); caption.Hide(); console.ShowCapture();
-                caption.ShowNotice(full, 5); console.Activate(ConsoleAction.More); console.Activate(ConsoleAction.Options); console.RefreshVisuals(.4f); Physics.SyncTransforms();
+                caption.ShowNotice(full, 5); console.Activate(ConsoleAction.More); console.Activate(ConsoleAction.More); console.RefreshVisuals(.4f); Physics.SyncTransforms();
                 var options = console.GetComponentsInChildren<SpatialAction>().Single(a => a.Action == ConsoleAction.Settings);
                 var optionsRay = new Ray(head.position, options.transform.position - head.position);
                 Require(console.HitAction(optionsRay, out _) == ConsoleAction.Settings && !caption.HitPage(optionsRay), "Long idle notice steals Settings input.");
@@ -112,7 +112,7 @@ namespace Boopy.Quest.Editor
             console.SetReducedMotion(true); console.RefreshVisuals(.4f); caption.RefreshVisuals(.4f); Physics.SyncTransforms();
             var controls = (System.Collections.Generic.Dictionary<ConsoleAction, SpatialAction>)typeof(ContextConsole).GetField("actions", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(console)!;
             var cancel = controls[ConsoleAction.Cancel];
-            Require(cancel.gameObject.activeInHierarchy && !cancel.IconOnly, "Stop waiting is not a visible text action.");
+            Require(cancel.gameObject.activeInHierarchy, "Stop waiting is not a visible text action.");
             var words = cancel.GetComponentsInChildren<TextMeshPro>(true).Where(text => text.gameObject.activeInHierarchy && text.GetComponent<MeshRenderer>().enabled).ToArray();
             Require(words.Length == 1 && words[0].text == "Stop", "Cancel lacks its plain text label.");
             Require(!cancel.GetComponentsInChildren<LineRenderer>(true).Any(line => line.name == "Cancel cross"), "Giant cancel cross geometry remains.");

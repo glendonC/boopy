@@ -24,7 +24,8 @@ namespace Boopy.Quest.Editor
                 Require(plate.sharedMesh.vertices.All(v=>Mathf.Abs(v.x)<=.5001f && Mathf.Abs(v.y)<=.5001f),"Rounded face escapes its target.");
                 Require(!action.GetComponentsInChildren<LineRenderer>().Single(line=>line.name=="Action boundary").enabled,"Colored perimeter cage remains visible.");
                 var property=new MaterialPropertyBlock();plate.GetComponent<MeshRenderer>().GetPropertyBlock(property);
-                var resting=property.GetColor("_Color");Require(resting.a>.9f && Mathf.Abs(resting.r-SpatialTheme.Porcelain.r)<.001f && Mathf.Abs(resting.g-SpatialTheme.Porcelain.g)<.001f,"Primary action lacks its neutral porcelain fill.");
+                // One tile style: Talk rests on the control token like every tile (ControlGrammarValidation.OneStyle checks the row).
+                var resting=property.GetColor("_Color");Require(resting.a>.9f && Mathf.Abs(resting.r-SpatialTheme.Control.r)<.001f && Mathf.Abs(resting.g-SpatialTheme.Control.g)<.001f,"Talk at rest leaves the one tile style's control token.");
                 action.Focus(true);action.Press(true);action.Refresh(.2f,1f,false);
                 Require(box.size==originalSize && box.center==originalCenter,"Hover/press moves hit geometry.");
                 Require(action.AccessibleLabel=="Talk","Primitive changed exact action wording.");

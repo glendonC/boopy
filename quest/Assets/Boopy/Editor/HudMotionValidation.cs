@@ -29,9 +29,9 @@ namespace Boopy.Quest.Editor
             var root = new GameObject("Synthetic HUD motion");
             try
             {
-                foreach (var action in new[] { ConsoleAction.Options, ConsoleAction.NextItem, ConsoleAction.FollowUpOne })
+                foreach (var action in new[] { ConsoleAction.Options, ConsoleAction.Review, ConsoleAction.FollowUpOne })
                 {
-                    var control = SpatialAction.Create(root.transform, action, action == ConsoleAction.Options ? "Options" : action == ConsoleAction.NextItem ? "Next" : "What is this?", action == ConsoleAction.Options ? .080f : .220f);
+                    var control = SpatialAction.Create(root.transform, action, action == ConsoleAction.Options ? "Options" : action == ConsoleAction.Review ? "Review" : "What is this?", action == ConsoleAction.Options ? .080f : .220f);
                     control.Refresh(1f, 1f, false);
                     var label = control.GetComponentsInChildren<TextMeshPro>(true).Single();
                     Require(label.gameObject.activeSelf && label.color.a > .95f, "A control label waits for hover.");
