@@ -500,6 +500,8 @@ namespace Boopy.Quest.Editor
             public readonly Queue<Func<Task<HttpResponseMessage>>> Answers = new Queue<Func<Task<HttpResponseMessage>>>();
             public readonly Queue<Func<Task<HttpResponseMessage>>> Read = new Queue<Func<Task<HttpResponseMessage>>>();
             private readonly List<(string Path, string? Body)> requests = new List<(string, string?)>();
+            // Runs as a later turn reaches the Mac, before its reply (the same session view comes back).
+            public Action? OnUtter;
             public int Count(string path) => requests.Count(request => request.Path == path);
             public List<string> Bodies(string path) => requests.Where(request => request.Path == path).Select(request => request.Body ?? "").ToList();
 
@@ -510,6 +512,7 @@ namespace Boopy.Quest.Editor
                 requests.Add((path, request.Content?.ReadAsStringAsync().GetAwaiter().GetResult()));
                 if (request.Method == HttpMethod.Post && path == "/v1/sessions") return Reply(HttpStatusCode.OK, Wire.Write(SessionView));
                 if (request.Method == HttpMethod.Post && path == "/v1/sessions/" + SessionId + "/task") return Open.Dequeue()();
+                if (request.Method == HttpMethod.Post && path == "/v1/sessions/" + SessionId + "/utterances") { OnUtter?.Invoke(); return Reply(HttpStatusCode.OK, Wire.Write(SessionView)); }
                 if (request.Method == HttpMethod.Post && path == "/v1/tasks/" + TaskId + "/answers") return Answers.Dequeue()();
                 if (request.Method == HttpMethod.Get && path == "/v1/tasks/" + TaskId) return Read.Dequeue()();
                 throw new InvalidOperationException("Unexpected synthetic request: " + request.Method + " " + path);
