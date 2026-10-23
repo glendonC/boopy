@@ -344,12 +344,60 @@ namespace Boopy.Quest
                 var observation = item.Grounding.ObservationId;
                 if (observation == null || !snapshots.TryGetValue(observation, out var snapshot)) continue;
                 if (!overlays.TryGetValue(item.Id, out var overlay))
-                { overlay = GroundedOverlay.Create(transform); overlay.SetReducedMotion(reducedMotion); overlays[item.Id] = overlay; }
+                { overlay = GroundedOverlay.Create(transform, attended: true); overlay.SetReducedMotion(reducedMotion); overlays[item.Id] = overlay; }
                 var positions = room.PlaceBoundary(item.Grounding, snapshot, out var capturedDepth);
-                if (accents.TryGet(item.Id, out var slot)) overlay.SetIdentityAccent(slot);
                 overlay.SetFocus(item.Id == focusedItemId, focusedItemId != null);
-                overlay.Show(item.Grounding, positions, capturedDepth, item.Id == referentId);
+                var appeared = overlay.Show(item.Grounding, positions, capturedDepth, item.Id == referentId, head != null ? head.position : (Vector3?)null);
+                if (head != null) overlay.SetViewer(head.position);
+                // An outline that first appears gets one sweep, from Boopy's side.
+                if (appeared) overlay.Sweep(console != null ? console.transform.position : head != null ? head.position : transform.position);
             }
+        }
+
+        private const float VisitClearance = .1f, ViewCenter = .15f;
+
+        /// <summary>
+        /// Where Boopy goes while it works on the attended subject: beside its outline as seen from the eyes, on the
+        /// side toward <paramref name="home"/> unless that is the center of the view, else the other side. Never over
+        /// the outline and never in the view's center.
+        /// </summary>
+        public bool TryGetSubjectVisit(Vector3 home, out Vector3 visit, out Vector3 anchor, out IReadOnlyList<Vector3> outline)
+        {
+            visit = default; anchor = default; outline = Array.Empty<Vector3>();
+            var overlay = Subject();
+            if (head == null || !TryGetActiveAnchor(out anchor) || overlay == null || overlay.Boundary.Count < 3) return false;
+            outline = overlay.Boundary;
+            var eyes = head.position;
+            var forward = head.forward;
+            var right = Vector3.Cross(Vector3.up, forward).normalized;
+            if (right.sqrMagnitude < .01f) right = head.right;
+            var up = Vector3.Cross(forward, right).normalized;
+            var reach = 0f;
+            foreach (var point in outline) reach = Mathf.Max(reach, Mathf.Abs(Vector3.Dot(point - anchor, right)));
+            var preferred = Vector3.Dot(home - anchor, right) >= 0f ? 1f : -1f;
+            foreach (var side in new[] { preferred, -preferred })
+            {
+                // Beside the outline with room for Boopy, then nearer along its own sight line so it stays beside it in view.
+                var point = eyes + (anchor + right * side * (reach + VisitClearance) - eyes) * .85f;
+                var sight = point - eyes;
+                var depth = Vector3.Dot(sight, forward);
+                if (depth <= .1f) continue;
+                if (Mathf.Abs(Vector3.Dot(sight, right) / depth) < ViewCenter && Mathf.Abs(Vector3.Dot(sight, up) / depth) < ViewCenter) continue;
+                visit = point;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>One sweep across the attended subject from <paramref name="from"/>'s side.</summary>
+        public void SweepSubject(Vector3 from) => Subject()?.Sweep(from);
+        public float? SubjectSweepProgress => Subject()?.SweepProgress;
+
+        private GroundedOverlay? Subject()
+        {
+            if (renderedView == null) return null;
+            var id = task != null ? PresentedSubject(renderedView) : focusedItemId ?? PresentedSubject(renderedView);
+            return id != null && overlays.TryGetValue(id, out var overlay) && overlay.gameObject.activeSelf ? overlay : null;
         }
 
         private void EnsureLayoutFrame()

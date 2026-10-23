@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using Boopy.Client;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -17,6 +18,8 @@ namespace Boopy.Quest
         private MeshRenderer? shell;
         private Material? shellMaterial, eyeMaterial;
         private Mesh? bodyMesh;
+        private MeshRenderer? cone;
+        private Mesh? coneMesh;
         private string state = "idle";
         private float clock, stateAt, opacity = 1f;
         private float greetingAt = float.NegativeInfinity;
@@ -58,8 +61,43 @@ namespace Boopy.Quest
             scout.rightHand = scout.BuildHand(1f);
             scout.leftPalm = scout.leftHand.GetComponent<MeshRenderer>();
             scout.rightPalm = scout.rightHand.GetComponent<MeshRenderer>();
+            var light = new GameObject("Attention cone");
+            light.transform.SetParent(go.transform, false);
+            scout.coneMesh = new Mesh { name = "Attention cone surface" };
+            light.AddComponent<MeshFilter>().sharedMesh = scout.coneMesh;
+            scout.cone = Renderer(light, Visuals.Solid);
+            scout.cone.enabled = false;
             scout.Refresh(0f, true);
             return scout;
+        }
+
+        /// <summary>
+        /// Boopy's soft amber light from its face to the subject's edge, as strong as <paramref name="strength"/>;
+        /// no edge puts it out. Text and state never depend on it.
+        /// </summary>
+        public void SetCone(IReadOnlyList<Vector3>? edge, float strength)
+        {
+            if (cone == null || coneMesh == null || body == null) return;
+            cone.enabled = edge != null && edge.Count >= 3 && strength > 0f && visible;
+            if (!cone.enabled) return;
+            var count = edge!.Count;
+            var vertices = new Vector3[count + 1];
+            var colors = new Color[count + 1];
+            var light = SpatialTheme.Ember;
+            vertices[0] = cone.transform.InverseTransformPoint(body.TransformPoint(new Vector3(0f, .004f, -.035f)));
+            colors[0] = new Color(light.r, light.g, light.b, .26f * strength);
+            for (var i = 0; i < count; i++)
+            {
+                vertices[i + 1] = cone.transform.InverseTransformPoint(edge[i]);
+                colors[i + 1] = new Color(light.r, light.g, light.b, .05f * strength);
+            }
+            var triangles = new int[count * 3];
+            for (var i = 0; i < count; i++) { triangles[i * 3] = 0; triangles[i * 3 + 1] = i + 1; triangles[i * 3 + 2] = (i + 1) % count + 1; }
+            coneMesh.Clear();
+            coneMesh.vertices = vertices;
+            coneMesh.colors = colors;
+            coneMesh.triangles = triangles;
+            coneMesh.RecalculateBounds();
         }
 
         private static Material Material(Shader shader, string name, Color color, float roughness, float role)
@@ -246,8 +284,12 @@ namespace Boopy.Quest
             var height = pose.Stretch + .018f * considering + .012f * greeting;
             var stretch = new Vector3(1f / Mathf.Sqrt(height), height, 1f / Mathf.Sqrt(height));
             body.localScale = Vector3.Lerp(body.localScale, stretch, blend);
-            leftOpening = reduced ? pose.LeftEye : Mathf.MoveTowards(leftOpening, Mathf.Lerp(pose.LeftEye * (1f - .24f * considering),1f,greeting), delta * 16f);
-            rightOpening = reduced ? pose.RightEye : Mathf.MoveTowards(rightOpening, Mathf.Lerp(pose.RightEye * (1f - .10f * considering),1f,greeting), delta * 16f);
+            // While it thinks, its eyes narrow and its body glows toward Ember, breathing; reduced motion holds the glow still.
+            var narrow = state == "processing" ? .55f : 1f;
+            leftOpening = reduced ? pose.LeftEye * narrow : Mathf.MoveTowards(leftOpening, Mathf.Lerp(pose.LeftEye * narrow * (1f - .24f * considering),1f,greeting), delta * 16f);
+            rightOpening = reduced ? pose.RightEye * narrow : Mathf.MoveTowards(rightOpening, Mathf.Lerp(pose.RightEye * narrow * (1f - .10f * considering),1f,greeting), delta * 16f);
+            var glow = state != "processing" ? 0f : reduced ? .35f : .25f + .2f * (.5f - .5f * Mathf.Cos((clock - stateAt) * Mathf.PI * 2f / 2.4f));
+            SetTint(Color.Lerp(SpatialTheme.Porcelain, SpatialTheme.Ember, glow));
             var lookX = Mathf.Lerp(pose.LookX, .02f, considering * .6f);
             var lookY = Mathf.Clamp(pose.LookY + .08f * considering, -.18f, .18f);
             Eye(leftEye, leftLens, leftOpening, lookX, lookY, pose.Smile, blend);
@@ -295,6 +337,7 @@ namespace Boopy.Quest
         private void OnDestroy()
         {
             if (bodyMesh != null) Dispose(bodyMesh);
+            if (coneMesh != null) Dispose(coneMesh);
             foreach (var material in new[] { shellMaterial, eyeMaterial })
                 if (material != null) Dispose(material);
         }

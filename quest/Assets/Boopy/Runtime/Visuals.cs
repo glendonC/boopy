@@ -24,6 +24,26 @@ namespace Boopy.Quest
 
         private static Material? solid;
         private static Material? dashed;
+        private static Material? softEdge;
+
+        /// <summary>For the attended subject's edge, rim and sweep: whole across the middle of the line, fading to clear at its sides.</summary>
+        public static Material SoftEdge
+        {
+            get
+            {
+                if (softEdge != null) return softEdge;
+                const int size = 16;
+                var texture = new Texture2D(1, size, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+                for (var y = 0; y < size; y++)
+                {
+                    var across = Mathf.Abs((y + .5f) / size * 2f - 1f);
+                    texture.SetPixel(0, y, new Color(1f, 1f, 1f, 1f - Mathf.SmoothStep(.45f, 1f, across)));
+                }
+                texture.Apply(false, true);
+                softEdge = new Material(Shader.Find("Sprites/Default")) { mainTexture = texture };
+                return softEdge;
+            }
+        }
 
         /// <summary>For plates, solid lines and rings; tinted per renderer through vertex or material colour.</summary>
         public static Material Solid => solid != null ? solid : solid = new Material(Shader.Find("Sprites/Default"));

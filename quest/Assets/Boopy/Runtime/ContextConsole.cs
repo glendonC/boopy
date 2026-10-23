@@ -516,7 +516,9 @@ namespace Boopy.Quest
             header.ReserveHeight(.160f);
             if (companion != null)
             {
-                companion.transform.localPosition = new Vector3(-.215f, conversationPanelHeight > 0f ? header.Size.y / 2f - .080f : 0f, -.018f);
+                companionHome = new Vector3(-.215f, conversationPanelHeight > 0f ? header.Size.y / 2f - .080f : 0f, -.018f);
+                // Away beside a subject, or flying back, Boopy keeps its own path home.
+                if (visitPoint == null && !returning) companion.transform.localPosition = companionHome;
                 companion.SetState(voicePreparing || (busy && mode != "processing") ? "processing" : mode == "capture" ? "idle" : mode);
             }
             // Protected-source fallback permits explicitly opened global settings only.
@@ -800,7 +802,8 @@ namespace Boopy.Quest
             if (companion != null)
             {
                 companion.SetVisible(gameObject.activeInHierarchy && !controlsOnly);
-                companion.SetOpacity(header?.Opacity ?? 1f);
+                companion.SetOpacity(visitPoint != null || returning ? 1f : header?.Opacity ?? 1f);
+                Travel(delta);
                 companion.Refresh(delta, reduced);
             }
             if (mode == "processing")
@@ -810,6 +813,62 @@ namespace Boopy.Quest
             }
             header?.Shimmer(animationTime, mode == "processing" || busy);
         }
+        private const float FlightSpeed = 3f;
+        private Vector3 companionHome;
+        private Vector3? visitPoint, visitAnchor;
+        private IReadOnlyList<Vector3> visitEdge = System.Array.Empty<Vector3>();
+        private System.Action? onArrive;
+        private System.Func<float?>? sweepProgress;
+        private bool arrived, returning;
+
+        /// <summary>Boopy is away from the console, beside the subject it works on.</summary>
+        public bool CompanionVisiting => visitPoint != null && !reduced;
+
+        /// <summary>
+        /// While this turn works, Boopy goes to <paramref name="point"/> beside the subject, faces
+        /// <paramref name="anchor"/>, and on arrival starts the subject's sweep and lights it with a cone to
+        /// <paramref name="edge"/> for as long as the sweep runs. Reduced motion stays home and only turns.
+        /// The visit ends when the work does.
+        /// </summary>
+        public void VisitSubject(Vector3 point, Vector3 anchor, IReadOnlyList<Vector3> edge, System.Action arrive, System.Func<float?> sweep)
+        {
+            visitPoint = point; visitAnchor = anchor; visitEdge = edge;
+            onArrive = arrive; sweepProgress = sweep; arrived = false; returning = false;
+        }
+
+        private void EndVisit()
+        {
+            if (visitPoint == null) return;
+            visitPoint = null; visitAnchor = null; visitEdge = System.Array.Empty<Vector3>();
+            onArrive = null; sweepProgress = null; arrived = false; returning = true;
+            companion?.SetCone(null, 0f);
+        }
+
+        private void Travel(float delta)
+        {
+            if (companion == null) return;
+            if (visitPoint != null && mode != "processing") EndVisit();
+            var step = FlightSpeed * Mathf.Max(0f, delta);
+            if (visitPoint != null && !reduced)
+            {
+                var target = visitPoint.Value;
+                companion.transform.position = Vector3.MoveTowards(companion.transform.position, target, step);
+                if (!arrived && (companion.transform.position - target).sqrMagnitude < 1e-8f) { arrived = true; onArrive?.Invoke(); }
+            }
+            else if (returning || reduced)
+            {
+                var home = companion.transform.parent != null ? companion.transform.parent.TransformPoint(companionHome) : companionHome;
+                companion.transform.position = reduced ? home : Vector3.MoveTowards(companion.transform.position, home, step);
+                if ((companion.transform.position - home).sqrMagnitude < 1e-8f) { companion.transform.localPosition = companionHome; returning = false; }
+            }
+            // Facing the subject while it works on it; otherwise the console's own facing.
+            if (visitAnchor != null && (companion.transform.position - visitAnchor.Value).sqrMagnitude > 1e-6f)
+                companion.transform.rotation = Quaternion.LookRotation(companion.transform.position - visitAnchor.Value, Vector3.up);
+            else companion.transform.localRotation = Quaternion.identity;
+            var progress = arrived && !reduced ? sweepProgress?.Invoke() : null;
+            companion.SetCone(progress != null ? visitEdge : null, progress != null ? Mathf.Sin(progress.Value * Mathf.PI) : 0f);
+        }
+
         private void Face() { if (head == null || interactionLocked) return; var direction = transform.position - head.position; if (direction.sqrMagnitude > 1e-6f) transform.rotation = Quaternion.LookRotation(direction, Vector3.up); }
         private void LateUpdate() => RefreshVisuals(Time.unscaledDeltaTime);
     }

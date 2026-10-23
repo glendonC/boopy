@@ -847,6 +847,16 @@ namespace Boopy.Quest
             dialogue?.Show(DialogueStage.Working, progress.Words);
         }
 
+        // Work on an outlined subject: Boopy goes beside it, faces it, and on arrival lights it with one sweep. A turn
+        // without a photo, and a follow-up that names no observation, leave Boopy home. Its eyes and glow still show that it thinks.
+        private void VisitSubject(bool picture)
+        {
+            if (!picture || scene == null || console == null) return;
+            var place = scene;
+            if (!place.TryGetSubjectVisit(console.transform.position, out var visit, out var anchor, out var outline)) return;
+            console.VisitSubject(visit, anchor, outline, () => place.SweepSubject(visit), () => place.SubjectSweepProgress);
+        }
+
         private async Task Send(byte[] wav)
         {
             if (client == null || status == null || scene == null) return;
@@ -855,6 +865,7 @@ namespace Boopy.Quest
             console?.ShowProcessing(pendingTarget != null);
             var evidenceTurn = pendingEvidence ?? new EvidenceTurn(false);
             dialogue?.Show(DialogueStage.Working, "Sending…");
+            VisitSubject(evidenceTurn.RequiresPicture);
             Debug.Log("Boopy: sending capture to Mac.");
             var snapshot = pending;
             using var request = new CancellationTokenSource();
@@ -1376,6 +1387,8 @@ namespace Boopy.Quest
             SayStatus(null);
             console.ShowProcessing(suggestion.TargetItemId != null);
             dialogue?.Show(DialogueStage.Working, "Sending…");
+            // A follow-up works on the recorded view only when it names an observation.
+            VisitSubject(suggestion.ObservationId != null);
             using var request = new CancellationTokenSource();
             captureRequest = request;
             dialogue?.SetCancelableWait(true);
