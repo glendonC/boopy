@@ -81,12 +81,11 @@ returns an actual answer with an optional local voice. One active source annotat
 
 When that first answer is about a grounded subject, the headset shows the session's task from the
 Mac. The chip on the outlined subject shows the task's label and stays proposed. The line beside
-the companion shows Boopy's words under "Boopy · Not sent". Only when the line asks you something
-does one control sit under it: **Answer**, the prompt the Mac sends, with Talk's mic at its left;
-while it shows it is the filled control and **Talk** is plain. Pinch it, speak, then tap
-**Finish**. The line reads "Saving on your Mac…" while the Mac records your words on the task,
-then shows them under "You, as heard · Not sent", and the control goes away. When the line asks
-nothing, there is no control under it. Nothing reaches your own assistant. A first answer that
+the companion shows Boopy's words under "Boopy · Not sent". Only while the line asks you something
+is the first tile of the row under it **Answer**, the prompt the Mac sends, with Talk's mic, in
+**Talk**'s place. Pinch it, speak, then tap **Finish**. The line reads "Saving on your Mac…"
+while the Mac records your words on the task, then shows them under "You, as heard · Not sent",
+and **Talk** is the first tile again. When the line asks nothing, Talk stays first. Nothing reaches your own assistant. A first answer that
 offers a choice shows its choice and no task. A later Talk turn returns to the conversation's
 own line.
 
@@ -95,7 +94,8 @@ same conversation against its recorded evidence; it does not open the microphone
 view or confirm a claim. You can continue speaking instead. Long questions wrap at the existing
 readable font size. Caption paging preserves exact returned text.
 
-**Context** opens evolving context, exact evidence and comfort settings. Correct a selected
+**More** on the shelf under the console shows **Context**, **Settings** and **Back** in its
+place. **Context** opens evolving context, exact evidence and comfort settings. Correct a selected
 reference through speech or explicitly confirm/exclude an item. **Prepare context → Use this
 context** creates the local context snapshot. The receipt reads **Ready on your Mac. Not sent.**
 Boopy does not send it. An agent you connect to the Mac's connector can read it.

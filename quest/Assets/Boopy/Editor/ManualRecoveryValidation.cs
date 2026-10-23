@@ -33,6 +33,8 @@ namespace Boopy.Quest.Editor
                 Render(console, eyes);
                 var header = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Intent instrument");
                 Require(header.BodyText == uncertain, "Recovery erased the uncertainty explanation.");
+                // In the same run nothing restarted and the picture is still held: the words claim neither.
+                Require(!header.BodyText.Contains("restarted") && !header.BodyText.Contains("gone"), "A same-run recovery says Boopy restarted or the picture is gone.");
                 foreach (var action in new[] { ConsoleAction.CheckCapture, ConsoleAction.DismissCapture })
                 {
                     var button = console.GetComponentsInChildren<SpatialAction>(true).Single(item => item.Action == action);
@@ -49,23 +51,23 @@ namespace Boopy.Quest.Editor
                 Require(!Visible(console, ConsoleAction.CheckCapture), "Busy operation exposes recovery actions.");
                 console.SetBusy(false); Offered(console);
                 console.SetCaptureRecovery(false);
-                Require(!Visible(console, ConsoleAction.CheckCapture) && Visible(console, ConsoleAction.Settings), "Ordinary no-session settings entry was not restored.");
+                Require(!Visible(console, ConsoleAction.CheckCapture) && Visible(console, ConsoleAction.More), "Ordinary no-session settings entry was not restored.");
                 console.Render(new SessionView { Id = "synthetic-old", State = "committed", Committed = new Committed { PackageId = "synthetic-package" } });
-                Require(Visible(console, ConsoleAction.Options), "Committed context has no deliberate options entry.");
+                Require(Visible(console, ConsoleAction.More), "Committed context has no deliberate options entry.");
                 console.Activate(ConsoleAction.Options);
                 Require(Visible(console, ConsoleAction.Handoff), "Ordinary committed receipt is missing.");
                 console.ShowError(uncertain); console.SetCaptureRecovery(true); Offered(console);
                 Require(!Visible(console, ConsoleAction.Handoff), "Old saved receipt competes with uncertain new capture.");
                 console.SetCaptureRecovery(false);
                 console.Render(new SessionView { Id = "synthetic-old", State = "committed", Committed = new Committed { PackageId = "synthetic-package" } });
-                Require(Visible(console, ConsoleAction.Options) && !Visible(console, ConsoleAction.CheckCapture), "Ordinary saved UI was not restored.");
+                Require(Visible(console, ConsoleAction.More) && !Visible(console, ConsoleAction.CheckCapture), "Ordinary saved UI was not restored.");
                 console.Activate(ConsoleAction.Options);
                 Require(Visible(console, ConsoleAction.Handoff), "Saved context lost its deliberate handoff.");
                 var spoken = new SessionView { Id = "synthetic-spoken", State = "review", Attention = new AttentionView { UtteranceId = "synthetic-utterance", Action = "no-visual-work" } };
                 spoken.Utterances.Add(new UtteranceRef { Id = "synthetic-utterance", Text = "Synthetic spoken context." });
                 spoken.Items.Add(new Item { Id = "synthetic-words", Origin = "person", Status = "confirmed", Kind = "utterance", Confidence = null, Label = "Synthetic words", Statement = "Synthetic spoken context." });
                 console.Render(spoken);
-                Require(Visible(console, ConsoleAction.Options), "Authored context lacks deliberate actions.");
+                Require(Visible(console, ConsoleAction.More), "Authored context lacks deliberate actions.");
                 console.Activate(ConsoleAction.Options);
                 Require(console.Reviewing && Visible(console, ConsoleAction.PrepareSave), "Authored spoken-only context has no save preview.");
                 Require(!console.GetComponentsInChildren<TextMeshPro>().Any(text => text.text.Contains("I couldn’t work that out")), "Authored-only review is falsely labeled a capture failure.");

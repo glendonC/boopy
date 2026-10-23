@@ -95,7 +95,7 @@ namespace Boopy.Quest.Editor
                 Require(caption.transform.localScale == Vector3.one, "Comfort scale applied twice to caption.");
                 console.Hide(); Require(!caption.gameObject.activeInHierarchy && !caption.HitPage(ray), "Hidden HUD leaves caption active.");
                 console.Place(Vector3.forward); caption.Hide(); console.ShowCapture();
-                caption.ShowNotice(full, 5); console.RefreshVisuals(.4f); Physics.SyncTransforms();
+                caption.ShowNotice(full, 5); console.Activate(ConsoleAction.More); console.Activate(ConsoleAction.Options); console.RefreshVisuals(.4f); Physics.SyncTransforms();
                 var options = console.GetComponentsInChildren<SpatialAction>().Single(a => a.Action == ConsoleAction.Settings);
                 var optionsRay = new Ray(head.position, options.transform.position - head.position);
                 Require(console.HitAction(optionsRay, out _) == ConsoleAction.Settings && !caption.HitPage(optionsRay), "Long idle notice steals Settings input.");

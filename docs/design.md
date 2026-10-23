@@ -44,7 +44,7 @@ conversation already uses. A task adds no panel, tray, or card.
 | Annotation | A chip on saved evidence, with a solid hairline border; proposed shows in its words and tone, not in dashes. A task's chip sits where that item's chip goes, keeps the item's kind, and stays proposed. It keeps the item's gloss, confidence, and emphasis only when its text is the item's label. An item that is not in this room gets no chip. Live names are display only. |
 | Dialogue | A caption on the console, with optional local speech. A task's dialogue uses the same line. |
 | Choice | Buttons on the console for a conversation. A first turn with a choice opens no task. A task's choice draws no control yet. |
-| VoiceReply | One control under the task's line, only when Boopy's line asks the person something: "Answer", the prompt the Mac sends, with Talk's mic glyph at its left. The prompt is one short word: the row is one target high and draws its label on one line. It records a spoken answer on the task. While it shows, it is the view's one filled control and Talk is plain. Once the line shows the person's answer, the control goes away. A task that asks nothing shows its chip and line with no control, and Talk is filled. |
+| VoiceReply | The first tile of the row, labeled Answer, only while Boopy's line asks the person something: the prompt the Mac sends, with Talk's mic glyph, in Talk's place. The prompt is one short word on one line. It records a spoken answer on the task. Once the line shows the person's answer, or when the line asks nothing, Talk is the first tile again. |
 | TaskStep | Not built. A task's step draws no control. |
 | Detail | The evidence reader on the console. |
 | Status | Console notices. A task's status is the line's speaker: "Boopy · Not sent", or over an answer "You, as heard · Not sent" when recognition is uncertain and "You · Not sent" otherwise. |
@@ -62,3 +62,30 @@ Do not use one large panel, a tilted tray of pieces, a tiny mixed-font scene, a 
 cards, a purple palette, or a column of identical pills.
 
 The segment follows the source mask or region. A saved photo does not become a 3D object.
+
+## Controls
+
+Every control is one tile: the control plate, 0.124 m by 0.060 m with a 0.014 m corner, a filled
+glyph and its label in IBM Plex Sans Regular at the body size, centered as one group inside the
+tile. Nothing is filled and nothing is borderless. The recommended action is the row's first tile;
+that is the only difference. Each action keeps its glyph in every state: a mic on Talk, Answer and
+Finish, two bars on Pause and a triangle on Resume, a square on Stop, a cross on Cancel, three dots
+on More, two cards on Context, a gear on Settings, a left chevron on Back, a circular arrow on Check
+and a plus on New.
+
+One row under the console's panel holds the tiles. Its left edge sits on the panel's text column,
+so the orb stays to its left, and it has three slots 0.014 m apart. Pause, the privacy stop, keeps
+the middle slot in every state: Answer, Pause and More while Boopy's line asks; Talk, Pause and
+More otherwise; Finish, Pause and Cancel while recording; Stop and Pause while Boopy works; Check,
+Pause and New while an earlier capture waits; Pause alone, in the middle, while the console is
+busy. More swaps the same row in place to Context, Pause and Back, and Settings is a tile on the
+Context sheet. The row never moves: the panel above it holds only Boopy's line, ends one gap
+(0.014 m) over the row in every state and grows upward with its line, and the speaker label sits
+right above its line. Paging the line is a pinch on its panel, never on the row. The panel's
+question and choice rows stay left-aligned, as content.
+
+A capture left pending by a restart is a dialog on the line's dark panel: "Earlier capture" and
+one sentence, with no speaker line; Check and New sit on either side of Pause in the row under it.
+The sentence says only what the headset knows: Boopy restarted before it heard back from the Mac,
+and the picture is gone from the headset. The same dialog opens in the same run after Stop, a lost
+connection, a refusal or a storage failure, each with its own sentence.

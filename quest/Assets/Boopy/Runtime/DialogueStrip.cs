@@ -77,9 +77,12 @@ namespace Boopy.Quest
             strip.speaker = SpatialTheme.Text(strip.reveal, "Actual speaker and state", SpatialTheme.Utility, SpatialTheme.Smoke);
             strip.speaker.rectTransform.sizeDelta = new Vector2(Width, .036f);
             strip.speaker.transform.localPosition = new Vector3(0, .064f, -.004f);
+            // The speaker label rests on its line: bottom-aligned in its band, the line's first words top-aligned right under it.
+            strip.speaker.alignment = TextAlignmentOptions.BottomLeft;
             strip.caption = SpatialTheme.Text(strip.reveal, "Actual response", SpatialTheme.Body, SpatialTheme.Ivory);
             strip.caption.rectTransform.sizeDelta = new Vector2(Width, CaptionHeight);
-            strip.caption.transform.localPosition = new Vector3(0, -.012f, -.004f);
+            strip.caption.transform.localPosition = new Vector3(0, .042f - CaptionHeight / 2f, -.004f);
+            strip.caption.alignment = TextAlignmentOptions.TopLeft;
             strip.caption.overflowMode = TextOverflowModes.Truncate;
             strip.pageHit = go.AddComponent<BoxCollider>(); strip.pageHit.size = new Vector3(Width, Height, .012f);
             strip.fallbackStop = SpatialAction.Create(go.transform, ConsoleAction.Cancel, "Stop waiting", .18f);
@@ -317,10 +320,10 @@ namespace Boopy.Quest
             transform.position = reduced ? Target() : Vector3.SmoothDamp(transform.position, Target(), ref velocity, .22f);
             Face();
         }
-        private void RefreshBacking(float opacity)
+        // The speaker line's and caption's ink, in the line's own frame.
+        private bool Ink(out Bounds bounds)
         {
-            if(captionBacking==null || backingRenderer==null || backingTint==null)return;
-            var bounds=new Bounds();var found=false;
+            bounds=new Bounds();var found=false;
             foreach(var text in new[]{speaker,caption})
             {
                 if(text==null || string.IsNullOrWhiteSpace(text.text))continue;
@@ -329,6 +332,16 @@ namespace Boopy.Quest
                 ink.center+=text.transform.localPosition;
                 if(!found){bounds=ink;found=true;}else bounds.Encapsulate(ink);
             }
+            return found;
+        }
+
+        /// <summary>The panel's height for this line alone: its ink with the backing's margins.</summary>
+        public float VisibleHeight => Ink(out var bounds) ? Mathf.Min(Height/2f,bounds.max.y+.008f)-Mathf.Max(-Height/2f,bounds.min.y-.008f) : 0f;
+
+        private void RefreshBacking(float opacity)
+        {
+            if(captionBacking==null || backingRenderer==null || backingTint==null)return;
+            var found=Ink(out var bounds);
             backingRenderer.sortingOrder=conversationContentHeight>0f && !fallback ? 0 : 2;
             backingRenderer.enabled=found;
             if(!found)return;
@@ -338,6 +351,14 @@ namespace Boopy.Quest
             var top=Mathf.Min(Height/2f,bounds.max.y+.008f);
             captionBacking.localPosition=new Vector3((left+right)/2f,(bottom+top)/2f,conversationContentHeight > 0f && !fallback ? .006f : .002f);
             captionBacking.localScale=new Vector3(Mathf.Max(.01f,right-left),Mathf.Max(.01f,top-bottom),1f);
+            // Docked with nothing under it, the line's panel sits on the console panel's bottom edge, one gap above the
+            // shelf, and grows upward with the line; the shelf never moves.
+            if(dock!=null && !fallback && conversationContentHeight<=0f)
+            {
+                transform.localPosition=new Vector3(transform.localPosition.x,-dock.Size.y/2f-bottom,transform.localPosition.z);
+                // Paging is a pinch on the panel itself, never on the row of tiles under it.
+                if(pageHit!=null){pageHit.center=new Vector3(0,(top+bottom)/2f,0);pageHit.size=new Vector3(CaptionWidth,top-bottom,.012f);}
+            }
             var panel=SpatialTheme.Panel;panel.a*=opacity;backingTint.SetColor("_Color",panel);backingRenderer.SetPropertyBlock(backingTint);
         }
         private void OnDestroy()

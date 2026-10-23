@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace Boopy.Quest
 {
-    public enum ConsoleAction { None, Save, Confirm, PreviousItem, NextItem, ToggleDetails, PreviousText, NextText, Size, Options, Sound, Cancel, Review, ToggleIncluded, Motion, PrepareSave, Back, Handoff, Speech, EvidenceSource, CheckCapture, DismissCapture, UseCurrentView, UseSpokenOnly, Actions, Settings, FollowUpOne, FollowUpTwo, ChoiceOne, ChoiceTwo, ChoiceThree, SendChoice, PauseScene, Talk, FinishTalk, AnswerTask }
+    public enum ConsoleAction { None, Save, Confirm, PreviousItem, NextItem, ToggleDetails, PreviousText, NextText, Size, Options, Sound, Cancel, Review, ToggleIncluded, Motion, PrepareSave, Back, Handoff, Speech, EvidenceSource, CheckCapture, DismissCapture, UseCurrentView, UseSpokenOnly, Actions, Settings, FollowUpOne, FollowUpTwo, ChoiceOne, ChoiceTwo, ChoiceThree, SendChoice, PauseScene, Talk, FinishTalk, AnswerTask, More, ShelfBack }
 
     /// <summary>A neutral matte action with a horizontal pictogram and label; its target never travels.</summary>
     public sealed class SpatialAction : MonoBehaviour
@@ -31,10 +31,6 @@ namespace Boopy.Quest
         private static Material Satin => satin != null ? satin : satin = new Material(Resources.Load<Shader>("ControlSatin") ?? Shader.Find("Boopy/ControlSatin"));
         public ConsoleAction Action { get; private set; }
 
-        /// <summary>The one filled control in a view. Talk and Finish by default; the console moves it.</summary>
-        public bool Primary { get; private set; }
-        public void SetPrimary(bool on) => Primary = on;
-
         private void OnDestroy()
         {
             if (face == null || face.sharedMesh == null) return;
@@ -46,7 +42,6 @@ namespace Boopy.Quest
             if (action == ConsoleAction.Options) width = Mathf.Max(width, .105f);
             var go = new GameObject("Action " + action); go.transform.SetParent(parent, false);
             var control = go.AddComponent<SpatialAction>(); control.Action = action;
-            control.Primary = action == ConsoleAction.Talk || action == ConsoleAction.FinishTalk;
             control.block = new MaterialPropertyBlock(); control.controlWidth = width;
             control.visual = new GameObject("Press visual").transform; control.visual.SetParent(go.transform, false);
             var plate = new GameObject("Action surface"); plate.transform.SetParent(control.visual, false);
@@ -55,7 +50,8 @@ namespace Boopy.Quest
             control.plate = plate.AddComponent<MeshRenderer>(); control.plate.sharedMaterial = Satin;
             control.plate.sortingOrder = 1;
             control.text = SpatialTheme.Text(control.visual, "Verb", SpatialTheme.Body, SpatialTheme.Ivory);
-            control.text.font = SpatialActionIcon.Supports(action) ? BoopyTypography.Medium : BoopyTypography.Load();
+            // Every control label is Plex Regular; Medium is the chip's name only.
+            control.text.font = BoopyTypography.Load();
             control.text.text = words; control.text.rectTransform.sizeDelta = new Vector2(width - 0.016f, 0.046f);
             control.text.transform.localPosition = new Vector3(0f, 0f, -0.004f);
             control.text.alignment = TextAlignmentOptions.Center;
@@ -112,7 +108,7 @@ namespace Boopy.Quest
         {
             if (text == null) return;
             const float glyphWidth = .018f, gap = .006f;
-            var hasGlyph = pictogram != null || NavigationIcon;
+            var hasGlyph = pictogram != null && pictogram.Drawn || NavigationIcon;
             var inset = hasGlyph ? .006f : .008f;
             text.fontSize = NavigationIcon ? SpatialTheme.Utility : SpatialTheme.Body;
             text.textWrappingMode = hasGlyph ? TextWrappingModes.NoWrap : TextWrappingModes.Normal;
@@ -126,6 +122,17 @@ namespace Boopy.Quest
             var iconPosition = new Vector3(start + glyphWidth / 2f, 0f, -.004f);
             if (pictogram != null) { pictogram.transform.localPosition = iconPosition; pictogram.transform.localScale = Vector3.one * .95f; }
             foreach (var stroke in symbol) { stroke.transform.localPosition = iconPosition; stroke.transform.localScale = Vector3.one * .95f; }
+            // Centered as drawn: the label's visible letters and the glyph's strokes, not their layout boxes, as one group.
+            if (leftAligned || pictogram == null || !pictogram.Drawn) return;
+            text.ForceMeshUpdate(true, true);
+            if (text.textInfo.characterCount == 0) return;
+            var (iconLow, iconHigh) = pictogram.Extent();
+            var letters = text.textBounds;
+            var low = Mathf.Min(iconPosition.x + iconLow * .95f, text.transform.localPosition.x + letters.min.x);
+            var high = Mathf.Max(iconPosition.x + iconHigh * .95f, text.transform.localPosition.x + letters.max.x);
+            var shift = Vector3.right * -(low + high) / 2f;
+            text.transform.localPosition += shift;
+            pictogram.transform.localPosition = iconPosition + shift;
         }
         public void Label(string words) { if (text != null) text.text = words; pictogram?.Configure(Action, words); LayoutLabel(); }
         public void SetSelected(bool on) { selected = on; }
@@ -149,15 +156,15 @@ namespace Boopy.Quest
             hit.enabled = interactable && opacity >= .95f;
             hoverAmount = reduced ? (hovered ? 1f : 0f) : Mathf.MoveTowards(hoverAmount, hovered ? 1f : 0f, delta / .12f);
             pressAmount = reduced ? (pressed ? 1f : 0f) : Mathf.MoveTowards(pressAmount, pressed ? 1f : 0f, delta / .09f);
-            var primary = Primary;
             var size = new Vector2(hit.size.x,hit.size.y);
             if (face != null && faceSize != size)
             {
                 var old = face.sharedMesh; face.sharedMesh = RoundedPlate.Create(size.x,size.y,.014f); faceSize=size;
                 if (old != null) { if(Application.isPlaying)Destroy(old);else DestroyImmediate(old); }
             }
-            var color = primary ? SpatialTheme.Porcelain : selected ? SpatialTheme.Emphasis : SpatialTheme.Control;
-            var hover = primary ? SpatialTheme.TextColor : selected ? Color.Lerp(SpatialTheme.Emphasis,SpatialTheme.Secondary,.12f) : SpatialTheme.Emphasis;
+            // One tile style for every control: the recommended action is the row's first tile, never a different plate.
+            var color = selected ? SpatialTheme.Emphasis : SpatialTheme.Control;
+            var hover = selected ? Color.Lerp(SpatialTheme.Emphasis,SpatialTheme.Secondary,.12f) : SpatialTheme.Emphasis;
             color = Color.Lerp(color,hover,interactable ? hoverAmount : 0f);
             if (!interactable) color = Color.Lerp(SpatialTheme.Panel,SpatialTheme.Control,.8f);
             color.a = .96f;
@@ -166,7 +173,7 @@ namespace Boopy.Quest
             block.SetFloat("_Press",interactable ? pressAmount : 0f); plate.SetPropertyBlock(block);
             var reveal = opacity * opacity * (3f - 2f * opacity);
             visual.localPosition = new Vector3(0, reduced ? 0 : -.006f * (1f - reveal), reduced ? 0f : pressAmount * .0015f - hoverAmount * .0005f);
-            var words = primary ? SpatialTheme.Ink : SpatialTheme.Ivory;
+            var words = SpatialTheme.Ivory;
             if (!interactable) words = SpatialTheme.Smoke;
             text.color = new Color(words.r, words.g, words.b, opacity);
             pictogram?.Tint(text.color);

@@ -55,6 +55,10 @@ namespace Boopy.Quest.Editor
                 Require(handler.Requests == 0 && Get(app, "session") == null && Get(app, "unresolvedSnapshot") == null, "Restore replayed request, applied context or invented pixels.");
                 Require(!((Voice)Get(app, "voice")!).Recording, "Restore started microphone.");
                 Offered(console);
+                // Only what the headset knows: it restarted and heard nothing back. Whether the Mac finished is Check capture's to find.
+                if (outcome != "corrupt")
+                    Require(Header(console) == "Boopy restarted before it heard back from your Mac. The picture is gone from the headset.",
+                        "The restart notice says more than the headset knows: " + Header(console));
                 if (outcome == "corrupt")
                 {
                     Require((bool)Get(app, "recoveryStorageFailed")!, "Corrupt recovery was treated as empty.");

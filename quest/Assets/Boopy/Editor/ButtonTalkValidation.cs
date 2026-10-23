@@ -176,7 +176,7 @@ namespace Boopy.Quest.Editor
                 dialogue.NextPage();var page=dialogue.VisibleText;var generation=Get(app,"captureGeneration");
                 // A tracked hand can select Context without turning away from the protected view.
                 // Gaze-aiming here changed the viewer pose and legitimately changed available space.
-                console.RefreshVisuals(1f);Physics.SyncTransforms();
+                console.Activate(ConsoleAction.More);console.RefreshVisuals(1f);Physics.SyncTransforms();
                 var context=console.GetComponentsInChildren<SpatialAction>().Single(control=>control.Action==ConsoleAction.Options);
                 var ray=new Ray(eyes.position,context.transform.position-eyes.position);
                 Require(console.HitAction(ray,out _)==ConsoleAction.Options,"Synthetic Context hand ray misses its target.");

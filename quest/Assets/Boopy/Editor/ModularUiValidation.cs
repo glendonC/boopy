@@ -113,7 +113,7 @@ namespace Boopy.Quest.Editor
                 console.SetBusy(false);
                 console.ShowError("Synthetic connection failure; the existing review is still available.");
                 Ready(console);
-                Require(Active(console, ConsoleAction.Options), "A recoverable error discarded deliberate actions for existing context.");
+                Require(Active(console, ConsoleAction.More), "A recoverable error discarded deliberate actions for existing context.");
                 console.Activate(ConsoleAction.Options);
                 Ready(console);
                 Require(Active(console, ConsoleAction.PrepareSave), "Explicit actions lost Save after recoverable error.");
@@ -265,9 +265,10 @@ namespace Boopy.Quest.Editor
         private static void Actions(ContextConsole console, params ConsoleAction[] expected)
         {
             Ready(console);
-            var global = new[] { ConsoleAction.Talk, ConsoleAction.FinishTalk, ConsoleAction.PauseScene, ConsoleAction.Settings, ConsoleAction.Options, ConsoleAction.Cancel };
+            var global = new[] { ConsoleAction.Talk, ConsoleAction.FinishTalk, ConsoleAction.PauseScene, ConsoleAction.Settings, ConsoleAction.Options, ConsoleAction.Cancel,
+                ConsoleAction.More, ConsoleAction.ShelfBack };
             if (expected.Contains(ConsoleAction.Options))
-                Require(Active(console,ConsoleAction.Talk) && Active(console,ConsoleAction.Settings) && Active(console,ConsoleAction.Options), "Idle conversation lost its global controls.");
+                Require(Active(console,ConsoleAction.Talk) && Active(console,ConsoleAction.More), "Idle conversation lost its global controls.");
             Require(Active(console,ConsoleAction.PauseScene), "Global scene pause is missing.");
             expected = expected.Where(action => !global.Contains(action)).ToArray();
             var active = Controls(console).Where(control => control.gameObject.activeInHierarchy).ToArray();

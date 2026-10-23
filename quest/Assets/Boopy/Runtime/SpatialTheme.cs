@@ -28,6 +28,8 @@ namespace Boopy.Quest
         public const float KeepoutMargin = .04f;
         public const float Width = 0.56f, Padding = 0.015f, Gap = 0.014f;
         public const float Title = 0.27f, Body = 0.23f, Utility = 0.20f, Target = 0.060f;
+        /// <summary>The control shelf under the panel: its left edge on the text column, three equal slots across it.</summary>
+        public const float ShelfLeft = -0.135f, ShelfWidth = 0.400f, ShelfSlot = (ShelfWidth - 2f * Gap) / 3f;
 
         public static TextMeshPro Text(Transform parent, string name, float font, Color color)
         {

@@ -28,9 +28,10 @@ namespace Boopy.Quest.Editor
                 var bar = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Control bar");
                 var anchor = bar.transform.position;
                 var pause = Control(console, ConsoleAction.PauseScene);
-                var settings = Control(console, ConsoleAction.Settings);
+                // Settings sits under More; the held-target check uses More, which is on the idle shelf.
+                var settings = Control(console, ConsoleAction.More);
                 Ready(console);
-                Require(Active(console).SequenceEqual(new[] { ConsoleAction.Talk, ConsoleAction.Options, ConsoleAction.Settings, ConsoleAction.PauseScene }.OrderBy(action => action)), "Idle bar contains unrelated workflow controls.");
+                Require(Active(console).SequenceEqual(new[] { ConsoleAction.Talk, ConsoleAction.PauseScene, ConsoleAction.More }.OrderBy(action => action)), "Idle bar contains unrelated workflow controls.");
                 Require(console.GetComponentsInChildren<CompanionOrb>(true).Length == 1, "Conversation has duplicate companions.");
                 CheckBar(console, eyes, bar);
                 console.Activate(ConsoleAction.Settings); Ready(console);

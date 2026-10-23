@@ -78,7 +78,8 @@ namespace Boopy.Quest.Editor
                 Only(console, ConsoleAction.Back, ConsoleAction.Save);
                 Require(Label(console, ConsoleAction.Save) == "Use this context", "Preparation confirmation hides its purpose.");
                 console.Activate(ConsoleAction.Back); Only(console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo, ConsoleAction.Options);
-                console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.Size); Hit(console, eyes, ConsoleAction.Settings); console.Activate(ConsoleAction.Settings);
+                console.Activate(ConsoleAction.More); console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.Size); Hit(console, eyes, ConsoleAction.Settings);
+                console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.ShelfBack);
                 foreach (var action in new[] { ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo }) Fits(console, action);
                 console.ShowProcessing(); Only(console, ConsoleAction.Cancel);
                 Require(console.SuggestedAction(ConsoleAction.FollowUpOne) == null, "Busy state retained a suggested action.");
@@ -145,7 +146,8 @@ namespace Boopy.Quest.Editor
         }
         private static void Only(ContextConsole console, params ConsoleAction[] expected)
         {
-            var global = new[] { ConsoleAction.PauseScene, ConsoleAction.Settings, ConsoleAction.Options, ConsoleAction.Cancel, ConsoleAction.Talk, ConsoleAction.FinishTalk };
+            var global = new[] { ConsoleAction.PauseScene, ConsoleAction.Settings, ConsoleAction.Options, ConsoleAction.Cancel, ConsoleAction.Talk, ConsoleAction.FinishTalk,
+                ConsoleAction.More, ConsoleAction.ShelfBack };
             expected = expected.Where(action => !global.Contains(action)).ToArray();
             var actual = console.GetComponentsInChildren<SpatialAction>(true).Where(control => control.gameObject.activeInHierarchy && !global.Contains(control.Action)).Select(control => control.Action).ToArray();
             Require(actual.Length == expected.Length && expected.All(actual.Contains), "Unexpected automatic action cluster.");

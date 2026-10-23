@@ -43,7 +43,7 @@ namespace Boopy.Quest.Editor
         private const string OpenPath = "/v1/sessions/" + SessionId + "/task";
         private const string Health = "{\"ok\":true,\"service\":\"boopy\",\"interpreter\":{\"provider\":\"fixture\",\"model\":\"synthetic\"}}";
         private static readonly ConsoleAction[] Global = { ConsoleAction.Talk, ConsoleAction.FinishTalk, ConsoleAction.PauseScene,
-            ConsoleAction.Options, ConsoleAction.Settings, ConsoleAction.Cancel };
+            ConsoleAction.Options, ConsoleAction.Settings, ConsoleAction.Cancel, ConsoleAction.More, ConsoleAction.ShelfBack };
 
         public static void Run()
         {
@@ -59,7 +59,7 @@ namespace Boopy.Quest.Editor
                 ThinkingWithoutPictureOrMotion();
                 Debug.Log("Boopy task presentation validation passed: one chip on the outlined subject at its session placement, " +
                     "the dialogue line with \"Boopy · Not sent\", one \"Answer\" control with Talk's mic under it and no follow-ups, no overlap, " +
-                    "no control under the line and Talk filled when the task offers no reply or the line shows the person's answer, " +
+                    "Talk as the row's first tile when the task offers no reply or the line shows the person's answer, " +
                     "answers as \"You · Not sent\" after \"Saving on your Mac…\", the thinking line changes on its own, " +
                     "a turn with no photo never says Boopy is looking, wrong item, retry with the same ids, standard and large text (synthetic).");
             }
@@ -157,6 +157,7 @@ namespace Boopy.Quest.Editor
             buttonTalk.Begin(0f); f.Console.ShowListening(false); f.Console.SetButtonRecording(true);
             f.Strip.Show(DialogueStage.Listening, "Listening… Tap Finish when done.");
             Settle(f);
+            FirstTile(f, ConsoleAction.FinishTalk, "A recording under a task");
             var cancel = Control(f.Console, ConsoleAction.Cancel);
             var hand = new HandInput(true, null, null);
             typeof(HandInput).GetProperty("Ray")!.SetValue(hand, new Ray(f.Eyes.position, cancel.transform.position - f.Eyes.position));
@@ -265,6 +266,7 @@ namespace Boopy.Quest.Editor
             Require(ActiveChips(f).Length == 0 && Overlays(f) == 0, "A wrong item kept its chip or outline.");
             Require(f.Strip.FullText == "Wrong item." && f.Strip.SpeakerText == "Boopy · Not sent", "A wrong item lacks its line.");
             Only(f.Console);
+            FirstTile(f, ConsoleAction.Talk, "A wrong item");
 
             // A later Talk turn returns to the session's own presentation.
             var later = Session();
@@ -276,6 +278,7 @@ namespace Boopy.Quest.Editor
             Require(Get(f.App, "task") == null && !f.Console.TaskShown, "A later turn kept the task.");
             Require(f.Strip.FullText == later.Dialogue.Text && f.Strip.SpeakerText == "Boopy", "A later turn kept the task's line.");
             Only(f.Console, ConsoleAction.FollowUpOne);
+            FirstTile(f, ConsoleAction.Talk, "A later turn");
             Require(Label(SingleChip(f)) == Annotation && SingleChip(f).ItemId == SubjectId, "A later turn lost the session's chip.");
             Require(f.Transport.Count("/v1/sessions/" + SessionId + "/actions") == 0, "The task confirmed or changed the subject.");
         }
@@ -391,22 +394,22 @@ namespace Boopy.Quest.Editor
 
             Only(f.Console, control ? new[] { ConsoleAction.AnswerTask } : Array.Empty<ConsoleAction>());
             Require(f.Console.SuggestedAction(ConsoleAction.FollowUpOne) == null, "A follow-up stays selectable under a task.");
-            foreach (var global in new[] { ConsoleAction.Talk, ConsoleAction.PauseScene, ConsoleAction.Options, ConsoleAction.Settings })
+            // One row: the speak tile first (Answer while Boopy's line asks, otherwise Talk, never both), then Pause and More.
+            foreach (var global in new[] { control ? ConsoleAction.AnswerTask : ConsoleAction.Talk, ConsoleAction.PauseScene, ConsoleAction.More })
                 Require(Control(f.Console, global).gameObject.activeInHierarchy, "The global bar changed: " + global);
-            if (!control)
-            {
-                Require(Control(f.Console, ConsoleAction.Talk).Primary, "Talk is not the filled control when Answer is hidden.");
-                return;
-            }
+            Require(!control || !Control(f.Console, ConsoleAction.Talk).gameObject.activeInHierarchy, "Talk shows beside Answer.");
+            FirstTile(f, control ? ConsoleAction.AnswerTask : ConsoleAction.Talk, "A presented task");
+            if (!control) return;
 
             var action = Control(f.Console, ConsoleAction.AnswerTask);
             Require(action.AccessibleLabel == "Answer", "The control is not labeled with the prompt, Answer: " + action.AccessibleLabel);
-            Require(action.Primary && !Control(f.Console, ConsoleAction.Talk).Primary, "Answer is not the one filled control.");
             var verb = action.GetComponentsInChildren<TextMeshPro>(true).Single(text => text.name == "Verb");
             verb.ForceMeshUpdate(true, true);
             var box = action.GetComponent<BoxCollider>();
             Require(Mathf.Approximately(verb.fontSize, SpatialTheme.Body) && !verb.isTextOverflowing && box.size.y >= SpatialTheme.Target,
                 "The control's type or hit target shrank.");
+            Require(verb.font == BoopyTypography.Load() && Mathf.Approximately(box.size.x, SpatialTheme.ShelfSlot) && verb.textInfo.lineCount == 1,
+                "The Answer tile lost the Regular face, the row's slot, or its one line.");
             foreach (var glyph in verb.textInfo.characterInfo.Take(verb.textInfo.characterCount).Where(glyph => glyph.isVisible))
             {
                 var low = action.transform.InverseTransformPoint(verb.transform.TransformPoint(glyph.bottomLeft));
@@ -427,14 +430,9 @@ namespace Boopy.Quest.Editor
             Require(micPoints.Length > 0 && micPoints.Max(point => point.x) < labelLeft
                 && micPoints.All(point => Mathf.Abs(point.x) <= box.size.x / 2f && Mathf.Abs(point.y) <= box.size.y / 2f),
                 "The mic is not at the label's left inside the target.");
-            Require(action.transform.parent == f.Strip.transform.parent, "The control left the answer's group.");
-            var bounds = box.bounds;
-            var lineBottom = f.Strip.transform.TransformPoint(new Vector3(0f, f.Strip.ConversationAnswerBottom, 0f)).y;
-            Require(Mathf.Abs((lineBottom - bounds.max.y) / f.Console.ComfortScale - .016f) < .002f, "The control is not directly under the dialogue line.");
-            var backing = f.Strip.GetComponentsInChildren<MeshRenderer>(true).Single(renderer => renderer.name == "Speech contrast backing").bounds;
-            Require(bounds.min.x >= backing.min.x - .001f && bounds.max.x <= backing.max.x + .001f && bounds.min.y >= backing.min.y - .001f
-                && bounds.max.y <= backing.max.y + .001f, "The control left the answer's backing.");
-            Require(!f.Strip.GetComponent<BoxCollider>().bounds.Intersects(bounds), "The caption pager overlaps the control.");
+            // The Answer tile is the row's first tile under the panel; the panel holds only Boopy's line.
+            Require(action.transform.parent.name == "Control bar", "The Answer tile is not in the row under the panel.");
+            Require(!f.Strip.GetComponent<BoxCollider>().bounds.Intersects(box.bounds), "The caption pager overlaps the control.");
             var ray = new Ray(f.Eyes.position, action.transform.position - f.Eyes.position);
             Require(f.Console.HitAction(ray, out _) == ConsoleAction.AnswerTask && f.Console.CanRelease(ConsoleAction.AnswerTask, ray), "The control cannot be pinched.");
 
@@ -448,11 +446,20 @@ namespace Boopy.Quest.Editor
             var occupied = new List<LabelRect>();
             f.Scene.AppendPresentationKeepouts(occupied, f.Console);
             Require(occupied.Count >= 2 && !chipArea.Intersects(occupied[occupied.Count - 1], 0f), "The chip overlaps the console's footprint.");
-            // The line and the control share one plane: measure them in it, where the 16 mm gap is.
-            var plane = action.transform.parent;
+            // The line and the tile lie in the console's plane: measure them in it.
+            var plane = f.Console.transform;
             var lineRect = PlaneRect(plane, lineCorners);
             var controlRect = PlaneRect(plane, BoxCorners(box));
             Require(!lineRect.Intersects(controlRect, 0f), "The dialogue line overlaps the control: " + Describe(lineRect, controlRect));
+        }
+
+        // The recommended action is the row's first tile; every tile has the same style, so position is the only difference.
+        private static void FirstTile(Fixture f, ConsoleAction expected, string when)
+        {
+            var bar = f.Console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Control bar");
+            var first = bar.GetComponentsInChildren<SpatialAction>().Where(control => control.gameObject.activeInHierarchy)
+                .OrderBy(control => control.transform.localPosition.x).Select(control => control.Action).FirstOrDefault();
+            Require(first == expected, when + ": expected " + expected + " as the first tile, found " + first + ".");
         }
 
         private static LabelRect PlaneRect(Transform plane, IEnumerable<Vector3> corners) => LabelRect.Envelope(corners
@@ -555,6 +562,7 @@ namespace Boopy.Quest.Editor
             Require(chip.ItemId == SubjectId && Label(chip) == Annotation && (chip.Home - sessionHome).sqrMagnitude < 1e-8f && Overlays(f) == 1,
                 cause + " moved or hid the session's chip or outline.");
             Only(f.Console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo);
+            FirstTile(f, ConsoleAction.Talk, cause);
         }
 
         private const string VoiceReply = "{\"type\":\"voice_reply\",\"prompt\":\"Answer.\"}";

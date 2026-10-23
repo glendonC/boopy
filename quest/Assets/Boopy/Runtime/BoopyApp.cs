@@ -703,7 +703,7 @@ namespace Boopy.Quest
             if (!inputAllowed || busy || buttonTalk.Recording || !MicrophoneAllowed()) return;
             if (NeedsCaptureRecovery)
             {
-                ReportFailure(recoveryStorageFailed ? "Could not read or update capture recovery. Choose Start new to clear the local record, then try again." : "Check the earlier capture, or choose Start new. It may still finish on the Mac.");
+                ReportFailure(recoveryStorageFailed ? "Could not read or update capture recovery. Choose New to clear the local record, then try again." : "Check the earlier capture, or choose New. It may still finish on the Mac.");
                 return;
             }
             console?.InputPolicy.SetInteractionState(inputAllowed, busy);
@@ -1228,12 +1228,12 @@ namespace Boopy.Quest
                 unresolvedSnapshot = null;
                 recoveryStorageFailed = false;
                 if (unresolvedStartId != null)
-                    cancelledWaitNotice = "An earlier capture needs checking. Its picture and room placement are not kept on the headset after a restart.";
+                    cancelledWaitNotice = "Boopy restarted before it heard back from your Mac. The picture is gone from the headset.";
             }
             catch (Exception)
             {
                 recoveryStorageFailed = true;
-                cancelledWaitNotice = "Could not read capture recovery. Choose Start new to clear the local record. Earlier work may still exist on the Mac.";
+                cancelledWaitNotice = "Could not read capture recovery. Choose New to clear the local record. Earlier work may still exist on the Mac.";
             }
             console?.SetCaptureRecovery(NeedsCaptureRecovery);
             if (NeedsCaptureRecovery && cancelledWaitNotice != null) ReportFailure(cancelledWaitNotice);
@@ -1250,7 +1250,7 @@ namespace Boopy.Quest
             catch (Exception)
             {
                 recoveryStorageFailed = true;
-                cancelledWaitNotice = "Could not keep capture recovery on the headset. No new capture was sent. Choose Start new, then try again.";
+                cancelledWaitNotice = "Could not keep capture recovery on the headset. No new capture was sent. Choose New, then try again.";
                 ReportFailure(cancelledWaitNotice);
                 console?.SetCaptureRecovery(true);
                 return false;
@@ -1263,7 +1263,7 @@ namespace Boopy.Quest
             catch (Exception)
             {
                 recoveryStorageFailed = true;
-                cancelledWaitNotice = "Could not clear the headset recovery record. Check again or choose Start new; earlier work stays on the Mac.";
+                cancelledWaitNotice = "Could not clear the headset recovery record. Check again or choose New; earlier work stays on the Mac.";
                 ReportFailure(cancelledWaitNotice);
                 console?.SetCaptureRecovery(true);
                 return false;
@@ -1321,9 +1321,9 @@ namespace Boopy.Quest
                     if (snapshot == null && receipt.View.State != "committed") dialogue?.Show(DialogueStage.Response, "Your earlier conversation is back. Object positions are unavailable after restart.");
                     return;
                 }
-                var words = receipt.Status == "pending" ? "The Mac is still working. Check again later, or choose Start new."
-                    : receipt.Status == "failed" ? "The earlier capture failed on the Mac. Choose Start new to capture again."
-                    : receipt.Status == "interrupted" ? "The Mac restarted before the capture finished. Choose Start new to capture again."
+                var words = receipt.Status == "pending" ? "The Mac is still working. Check again later, or choose New."
+                    : receipt.Status == "failed" ? "The earlier capture failed on the Mac. Choose New to capture again."
+                    : receipt.Status == "interrupted" ? "The Mac restarted before the capture finished. Choose New to capture again."
                     : "Could not verify this capture. Reconnect USB and check again.";
                 cancelledWaitNotice = words;
                 ReportFailure(words);
@@ -1335,12 +1335,12 @@ namespace Boopy.Quest
             }
             catch (ServiceException failure) when (failure.Status == 404)
             {
-                cancelledWaitNotice = "The Mac returned no receipt for this capture. Check again later, or choose Start new.";
+                cancelledWaitNotice = "The Mac returned no receipt for this capture. Check again later, or choose New.";
                 ReportFailure(cancelledWaitNotice);
             }
             catch (Exception)
             {
-                cancelledWaitNotice = "Could not verify this capture. Reconnect USB and check again, or choose Start new.";
+                cancelledWaitNotice = "Could not verify this capture. Reconnect USB and check again, or choose New.";
                 ReportFailure(cancelledWaitNotice);
             }
             finally

@@ -22,6 +22,11 @@ The interface stays in the person's language.
 
 One grounded subject and its label can sit in the room. The spoken line, choices, and settings
 are on a console under the companion. Live proposed names are visible and not tappable.
+Under the console, one row holds at most three tiles of one style, Pause always in the middle:
+Talk, Pause and More, which shows Context, Pause and Back in its place, Settings on the Context
+sheet. While recording it holds Finish, Pause and Cancel, and while Boopy works, Stop and Pause.
+After a restart before Boopy heard back about a capture, the console says "Earlier capture" with
+one sentence, and the row holds Check, Pause and New.
 
 While a turn is with the Mac, the line shows one of Boopy's thinking phrases, such as
 "Hmm, let me see…", with its shimmer moving from the first frame. The next phrase follows
@@ -33,10 +38,10 @@ show those stage words. An answer to a task reads "Saving on your Mac…" instea
 After a first turn about a grounded subject, the headset asks the Mac for the session's task.
 A first turn that offers a choice opens no task; the choice stays on the console.
 The task uses the same parts: the chip on the outlined subject and Boopy's line on the console.
-The line's speaker reads "Boopy · Not sent". Only when the line asks the person something does
-one Answer control, with Talk's mic at its left and labeled with the prompt the Mac sends, sit under
-it. While it shows, it is the one filled control and Talk is plain. Once the line shows the
-person's answer, or when the line asks nothing, there is no control under it and Talk is filled.
+The line's speaker reads "Boopy · Not sent". Only while the line asks the person something is the
+row's first tile Answer, with Talk's mic and labeled with the prompt the Mac sends, in Talk's
+place. Once the line shows the person's answer, or when the line asks nothing, Talk is the first
+tile again.
 A task without its chip or its line, with no answer and not marked wrong item, is not shown:
 the conversation keeps its own line and chip. A wrong item clears the chip and the outline and
 says "Wrong item."

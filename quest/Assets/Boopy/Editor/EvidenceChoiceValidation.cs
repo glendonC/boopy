@@ -48,7 +48,7 @@ namespace Boopy.Quest.Editor
                 console.Activate(ConsoleAction.UseSpokenOnly); Require(!console.InputPolicy.SpokenOnly, "Idle capture allowed stale source action.");
                 console.Render(view); console.Activate(ConsoleAction.UseCurrentView);
                 Require(!console.InputPolicy.SpokenOnly && !Visible(console, ConsoleAction.UseCurrentView), "Idempotent current-view choice did not dismiss.");
-                Require(Visible(console, ConsoleAction.Options), "Existing deliberate actions did not return.");
+                Require(Visible(console, ConsoleAction.More), "Existing deliberate actions did not return.");
                 console.Activate(ConsoleAction.Options);
                 Require(Visible(console, ConsoleAction.PrepareSave), "Explicit actions lost save access.");
                 console.Activate(ConsoleAction.Options);
@@ -65,10 +65,10 @@ namespace Boopy.Quest.Editor
                 console.Render(stale); Require(!Visible(console, ConsoleAction.UseCurrentView), "Stale attention offered source choice.");
                 console.Render(Response("", "clarify", "unknown")); Require(!Visible(console, ConsoleAction.UseCurrentView), "Empty identity offered choice.");
                 var saved = Response("synthetic-saved", "fresh-view", "current-surroundings"); saved.State = "committed"; saved.Committed = new Committed { PackageId = "synthetic-package" };
-                console.Render(saved); Require(Visible(console, ConsoleAction.Options) && !Visible(console, ConsoleAction.UseCurrentView), "Saved receipt changed into choice.");
+                console.Render(saved); Require(Visible(console, ConsoleAction.More) && !Visible(console, ConsoleAction.UseCurrentView), "Saved receipt changed into choice.");
                 console.Activate(ConsoleAction.Options); Require(Visible(console, ConsoleAction.Handoff), "Saved context lost deliberate handoff access.");
                 var failed = new SessionView { Id = "synthetic-failure", Notice = "Synthetic failed capture." };
-                console.Render(failed); Require(Visible(console, ConsoleAction.Options) && !Visible(console, ConsoleAction.UseCurrentView), "Generic failed capture invented evidence choice.");
+                console.Render(failed); Require(Visible(console, ConsoleAction.More) && !Visible(console, ConsoleAction.UseCurrentView), "Generic failed capture invented evidence choice.");
                 ValidateCameraGuard(false); ValidateCameraGuard(true);
                 Debug.Log("Boopy response-local evidence choice validation passed (synthetic; no wearer/device result).");
             }

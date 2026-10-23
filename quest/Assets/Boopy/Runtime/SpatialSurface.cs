@@ -25,6 +25,8 @@ namespace Boopy.Quest
         public Vector2 Size { get; private set; }
         public float Opacity => amount;
         public string BodyText => body?.text ?? "";
+        public string StateText => eyebrow?.text ?? "";
+        public string TitleText => title?.text ?? "";
 
         private void OnDestroy()
         {
