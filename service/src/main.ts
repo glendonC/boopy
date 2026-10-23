@@ -135,7 +135,7 @@ await connector.listen({ host: '127.0.0.1', port: config.connectorPort });
 console.log(
   [
     `${SERVICE}`,
-    `  headset API   http://127.0.0.1:${config.headsetPort} (reach it from the Quest with: adb reverse tcp:${config.headsetPort} tcp:${config.headsetPort})`,
+    `  headset API   http://127.0.0.1:${config.headsetPort} (reach it from the Quest with: adb reverse tcp:47900 tcp:${config.headsetPort})`,
     `  connector     ${config.connectorBaseUrl}/mcp and /v1/context (token in ${join(config.dataDir, 'connector-token')})`,
     `  interpreter   ${interpreter.provider}:${interpreter.model}`,
     `  segmentation  ${config.segmenter === null ? 'off (approximate boxes)' : 'Meta SAM 3.1 (hosted)'}`,

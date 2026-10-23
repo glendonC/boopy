@@ -65,6 +65,8 @@ test('failed optional local providers preserve core startup and honest capabilit
         output += data.toString();
       });
     });
+    // The Quest app always calls its own 47900, so the hint maps that port to this one.
+    assert.match(output, new RegExp(`adb reverse tcp:47900 tcp:${ports[0]}\\)`));
     const base = `http://127.0.0.1:${ports[0]}`;
     const health = await (await fetch(`${base}/v1/health`)).json();
     assert.equal(health.service, 'boopy');
