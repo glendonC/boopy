@@ -94,9 +94,12 @@ revision 1. The result is Boopy's own turn shown as task parts. It is not the pe
 assistant, and the journal marks it `simulator: true`. The system is its actor.
 
 The parts are, in order: a subject on the task's source, an annotation with the subject's
-label, a dialogue line with Boopy's reply, and a voice reply that prompts "Answer aloud.". The
-annotation and the dialogue cite the subject's item id. A label or reply that breaks the
-display rules is left out. It is never shortened or rewritten.
+label, and a dialogue line with Boopy's reply. A voice reply that prompts "Answer." follows only
+when that line asks the person something, which means it ends with a question mark before any
+closing quotes or brackets. The annotation and the dialogue cite the subject's item id. A label
+or reply that breaks the display rules is left out. It is never shortened or rewritten. Without
+Boopy's line there is nothing to answer, so a reply that is left out opens no task, and the
+route answers 409 `task_unavailable`.
 
 The opening and the result are appended in one journal transaction. Both are kept, or neither
 is. The result id is derived from the session, the reply's utterance, and the reply's time, so
@@ -159,7 +162,8 @@ A second task also shows what this version cannot do yet:
   source, and a task cites only its one frame and the session's items.
 - A spoken answer is always kept as a `practice-attempt`, whatever the task. The headset refuses
   any other kind of attempt.
-- The local stand-in result always offers "Answer aloud.", even when Boopy's line asks nothing.
+- Whether Boopy's line asks something is read from its final question mark. The interpreter has
+  no field that says so; its open questions are separate items the task view does not show.
 - A label with a character outside Boopy's display rules (Latin and Hangul letters and common
   signs), such as Ω or µ, gets no annotation. It is left out like an over-long label, never
   rewritten.

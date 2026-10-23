@@ -199,7 +199,6 @@ describe('open the session task', () => {
         { type: 'subject', sourceId: source.sourceId, maskId: null },
         { type: 'annotation', text: referent.label, evidenceIds: [referent.id] },
         { type: 'dialogue', text: session.dialogue.text, evidenceIds: [referent.id] },
-        { type: 'voice_reply', prompt: 'Answer aloud.' },
         { type: 'status', code: 'not-sent' },
       ]);
       const added = ctx.journal.all().slice(before);
@@ -422,38 +421,62 @@ describe('open the session task', () => {
 
   it('omits an over-long label or reply instead of shortening it', async () => {
     const label = 'Desert photo '.repeat(7).trim();
-    const reply = 'The photo shows dunes. '.repeat(10).trim();
-    const cases: [string, Change, string[]][] = [
-      [
-        'label',
-        (output) => ({
-          ...output,
-          items: output.items.map((item) => (item.key === 'photo' ? { ...item, label } : item)),
-        }),
-        ['subject', 'dialogue', 'voice_reply', 'status'],
-      ],
-      [
-        'reply',
-        (output) => ({ ...output, response: reply }),
-        ['subject', 'annotation', 'voice_reply', 'status'],
-      ],
-    ];
-    for (const [name, change, types] of cases) {
-      const ctx = setup(change);
+    const reply = 'Do the photo dunes look tall? '.repeat(8).trim();
+    const labelled = setup((output) => ({
+      ...output,
+      items: output.items.map((item) => (item.key === 'photo' ? { ...item, label } : item)),
+    }));
+    try {
+      const session = await labelled.start();
+      const referent = session.items.find((item) => item.id === session.referentId);
+      assert.equal(referent?.label, label);
+      const response = await labelled.post(`/v1/sessions/${session.id}/task`, OPEN);
+      assert.equal(response.statusCode, 200, response.body);
+      assert.deepEqual(
+        response.json().components.map((component: { type: string }) => component.type),
+        ['subject', 'dialogue', 'status'],
+      );
+      assert.equal(response.body.includes(label.slice(0, 40)), false);
+    } finally {
+      await labelled.close();
+    }
+    // Without Boopy's line there is nothing to answer, so no task opens, even when the reply asked.
+    const replied = setup((output) => ({ ...output, response: reply }));
+    try {
+      const session = await replied.start();
+      assert.equal(session.dialogue?.text, reply);
+      const before = replied.journal.all().length;
+      const response = await replied.post(`/v1/sessions/${session.id}/task`, OPEN);
+      assert.equal(response.statusCode, 409, response.body);
+      assert.equal(response.json().error.code, 'task_unavailable');
+      assert.equal(response.body.includes(reply.slice(0, 40)), false);
+      assert.equal(replied.journal.all().length, before);
+    } finally {
+      await replied.close();
+    }
+  });
+
+  it("offers an answer only under Boopy's line when it asks something", async () => {
+    for (const [reply, asks] of [
+      ['Is this your desert photo?', true],
+      ['This looks like a desert photo.', false],
+    ] as const) {
+      const ctx = setup((output) => ({ ...output, response: reply }));
       try {
         const session = await ctx.start();
-        const referent = session.items.find((item) => item.id === session.referentId);
-        if (name === 'label') assert.equal(referent?.label, label);
-        else assert.equal(session.dialogue?.text, reply);
+        assert.equal(session.dialogue?.text, reply);
         const response = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
         assert.equal(response.statusCode, 200, response.body);
+        const parts = response.json().components;
         assert.deepEqual(
-          response.json().components.map((component: { type: string }) => component.type),
-          types,
-          name,
+          parts.map((component: { type: string }) => component.type),
+          asks
+            ? ['subject', 'annotation', 'dialogue', 'voice_reply', 'status']
+            : ['subject', 'annotation', 'dialogue', 'status'],
+          reply,
         );
-        assert.equal(response.body.includes(label.slice(0, 40)), false, name);
-        assert.equal(response.body.includes(reply.slice(0, 40)), false, name);
+        if (asks) assert.deepEqual(parts[3], { type: 'voice_reply', prompt: 'Answer.' });
+        assert.equal(response.json().delivery, 'not-sent');
       } finally {
         await ctx.close();
       }
@@ -515,7 +538,10 @@ describe('open the session task', () => {
       const response = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
       assert.equal(response.statusCode, 200, response.body);
       assert.equal(response.json().revision, 1);
-      assert.equal(response.json().components.length, 5);
+      assert.deepEqual(
+        response.json().components.map((component: { type: string }) => component.type),
+        ['subject', 'annotation', 'dialogue', 'status'],
+      );
       assert.deepEqual(
         ctx.journal
           .all()
@@ -1078,7 +1104,7 @@ describe('a second kind of task through the same routes', () => {
           text: 'The label says PRESS TO RESET. Is the light still blinking?',
           evidenceIds: [referent.id],
         },
-        { type: 'voice_reply', prompt: 'Answer aloud.' },
+        { type: 'voice_reply', prompt: 'Answer.' },
       ];
       assert.deepEqual(task.source, source);
       assert.equal(task.intent, 'consult_source');
@@ -1149,7 +1175,7 @@ describe('a second kind of task through the same routes', () => {
     }
   });
 
-  it('a label outside the display rules gets no annotation and keeps the line and Answer aloud', async () => {
+  it('a label outside the display rules gets no annotation and keeps the line and the answer', async () => {
     const reply = 'The label names a reset setting. Is the light still blinking?';
     const ctx = setup(() => ({
       ...LABEL_READ,
@@ -1174,7 +1200,7 @@ describe('a second kind of task through the same routes', () => {
       assert.deepEqual(task.components, [
         { type: 'subject', sourceId: task.source.sourceId, maskId: null },
         { type: 'dialogue', text: reply, evidenceIds: [referent.id] },
-        { type: 'voice_reply', prompt: 'Answer aloud.' },
+        { type: 'voice_reply', prompt: 'Answer.' },
         { type: 'status', code: 'not-sent' },
       ]);
       assert.equal(task.delivery, 'not-sent');

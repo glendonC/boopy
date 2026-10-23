@@ -57,10 +57,40 @@ describe('local stand-in for a first completed turn', () => {
         { type: 'subject', sourceId: 'src_obs_2', maskId: null },
         { type: 'annotation', text: 'Desert photo', evidenceIds: ['int_4.photo'] },
         { type: 'dialogue', text: 'A desert photo with camels.', evidenceIds: ['int_4.photo'] },
-        { type: 'voice_reply', prompt: 'Answer aloud.' },
       ],
     });
     assert.deepEqual(standIn(SESSION, IDS, facts), plan);
+  });
+
+  it("offers an answer only when Boopy's line asks the person something", () => {
+    const dialogue = facts.dialogue;
+    assert.ok(dialogue);
+    const reply = (text: string) =>
+      standIn(SESSION, IDS, { ...facts, dialogue: { ...dialogue, text } });
+    for (const text of [
+      'Is it a camel?',
+      '이게 낙타예요?',
+      '이게 뭐예요？',
+      'Did you say "camel?"',
+      'Is it (the camel?)',
+      'A camel‽',
+    ]) {
+      const parts = reply(text)?.result.components;
+      assert.deepEqual(components(reply(text)), [
+        'subject',
+        'annotation',
+        'dialogue',
+        'voice_reply',
+      ]);
+      assert.deepEqual(parts?.at(-1), { type: 'voice_reply', prompt: 'Answer.' }, text);
+    }
+    for (const text of [
+      'A desert photo with camels.',
+      'Is it a camel? It looks like one.',
+      'A camel!',
+      'It may be a camel',
+    ])
+      assert.deepEqual(components(reply(text)), ['subject', 'annotation', 'dialogue'], text);
   });
 
   it('refuses a turn that is not ready instead of filling the gap', () => {
@@ -119,39 +149,35 @@ describe('local stand-in for a first completed turn', () => {
       [
         'a label over 80',
         { ...facts, referent: { ...referent, label: long } },
-        ['subject', 'dialogue', 'voice_reply'],
+        ['subject', 'dialogue'],
       ],
       [
         'a label with markup',
         { ...facts, referent: { ...referent, label: '<b>Photo</b>' } },
-        ['subject', 'dialogue', 'voice_reply'],
+        ['subject', 'dialogue'],
       ],
       [
         'a label that trimming changes',
         { ...facts, referent: { ...referent, label: ' Desert photo' } },
-        ['subject', 'dialogue', 'voice_reply'],
-      ],
-      [
-        'a reply over 200',
-        { ...facts, dialogue: { ...dialogue, text: 'b'.repeat(201) } },
-        ['subject', 'annotation', 'voice_reply'],
-      ],
-      [
-        'a reply on two lines',
-        { ...facts, dialogue: { ...dialogue, text: 'One.\nTwo.' } },
-        ['subject', 'annotation', 'voice_reply'],
+        ['subject', 'dialogue'],
       ],
     ];
     for (const [name, value, types] of cases) {
       const plan = standIn(SESSION, IDS, value);
       assert.deepEqual(components(plan), types, name);
-      const texts = JSON.stringify(plan?.result.components);
-      assert.doesNotMatch(texts, /AAAA|bbbb|Photo<|One\./, name);
+      assert.doesNotMatch(JSON.stringify(plan?.result.components), /AAAA|Photo</, name);
     }
+    // Without Boopy's line there is nothing to answer, so nothing is offered and no task opens.
+    for (const text of [`${'b'.repeat(200)}?`, 'One?\nTwo?'])
+      assert.equal(
+        standIn(SESSION, IDS, { ...facts, dialogue: { ...dialogue, text } }),
+        null,
+        text,
+      );
     const exact = standIn(SESSION, IDS, {
       ...facts,
       referent: { ...referent, label: 'L'.repeat(80) },
-      dialogue: { ...dialogue, text: 'd'.repeat(200) },
+      dialogue: { ...dialogue, text: `${'d'.repeat(199)}?` },
     });
     assert.deepEqual(components(exact), ['subject', 'annotation', 'dialogue', 'voice_reply']);
   });

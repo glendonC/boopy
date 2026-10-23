@@ -9,17 +9,22 @@ import { displayText, Sha256 } from '../activity-contract.ts';
 import type { TaskTurn } from '../boopy.ts';
 import { type Component, EvidenceId, OpenTask, ProviderResult, personLine } from './contract.ts';
 
-const ANSWER_PROMPT = 'Answer aloud.';
+const ANSWER_PROMPT = 'Answer.';
 const LABEL = displayText(80);
 const LINE = displayText(200);
+/** Question marks across scripts that the display rules let through. */
+const QUESTION = /[?？؟‽⁇⁈﹖︖⸮]$/u;
+/** Closing quotes and brackets that may follow a question mark. */
+const CLOSING = /[\p{Pe}\p{Pf}"']+$/u;
 
 /**
  * The opening and the first result for a session's first completed visual turn, or null when the
  * session lacks something they need. Boopy's latest reply must answer that turn without a choice
  * card, the selected subject must stand on that turn's view, and the person's words must already
  * be one line of at most 400 characters. A label or reply the display rules refuse is left out,
- * never shortened or rewritten. The result id comes from the reply, so a retry names the same
- * result.
+ * never shortened or rewritten. An answer is offered only under a shown line that asks the person
+ * something, so a reply that is left out opens no task. The result id comes from the reply, so a
+ * retry names the same result.
  */
 export function standIn(
   sessionId: string,
@@ -51,9 +56,10 @@ export function standIn(
   const components: Component[] = [{ type: 'subject', sourceId, maskId: null }];
   if (unchanged(LABEL, referent.label))
     components.push({ type: 'annotation', text: referent.label, evidenceIds });
-  if (unchanged(LINE, dialogue.text))
+  if (unchanged(LINE, dialogue.text)) {
     components.push({ type: 'dialogue', text: dialogue.text, evidenceIds });
-  components.push({ type: 'voice_reply', prompt: ANSWER_PROMPT });
+    if (asks(dialogue.text)) components.push({ type: 'voice_reply', prompt: ANSWER_PROMPT });
+  }
   const digest = createHash('sha256')
     .update(`${sessionId}:${dialogue.utteranceId}:${dialogue.at}`)
     .digest('hex');
@@ -75,6 +81,15 @@ export function standIn(
     components,
   });
   return open.success && result.success ? { open: open.data, result: result.data } : null;
+}
+
+/**
+ * Whether Boopy's line asks the person something: it ends with a question mark, before any closing
+ * quotes or brackets. The interpreter has no structured field for this; its open questions are
+ * separate items the task view does not show.
+ */
+function asks(line: string): boolean {
+  return QUESTION.test(line.replace(CLOSING, ''));
 }
 
 /** Whether a value passes a schema exactly as it is, with nothing trimmed or normalized. */
