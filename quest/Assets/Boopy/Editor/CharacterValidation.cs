@@ -28,7 +28,10 @@ namespace Boopy.Quest.Editor
                 Require(lenses.Length == 2 && lenses.All(r => Mathf.Abs(r.transform.localScale.x - .00744f) < .00001f && r.transform.localScale.z < .0023f), "Eyes no longer match study dimensions.");
                 Require(lenses.All(r => Mathf.Abs(r.transform.parent.localPosition.x) < .013f), "Eyes retain oversized lateral placement.");
                 Require(!ShaderUtil.ShaderHasError(renderers[0].sharedMaterial.shader), "Character shader has compile errors.");
-                Require(renderers.Length == 5, "Expected body, two eyes and two detached blobs only.");
+                // Boopy's light toward a subject is not anatomy: it is the one other renderer, and it is off at rest.
+                var cone = renderers.Where(r => r.name == "Attention cone").ToArray();
+                Require(renderers.Length - cone.Length == 5 && cone.Length == 1 && !cone[0].enabled,
+                    "Expected body, two eyes and two detached blobs only, with the attention cone off at rest.");
                 Require(first.GetComponentsInChildren<Collider>(true).All(c => !c.enabled), "Character has live interaction colliders.");
                 var hands = renderers.Where(r => r.name.Contains("detached blob hand")).ToArray();
                 Require(hands.Length == 2 && hands.All(h => h.transform.parent == renderers.Single(r => r.name == "Porcelain body").transform.parent), "Hands are not two independent body children.");
