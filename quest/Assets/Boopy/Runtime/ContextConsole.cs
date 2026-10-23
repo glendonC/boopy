@@ -442,7 +442,7 @@ namespace Boopy.Quest
                     actions[ConsoleAction.AnswerTask].Label(taskActionLabel);
                     dock.gameObject.SetActive(false);
                 }
-                else if (reviewing && suggestions.Count > 0)
+                else if (reviewing && suggestions.Count > 0 && (dockedDialogue == null || !dialogueVisible))
                 {
                     conversationPanelHeight=rowHeights.Sum()+SpatialTheme.Gap*Mathf.Max(0,rowHeights.Length-1);
                     header.ReserveHeight(dockedDialogue?.ConversationPanelHeight(conversationPanelHeight) ?? .160f+conversationPanelHeight);
@@ -518,11 +518,17 @@ namespace Boopy.Quest
             // A notice over a line that offers a choice leaves the choice standing: nothing takes its slot until the line returns.
             var choiceUnderNotice = choiceOnLine == null && reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen && !recoveryOffered && !evidenceOffered
                 && dockedDialogue?.NoticeShown == true && view?.Dialogue?.Choice?.Supported == true && dockedDialogue.LineText == view.Dialogue.Text;
+            var questions = choiceOnLine == null && !choiceUnderNotice && reviewing && !readerOpen && !savePreview && !handoffOpen && !optionsOpen
+                && !recoveryOffered && !evidenceOffered && suggestions.Count > 0 && dockedDialogue != null && dialogueVisible && moreOpen == false;
             if (dockedDialogue != null)
             {
                 if (choiceOnLine != null) dockedDialogue.SetItems(choiceOnLine.Options.Select(option => option.Label).ToArray(), true);
+                else if (questions) dockedDialogue.SetItems(suggestions.Select(suggestion => suggestion.Question).ToArray(), false, "You could ask");
                 else dockedDialogue.SetItems(System.Array.Empty<string>(), false);
             }
+            var shown = dockedDialogue?.ShownItem ?? -1;
+            if (questions && shown >= 0 && shown < suggestions.Count)
+                shownSuggestionIds[shown == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo] = suggestions[shown].Id;
             if (choiceOnLine != null || choiceUnderNotice || busy || captureRecovery || mode=="listening") moreOpen = false;
             // Pause, the privacy stop, keeps slot 2 in every state; each state names its first and third tiles.
             var (first, third) = buttonRecording ? (ConsoleAction.FinishTalk, ConsoleAction.Cancel)
@@ -532,11 +538,17 @@ namespace Boopy.Quest
                 : moreOpen ? (ConsoleAction.Options, ConsoleAction.ShelfBack)
                 : choiceOnLine != null && (dockedDialogue?.ShownItem ?? -1) >= 0 ? (ConsoleAction.Talk, ConsoleAction.SendChoice)
                 : choiceUnderNotice ? (ConsoleAction.Talk, ConsoleAction.None)
+                : questions && shown >= 0 ? (ConsoleAction.Talk, shown == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo)
                 : (asks ? ConsoleAction.AnswerTask : ConsoleAction.Talk, ConsoleAction.More);
             if (third == ConsoleAction.SendChoice)
             {
                 actions[ConsoleAction.SendChoice].transform.SetParent(bar.transform, false);
                 actions[ConsoleAction.SendChoice].Label("Choose");
+            }
+            if (third == ConsoleAction.FollowUpOne || third == ConsoleAction.FollowUpTwo)
+            {
+                actions[third].transform.SetParent(bar.transform, false);
+                actions[third].Label("Ask");
             }
             var shelf = new[] { first, ConsoleAction.PauseScene, third };
             if (recoveryOffered)
@@ -556,7 +568,7 @@ namespace Boopy.Quest
             headerHit.enabled = !dialogueVisible && !recoveryOffered && !evidenceOffered && reviewing && !savePreview && !busy && view?.IntentId != null;
             // A line alone keeps the subtitle's full paging target; with rows under it the panel is exactly the line and its
             // rows, so it ends one gap above the shelf.
-            if (choiceOnLine != null && dockedDialogue != null) header.ReserveHeight(dockedDialogue.PanelHeight);
+            if ((choiceOnLine != null || questions) && dockedDialogue != null) header.ReserveHeight(dockedDialogue.PanelHeight);
             else if (conversationPanelHeight <= 0f && !recoveryOffered) header.ReserveHeight(.160f);
             if (companion != null)
             {
@@ -621,9 +633,10 @@ namespace Boopy.Quest
         {
             RefreshSuggestions();
             var index = action == ConsoleAction.FollowUpOne ? 0 : action == ConsoleAction.FollowUpTwo ? 1 : -1;
+            // Ask sends the question the line shows.
             return index >= 0 && index < suggestions.Count && actions[action].gameObject.activeInHierarchy
-                && shownSuggestionIds.TryGetValue(action, out var id) && suggestions[index].Id == id
-                && actions[action].AccessibleLabel == suggestions[index].Question ? suggestions[index] : null;
+                && shownSuggestionIds.TryGetValue(action, out var id) && suggestions[index].Id == id && dockedDialogue != null
+                && dockedDialogue.ShownItem == index && index < dockedDialogue.Items.Count && dockedDialogue.Items[index] == suggestions[index].Question ? suggestions[index] : null;
         }
         // A choice shows only on Boopy's line, its options paged under its prompt.
         private ChoiceCard? ActiveChoice() => !taskShown && view?.Dialogue?.Choice is ChoiceCard choice && choice.Supported

@@ -82,9 +82,9 @@ namespace Boopy.Quest.Editor
                 reference.Start();
                 Require(reference.Transport.Count("/v1/sessions/" + SessionId + "/task") == 1, "A task-ready first turn did not ask for its task.");
                 Require(Get(reference.App, "task") == null && !reference.Console.TaskShown, "An unavailable task changed the presentation.");
-                Require(reference.Strip.Stage == DialogueStage.Response && reference.Strip.FullText == Line && reference.Strip.SpeakerText == "Boopy",
+                Require(reference.Strip.Stage == DialogueStage.Response && reference.Strip.FullText == Line && reference.Strip.SpeakerText == "Boopy · 1 of 3",
                     "An unavailable task showed an error or changed the session line.");
-                Only(reference.Console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo);
+                Questions(reference, SessionQuestions);
                 sessionHome = SingleChip(reference).Home;
             }
 
@@ -276,8 +276,8 @@ namespace Boopy.Quest.Editor
             Invoke(f.App, "Apply", later);
             Settle(f);
             Require(Get(f.App, "task") == null && !f.Console.TaskShown, "A later turn kept the task.");
-            Require(f.Strip.FullText == later.Dialogue.Text && f.Strip.SpeakerText == "Boopy", "A later turn kept the task's line.");
-            Only(f.Console, ConsoleAction.FollowUpOne);
+            Require(f.Strip.FullText == later.Dialogue.Text && f.Strip.SpeakerText == "Boopy · 1 of 2", "A later turn kept the task's line.");
+            Questions(f, "What would identify it?");
             FirstTile(f, ConsoleAction.Talk, "A later turn");
             Require(Label(SingleChip(f)) == Annotation && SingleChip(f).ItemId == SubjectId, "A later turn lost the session's chip.");
             Require(f.Transport.Count("/v1/sessions/" + SessionId + "/actions") == 0, "The task confirmed or changed the subject.");
@@ -379,7 +379,7 @@ namespace Boopy.Quest.Editor
             f.Transport.SessionView = Session(grounded: false);
             f.Start();
             Require(f.Transport.Count(OpenPath) == 0 && !f.Console.TaskShown, "An ungrounded turn asked for a task.");
-            Only(f.Console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo);
+            Questions(f, SessionQuestions);
         }
 
         private static void Presented(Fixture f, string caption, string speaker, bool control, Vector3 sessionHome)
@@ -513,6 +513,13 @@ namespace Boopy.Quest.Editor
                 .Single(control => control.Action == action && control.GetComponentInParent<DialogueStrip>(true) == null);
 
         // Exactly these controls outside the global bar; the bar itself is checked separately.
+        private static readonly string[] SessionQuestions = { "Who placed this marker?", "What does the nearby sign say?" };
+        // The line's questions page behind it, one per page; the line's own page offers nothing to ask.
+        private static void Questions(Fixture f, params string[] questions)
+        {
+            Require(f.Strip.Items.SequenceEqual(questions) && f.Strip.ShownItem < 0, "The line's questions do not page behind it: [" + string.Join(", ", f.Strip.Items) + "].");
+            Only(f.Console);
+        }
         private static void Only(ContextConsole console, params ConsoleAction[] expected)
         {
             var actual = console.GetComponentsInChildren<SpatialAction>(true)
@@ -585,11 +592,11 @@ namespace Boopy.Quest.Editor
         {
             Settle(f);
             Require(Get(f.App, "task") == null && !f.Console.TaskShown, cause + " took over the session's presentation.");
-            Require(f.Strip.gameObject.activeInHierarchy && f.Strip.FullText == Line && f.Strip.SpeakerText == "Boopy", cause + " hid Boopy's answer.");
+            Require(f.Strip.gameObject.activeInHierarchy && f.Strip.FullText == Line && f.Strip.SpeakerText == "Boopy · 1 of 3", cause + " hid Boopy's answer.");
             var chip = SingleChip(f);
             Require(chip.ItemId == SubjectId && Label(chip) == Annotation && (chip.Home - sessionHome).sqrMagnitude < 1e-8f && Overlays(f) == 1,
                 cause + " moved or hid the session's chip or outline.");
-            Only(f.Console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo);
+            Questions(f, SessionQuestions);
             FirstTile(f, ConsoleAction.Talk, cause);
         }
 

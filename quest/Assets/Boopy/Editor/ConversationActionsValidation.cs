@@ -29,14 +29,10 @@ namespace Boopy.Quest.Editor
                 view.Dialogue.Actions.Add(new ContextualAction { Id = "question-three", Question = "An extra question" });
                 console.Render(view); dialogue.Show(DialogueStage.Response, view.Dialogue.Text);
                 var exactReply = dialogue.FullText;
-                Only(console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo, ConsoleAction.Options);
                 var bar = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Control bar");
                 var anchor = bar.transform.position;
-                Require(console.SuggestedAction(ConsoleAction.FollowUpOne)?.Id == "question-one", "Generated question lost its source identity.");
-                foreach (var action in new[] { ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo }) { Fits(console, action); Hit(console, eyes, action); }
-                var firstBox = Control(console, ConsoleAction.FollowUpOne).GetComponent<BoxCollider>();
-                var secondBox = Control(console, ConsoleAction.FollowUpTwo).GetComponent<BoxCollider>();
-                Require(firstBox.transform.localPosition.y - firstBox.size.y / 2f > secondBox.transform.localPosition.y + secondBox.size.y / 2f, "Wrapped question hit targets overlap.");
+                // At most two questions, each on its own page behind the line, with Ask in the row; the line's page has none.
+                Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.SuppressSuggestions(); console.Render(view);
                 Only(console, ConsoleAction.Options);
                 Require(view.Dialogue.Actions.Count == 3 && view.Items[0].Status == "proposed", "Suppression mutated service state or context.");
@@ -44,8 +40,8 @@ namespace Boopy.Quest.Editor
                 Require(console.ReaderOpen && console.SelectedItemId == "synthetic-source", "Suppression removed source inspection.");
                 console.Activate(ConsoleAction.Review);
                 view.Dialogue.At = "1970-01-01T12:00:02Z";
-                console.Render(view); Only(console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo, ConsoleAction.Options);
-                Require(console.SuggestedAction(ConsoleAction.FollowUpOne)?.Id == "question-one", "New accepted response retained old suggestion suppression.");
+                console.Render(view); Questions(console, dialogue, eyes, "question-one", "question-two");
+                dialogue.NextPage();
                 view.Dialogue.UtteranceId = "stale-turn";
                 Require(console.SuggestedAction(ConsoleAction.FollowUpOne) == null, "Stale displayed suggestion remains actionable.");
                 console.Render(view); Only(console, ConsoleAction.Options);
@@ -72,15 +68,15 @@ namespace Boopy.Quest.Editor
                     console.Activate(ConsoleAction.NextText);
                 }
                 Require(exactAccountVisible, "Source pagination dropped exact personal account.");
-                console.Activate(ConsoleAction.Review); Only(console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo, ConsoleAction.Options);
+                console.Activate(ConsoleAction.Review); Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.Activate(ConsoleAction.Options); console.Activate(ConsoleAction.PrepareSave);
                 Require(console.SavePreviewOpen && view.Committed == null && view.Items[0].Status == "proposed", "Preparation silently committed or confirmed context.");
                 Only(console, ConsoleAction.Back, ConsoleAction.Save);
                 Require(Label(console, ConsoleAction.Save) == "Use this context", "Preparation confirmation hides its purpose.");
-                console.Activate(ConsoleAction.Back); Only(console, ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo, ConsoleAction.Options);
+                console.Activate(ConsoleAction.Back); Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.Activate(ConsoleAction.More); console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.Size); Hit(console, eyes, ConsoleAction.Settings);
                 console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.ShelfBack);
-                foreach (var action in new[] { ConsoleAction.FollowUpOne, ConsoleAction.FollowUpTwo }) Fits(console, action);
+                Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.ShowProcessing(); Only(console, ConsoleAction.Cancel);
                 Require(console.SuggestedAction(ConsoleAction.FollowUpOne) == null, "Busy state retained a suggested action.");
                 console.Render(view); console.SetCaptureRecovery(true); Only(console, ConsoleAction.CheckCapture, ConsoleAction.DismissCapture);
@@ -110,6 +106,23 @@ namespace Boopy.Quest.Editor
             finally { UnityEngine.Object.DestroyImmediate(root); }
         }
         private static SpatialAction Control(ContextConsole console,ConsoleAction action)=>console.GetComponentsInChildren<SpatialAction>(true).Single(control=>control.Action==action);
+        // Pages the line once around: its own page with nothing to ask, then each question with Ask. It ends on the line's page.
+        private static void Questions(ContextConsole console, DialogueStrip dialogue, Transform eyes, params string[] ids)
+        {
+            while (dialogue.ShownItem >= 0) dialogue.NextPage();
+            Only(console);
+            Require(dialogue.PageCount == 1 + ids.Length, "Expected " + ids.Length + " question pages behind the line, found " + (dialogue.PageCount - 1) + ".");
+            for (var index = 0; index < ids.Length; index++)
+            {
+                dialogue.NextPage();
+                var action = index == 0 ? ConsoleAction.FollowUpOne : ConsoleAction.FollowUpTwo;
+                Only(console, action);
+                Require(console.SuggestedAction(action)?.Id == ids[index] && Label(console, action) == "Ask", "Generated question lost its source identity.");
+                Fits(console, action); Hit(console, eyes, action);
+            }
+            dialogue.NextPage();
+            Require(dialogue.ShownItem < 0, "The questions do not wrap to the line.");
+        }
         private static void AssertFootprint(ContextConsole console)
         {
             var center = console.transform.position + console.transform.up * console.LayoutCenterOffset;

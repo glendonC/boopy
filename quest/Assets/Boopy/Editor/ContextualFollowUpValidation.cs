@@ -33,9 +33,12 @@ namespace Boopy.Quest.Editor
                 var room = root.AddComponent<RoomCamera>();
                 var scene = SessionScene.Create(root.transform, room, eyes);
                 var console = ContextConsole.Create(root.transform, eyes); console.Place(new Vector3(0, 0, 1));
-                var strip = DialogueStrip.Create(root.transform, eyes);
+                var strip = DialogueStrip.Create(root.transform, eyes); console.DockDialogue(strip);
                 var app = root.AddComponent<BoopyApp>();
-                var prior = View(false); console.Render(prior);
+                var prior = View(false); console.Render(prior); strip.Show(DialogueStage.Response, prior.Dialogue!.Text);
+                // The question pages behind Boopy's line: nothing to ask until its page shows.
+                Require(console.SuggestedAction(ConsoleAction.FollowUpOne) == null, "A question is offered before its page shows.");
+                strip.NextPage();
                 Set(app, "head", eyes); Set(app, "room", room); Set(app, "scene", scene); Set(app, "console", console); Set(app, "dialogue", strip);
                 Set(app, "status", StatusLine.Create(root.transform, eyes, Visuals.Quad()));
                 Set(app, "session", prior);

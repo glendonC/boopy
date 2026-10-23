@@ -91,9 +91,10 @@ next option, then tap **Choose** to send the one shown. If the choice stops or f
 answers, it stays, unless the Mac says it is no longer available. A later Talk turn returns to the conversation's
 own line.
 
-Without a task, a response may offer up to two contextual questions. Pinching one continues the
-same conversation against its recorded evidence; it does not open the microphone, capture another
-view or confirm a claim. You can continue speaking instead. Long questions wrap at the existing
+Without a task, a response may offer up to two contextual questions, each on its own page behind
+Boopy's line. Pinch the line's panel to page to one, then tap **Ask**: the same conversation
+continues against its recorded evidence; it does not open the microphone, capture another view or
+confirm a claim. You can continue speaking instead. Long questions wrap at the existing
 readable font size. Caption paging preserves exact returned text.
 
 **More** on the shelf under the console shows **Context**, **Settings** and **Back** in its

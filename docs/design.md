@@ -90,7 +90,7 @@ question and choice rows stay left-aligned, as content. Sheets and cards sit on 
 column: their dark panel spans the text column with the line's 12 mm side margin, and their
 words start on the text column. Under a choice the row reads Talk, Pause and Choose: the panel holds
 Boopy's prompt and, as its own paragraph one gap (0.014 m) under it, one option, and Choose sends
-the option shown.
+the option shown. On a follow-up question's page the row reads Talk, Pause and Ask.
 
 A capture left pending by a restart is a dialog on the line's dark panel: "Earlier capture" and
 one sentence, with no speaker line; Check and New sit on either side of Pause in the row under it.
