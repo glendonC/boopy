@@ -6,24 +6,32 @@ using N = System.Numerics;
 namespace Boopy.Quest
 {
     /// <summary>
-    /// Converts live Unity poses to the compact HUD follow rule. Root owns when to freeze, acceptance
-    /// of the proposed footprint, and applying placement; this component never moves room labels.
+    /// Converts live Unity poses to the console's room rule: its home in the current view, and whether it stands far from it.
+    /// Root owns when to freeze, acceptance of the footprint, and applying placement; this component never moves room labels.
     /// </summary>
     public sealed class FollowConsole : MonoBehaviour
     {
         private readonly ViewFollow motion = new ViewFollow();
         private Transform? viewer;
         private Transform? panel;
+        private ContextConsole? controls;
         public bool Ready => viewer != null && panel != null;
         public bool Following => motion.Following;
         public Vector3 DesiredPosition => Target();
+        /// <summary>The console's home for the current head pose, where a turn places it and where it comes back to.</summary>
+        public Vector3 Home => viewer != null && controls != null ? SessionScene.HomeFor(viewer, controls) : DesiredPosition;
 
         public void Initialize(Transform head, Transform console)
         {
             viewer = head;
             panel = console;
+            controls = console.GetComponent<ContextConsole>();
             motion.Reset();
         }
+
+        /// <summary>True when the console stands more than 30 degrees from <paramref name="home"/>, as seen now.</summary>
+        public bool FarFrom(Vector3 home) => viewer != null && panel != null
+            && ViewFollow.Reanchors(Pose(), ToNumerics(panel.position), ToNumerics(home));
 
         public Vector3 Target(float yawDegrees = 0f, float pitchDegrees = -20f)
         {

@@ -41,6 +41,8 @@ namespace Boopy.Quest
         private ConsoleAction hoveredControl;
         private InteractionAudio? feedback;
         private FollowConsole? following;
+        // From the pinch, or a choice or follow-up sent, until its answer has shown: the console keeps the turn's place.
+        private bool turnOpen, turnAnswered;
         private CancellationTokenSource? captureRequest;
         private CancellationTokenSource? handoffWait;
         private HandoffRequest? handoffSelection;
@@ -124,6 +126,41 @@ namespace Boopy.Quest
             console.VisitSubject(visit, anchor, outline, () => scene.SweepSubject(visit), () => scene.SubjectSweepProgress);
         }
 
+        // Each frame: where the console and its line stay. A turn keeps its place; after it the console stays in the room, and
+        // comes back home by fade only when home is far off and the eyes are elsewhere.
+        private void KeepConsolePlace(Ray gazeRay, HandInput? aiming)
+        {
+            if (following == null || console == null || scene == null) return;
+            var frozen = !inputAllowed || active != null || pendingDialogue || console.ContainsRay(gazeRay)
+                || (aiming != null && console.ContainsRay(aiming.Ray));
+            console.SetInteractionLocked(frozen);
+            console.SetCompanionFrozen(!inputAllowed || console.HasFocus || console.Reading || pendingControl != ConsoleAction.None);
+            if (turnAnswered && console.ReplySettled) CloseTurn();
+            var home = following.Home;
+            if (!turnOpen && !console.Relocating && !frozen && (!scene.ConsolePlaced || following.FarFrom(home))) scene.ReanchorConsole(console, home);
+            else scene.HoldConsole(console);
+            if (!console.Relocating) dialogue?.SetFallback(!scene.ConsolePlaced);
+        }
+
+        // A turn opens at the pinch, or when a choice or follow-up goes to the Mac: the console takes its home in this view and
+        // keeps it until the answer has shown.
+        private void OpenTurn()
+        {
+            if (console == null || scene == null) return;
+            turnOpen = true; turnAnswered = false;
+            scene.OpenTurn(console);
+        }
+
+        private void CloseTurn()
+        {
+            if (!turnOpen) return;
+            turnOpen = false; turnAnswered = false;
+            scene?.CloseTurn();
+        }
+
+        // A request's end: an answer keeps the turn's place until it has shown; anything else ends the turn now.
+        private void EndTurn(bool answered) { if (answered && turnOpen) turnAnswered = true; else CloseTurn(); }
+
         private void Start()
         {
             var rig = FindAnyObjectByType<OVRCameraRig>();
@@ -155,7 +192,7 @@ namespace Boopy.Quest
             scene.SetReducedMotion(console.ReducedMotion);
             following = gameObject.AddComponent<FollowConsole>();
             following.Initialize(head, console.transform);
-            scene.MoveConsole(console, following.DesiredPosition);
+            scene.MoveConsole(console, following.Home);
             gaze = Reticle.Create("Gaze reticle", transform, head);
             pointer = Reticle.Create("Hand reticle", transform, head, 0.0012f, ReticleRole.Hand);
             marker = Reticle.Create("Cue marker", transform, head, 0.003f, ReticleRole.Capture);
@@ -304,16 +341,7 @@ namespace Boopy.Quest
             var aiming = active != null ? (active.RayActive ? active : null)
                 : leftPinch == PinchEvent.Began && left.RayActive ? left
                 : right.RayActive ? right : left.RayActive ? left : null;
-            if (following != null && console != null)
-            {
-                var frozen = !inputAllowed || active != null || pendingDialogue || console.ContainsRay(gazeRay)
-                    || (aiming != null && console.ContainsRay(aiming.Ray));
-                console.SetInteractionLocked(frozen);
-                console.SetCompanionFrozen(!inputAllowed || console.HasFocus || console.Reading || pendingControl != ConsoleAction.None);
-                var target = following.DesiredPosition;
-                scene.MoveConsole(console, following.Advance(target, frozen));
-                dialogue?.SetFallback(!scene.ConsolePlaced);
-            }
+            KeepConsolePlace(gazeRay, aiming);
             var gazeChip = scene.ChipHitBy(gazeRay, 5f, out var onChip);
             if (scene.TryGetActiveAnchor(out var sourceAnchor)) console?.AttendTo(sourceAnchor, true);
             else console?.AttendTo(gazeChip != null ? gazeChip.transform.position : head.position, gazeChip != null);
@@ -771,6 +799,7 @@ namespace Boopy.Quest
             var targetId = fromButton ? null : pendingEvidence.SpokenOnly
                 ? (console?.ReaderOpen == true ? console.HitTarget(ray, out _) : null)
                 : scene?.ChipHitBy(ray, 5f, out _)?.ItemId ?? console?.HitTarget(ray, out _);
+            OpenTurn();
             console?.ShowListening(targetId != null);
             dialogue?.Show(DialogueStage.Listening, fromButton ? "Listening… Tap Finish when done." : "Listening… Release to finish.");
             SayStatus(null);
@@ -981,6 +1010,7 @@ namespace Boopy.Quest
                 pendingEvidence = null; console?.InputPolicy.End();
                 console?.SetCaptureRecovery(NeedsCaptureRecovery);
                 marker?.Hide();
+                EndTurn(speechView != null);
                 if (restoreAfterWait && isActiveAndEnabled && inputAllowed && dialogue?.gameObject.activeSelf == false && cancelledWaitNotice != null) ReportFailure(cancelledWaitNotice);
             }
             if (speechView != null) _ = Speak(speechView);
@@ -1046,7 +1076,7 @@ namespace Boopy.Quest
             dialogue?.SetComfort(console?.ComfortScale ?? 1f, console?.ReducedMotion ?? false);
             dialogue?.ShowTask(shown.SpeakerLine, shown.Caption);
             console?.ShowTask(shown.AnswerLabel);
-            dialogue?.SetFallback(scene != null && !scene.ConsolePlaced);
+            if (console?.Relocating != true) dialogue?.SetFallback(scene != null && !scene.ConsolePlaced);
         }
 
         private void EndTask()
@@ -1162,7 +1192,7 @@ namespace Boopy.Quest
                 return;
             }
             scene?.Render(view);
-            dialogue?.SetFallback(scene != null && !scene.ConsolePlaced);
+            if (console?.Relocating != true) dialogue?.SetFallback(scene != null && !scene.ConsolePlaced);
             SayStatus(!ContextReview.CanSave(view) && view.Model == null && view.Attention?.Action != "no-visual-work" && string.IsNullOrWhiteSpace(response)
                 ? "I didn’t get an answer. Please try again." : null, 8f);
             if (keepTask) ShowTask();
@@ -1239,7 +1269,7 @@ namespace Boopy.Quest
                 else scene?.PlaceConsole(console);
                 if (control == ConsoleAction.Options && console.ContextObstructed)
                 {
-                    dialogue?.SetFallback(scene?.ConsolePlaced == false);
+                    if (!console.Relocating) dialogue?.SetFallback(scene?.ConsolePlaced == false);
                     SayStatus("Look toward a clear space to open Context.", 4f);
                 }
             }
@@ -1249,6 +1279,7 @@ namespace Boopy.Quest
         private void RestoreConsole()
         {
             if (busy) return;
+            CloseTurn();
             if (session == null) console?.ShowCapture();
             else
             {
@@ -1404,6 +1435,7 @@ namespace Boopy.Quest
             const string unheardBefore = "Boopy didn't hear back from your Mac. Reconnect, then choose again.";
             const string unheard = "Boopy didn't hear back from your Mac. The Mac may still finish this choice. Reconnect, then Talk to answer.";
             StopSpeech(); busy = true; console.SetBusy(true);
+            OpenTurn();
             console.ShowProcessing(false); dialogue?.ShowThinking(Thinking(false));
             using var request = new CancellationTokenSource(); captureRequest = request;
             dialogue?.SetCancelableWait(true);
@@ -1443,7 +1475,7 @@ namespace Boopy.Quest
             catch (ServiceException failure) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = Unheard(failure) ? unheard : failure.Message; ReportFailure(cancelledWaitNotice); }
             catch (Exception) when (ReferenceEquals(captureRequest, request) && ReferenceEquals(session, prior)) { cancelledWaitNotice = unheard; ReportFailure(cancelledWaitNotice); }
             catch (Exception) { /* A replaced request cannot change the current presentation. */ }
-            finally { if (ReferenceEquals(captureRequest, request)) { captureRequest = null; dialogue?.SetCancelableWait(false); busy = false; console.SetBusy(false); } }
+            finally { if (ReferenceEquals(captureRequest, request)) { captureRequest = null; dialogue?.SetCancelableWait(false); busy = false; console.SetBusy(false); EndTurn(speechView != null); } }
             if (speechView != null && ReferenceEquals(session, speechView) && inputAllowed && isActiveAndEnabled) _ = Speak(speechView);
         }
 
@@ -1458,6 +1490,7 @@ namespace Boopy.Quest
             StopSpeech();
             busy = true;
             SayStatus(null);
+            OpenTurn();
             console.ShowProcessing(suggestion.TargetItemId != null);
             // A follow-up works on the recorded view only when it names an observation.
             dialogue?.ShowThinking(Thinking(suggestion.ObservationId != null));
@@ -1491,6 +1524,7 @@ namespace Boopy.Quest
                 dialogue?.SetCancelableWait(false);
                 busy = false;
                 console.SetBusy(false);
+                EndTurn(speechView != null);
             }
             if (speechView != null) _ = Speak(speechView);
         }
@@ -1757,6 +1791,7 @@ namespace Boopy.Quest
             captureGeneration++; captureReady = false; capturePreparation?.Cancel();
             voice.Discard();
             pendingEvidence = null; console?.InputPolicy.End();
+            if (!busy) CloseTurn();
             if (dialogue?.Stage == DialogueStage.Listening) dialogue.Hide();
             feedback?.SetRecording(false);
         }

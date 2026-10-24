@@ -33,6 +33,8 @@ namespace Boopy.Quest
         private ContextConsole? console;
         private bool layoutReady;
         private bool followingConsole;
+        // From the pinch until the answer has shown, the console holds the turn's place: only the reply's own objects move it.
+        private bool turnOpen;
         private bool reducedMotion;
         private Vector3 layoutEyes;
         private Vector3 layoutForward;
@@ -44,6 +46,8 @@ namespace Boopy.Quest
         private const float LabelDistance = 1f;
         private const float LabelGap = 0.025f;
         public bool ConsolePlaced { get; private set; }
+        /// <summary>The console's home in the view: right of center, a little down, where the layout places it first.</summary>
+        public static readonly N.Vector2 ConsoleHome = new N.Vector2(0.55f, -0.05f);
 
         public static SessionScene Create(Transform parent, RoomCamera room, Transform head)
         {
@@ -99,6 +103,63 @@ namespace Boopy.Quest
             if (!layoutReady) return false;
             var occupied = new List<LabelRect>();
             return ReserveConsole(occupied);
+        }
+
+        /// <summary>
+        /// The console's home for a head pose: its layout box at <see cref="ConsoleHome"/> in that pose's frame, placed
+        /// through its anchor as ReserveConsole places it. The turn's place and the room re-anchor share it.
+        /// </summary>
+        public static Vector3 HomeFor(Transform head, ContextConsole controls)
+        {
+            var forward = head.forward.normalized;
+            var right = Vector3.Cross(Vector3.up, forward).normalized;
+            if (right.sqrMagnitude < 0.01f) right = head.right.normalized;
+            var up = Vector3.Cross(forward, right).normalized;
+            var center = head.position + (forward + right * ConsoleHome.X + up * ConsoleHome.Y).normalized * LabelDistance;
+            return Anchor(head, center, controls.LayoutCenterOffset);
+        }
+
+        /// <summary>
+        /// A turn opens at the pinch: the layout frame is taken now, and the console goes to its home in it, or the nearest
+        /// spot clear of the objects shown, by fade if it moves. Until the turn closes only the reply's own objects move it.
+        /// </summary>
+        public void OpenTurn(ContextConsole controls)
+        {
+            console = controls;
+            if (head == null) return;
+            layoutReady = false;
+            EnsureLayoutFrame();
+            if (renderedView != null) ProtectObjects(renderedView);
+            turnOpen = true;
+            ConsolePlaced = true;
+            var place = HomeFor(head, controls);
+            if (!FollowFootprintClear(controls, place))
+                foreach (var bounds in new[] { ViewBounds, Expanded() })
+                    if (TryPlaceElement(controls.LayoutSize, ConsoleHome, new List<LabelRect>(), bounds, out var spot, out _)
+                        && FollowFootprintClear(controls, ConsoleAnchor(spot))) { place = ConsoleAnchor(spot); break; }
+            controls.Relocate(place);
+        }
+
+        /// <summary>The turn closes once its answer has shown: from then on the console stays where it is in the room.</summary>
+        public void CloseTurn() { turnOpen = false; followingConsole = true; }
+
+        /// <summary>Keeps the console where it is this frame: the turn's place, or fixed in the room after it.</summary>
+        public void HoldConsole(ContextConsole controls)
+        {
+            console = controls;
+            if (controls.Relocating) return;
+            if (ConsolePlaced) controls.Place(controls.transform.position);
+            UpdateLabelOcclusion(ConsolePlaced);
+        }
+
+        /// <summary>After a turn, a home far from the console brings it there by fade, when that home is clear.</summary>
+        public void ReanchorConsole(ContextConsole controls, Vector3 home)
+        {
+            console = controls;
+            if (!FollowFootprintClear(controls, home)) { HoldConsole(controls); return; }
+            followingConsole = true;
+            ConsolePlaced = true;
+            controls.Relocate(home);
         }
 
         /// <summary>The assistant follows the wearer; evidence keeps its original room position.</summary>
@@ -534,6 +595,7 @@ namespace Boopy.Quest
         {
             ConsolePlaced = false;
             if (console == null) return false;
+            if (turnOpen) return ReserveTurnPlace(console, occupied);
             if (followingConsole)
             {
                 if (!FollowFootprintClear(console, console.transform.position))
@@ -548,8 +610,7 @@ namespace Boopy.Quest
                     return true;
                 }
             }
-            var preferred = new N.Vector2(0.55f, -0.05f);
-            if (TryPlaceElement(console.LayoutSize, preferred, occupied, ViewBounds, out var home, out var bounds)
+            if (TryPlaceElement(console.LayoutSize, ConsoleHome, occupied, ViewBounds, out var home, out var bounds)
                 && FollowFootprintClear(console, ConsoleAnchor(home)))
             {
                 console.Place(ConsoleAnchor(home));
@@ -557,16 +618,7 @@ namespace Boopy.Quest
                 ConsolePlaced = true;
                 return true;
             }
-            // Controls remain reachable beside a large subject, even if looking toward the edge
-            // of the initial view is necessary. Only annotation chips are capped for overflow.
-            var extent = protectedAreas.Count == 0 ? ViewBounds : new LabelRect(
-                MathF.Min(ViewBounds.MinX, protectedAreas.Min(area => area.MinX)),
-                MathF.Min(ViewBounds.MinY, protectedAreas.Min(area => area.MinY)),
-                MathF.Max(ViewBounds.MaxX, protectedAreas.Max(area => area.MaxX)),
-                MathF.Max(ViewBounds.MaxY, protectedAreas.Max(area => area.MaxY)));
-            var expanded = new LabelRect(extent.MinX - 1.2f, extent.MinY - 0.8f,
-                extent.MaxX + 1.2f, extent.MaxY + 0.8f);
-            if (TryPlaceElement(console.LayoutSize, preferred, occupied, expanded, out home, out bounds)
+            if (TryPlaceElement(console.LayoutSize, ConsoleHome, occupied, Expanded(), out home, out bounds)
                 && FollowFootprintClear(console, ConsoleAnchor(home)))
             {
                 console.Place(ConsoleAnchor(home));
@@ -580,23 +632,75 @@ namespace Boopy.Quest
             return false;
         }
 
+        // During a turn the console keeps the place it took at the pinch unless the reply's own objects cover it. Then it
+        // goes by fade to the nearest clear spot, or with none hides behind the line's fallback strip, also by fade.
+        private bool ReserveTurnPlace(ContextConsole controls, List<LabelRect> occupied)
+        {
+            var place = controls.Destination;
+            if (FollowFootprintClear(controls, place))
+            {
+                if (!controls.Relocating) controls.Place(place);
+                ConsolePlaced = true;
+                if (ConsoleBoundsAt(controls, place, out var current)) occupied.Add(current);
+                return true;
+            }
+            foreach (var bounds in new[] { ViewBounds, Expanded() })
+            {
+                if (!TryPlaceElement(controls.LayoutSize, ConsoleHome, occupied, bounds, out var spot, out var envelope)
+                    || !FollowFootprintClear(controls, ConsoleAnchor(spot))) continue;
+                controls.Relocate(ConsoleAnchor(spot));
+                occupied.Add(envelope);
+                ConsolePlaced = true;
+                return true;
+            }
+            controls.Relocate(null);
+            return false;
+        }
+
+        // Controls remain reachable beside a large subject, even if looking toward the edge
+        // of the initial view is necessary. Only annotation chips are capped for overflow.
+        private LabelRect Expanded()
+        {
+            var extent = protectedAreas.Count == 0 ? ViewBounds : new LabelRect(
+                MathF.Min(ViewBounds.MinX, protectedAreas.Min(area => area.MinX)),
+                MathF.Min(ViewBounds.MinY, protectedAreas.Min(area => area.MinY)),
+                MathF.Max(ViewBounds.MaxX, protectedAreas.Max(area => area.MaxX)),
+                MathF.Max(ViewBounds.MaxY, protectedAreas.Max(area => area.MaxY)));
+            return new LabelRect(extent.MinX - 1.2f, extent.MinY - 0.8f, extent.MaxX + 1.2f, extent.MaxY + 0.8f);
+        }
+
         // Layout searches place the entire sheet's center; the interaction anchor is the
         // stable caption above it. Opening actions must not move the speaker/caption.
         private Vector3 ConsoleAnchor(Vector3 center)
+            => console == null || head == null ? center : Anchor(head, center, console.LayoutCenterOffset);
+
+        private static Vector3 Anchor(Transform head, Vector3 center, float offset)
         {
-            if (console == null || head == null) return center;
             var direction = (center - head.position).normalized;
             var right = Vector3.Cross(Vector3.up, direction).normalized;
             var up = right.sqrMagnitude > 1e-8f ? Vector3.Cross(direction, right).normalized : head.up;
-            return center - up * console.LayoutCenterOffset;
+            return center - up * offset;
         }
 
         private bool ConsoleBounds(ContextConsole controls, out LabelRect bounds)
+            => ConsoleBounds(controls, controls.transform.position, controls.transform.right, controls.transform.up, out bounds);
+
+        // Where a fade is taking the console, facing the wearer as it will there.
+        private bool ConsoleBoundsAt(ContextConsole controls, Vector3 position, out LabelRect bounds)
         {
-            var center = controls.transform.position + controls.transform.up * controls.LayoutCenterOffset;
+            if (!controls.Relocating) return ConsoleBounds(controls, out bounds);
+            var direction = (position - head!.position).normalized;
+            var right = Vector3.Cross(Vector3.up, direction).normalized;
+            if (right.sqrMagnitude < 1e-8f) right = head.right;
+            return ConsoleBounds(controls, position, right, Vector3.Cross(direction, right).normalized, out bounds);
+        }
+
+        private bool ConsoleBounds(ContextConsole controls, Vector3 position, Vector3 sideways, Vector3 upward, out LabelRect bounds)
+        {
+            var center = position + upward * controls.LayoutCenterOffset;
             var half = controls.LayoutSize * .5f;
-            var right = controls.transform.right * half.x;
-            var up = controls.transform.up * half.y;
+            var right = sideways * half.x;
+            var up = upward * half.y;
             var projected = new List<N.Vector2>();
             foreach (var corner in new[] { center - right - up, center + right - up, center + right + up, center - right + up })
             {

@@ -41,6 +41,19 @@ namespace Boopy.Client
             Following = false;
         }
 
+        /// <summary>
+        /// Fixed in the room: true only when the panel at <paramref name="current"/> is more than
+        /// <see cref="ReanchorAngleDegrees"/> from <paramref name="home"/> as seen from the head, so it goes there by fade.
+        /// </summary>
+        public static bool Reanchors(HeadPose head, Vector3 current, Vector3 home)
+        {
+            var from = current - head.Position;
+            var to = home - head.Position;
+            if (from.LengthSquared() < 1e-8f || to.LengthSquared() < 1e-8f) return false;
+            var cosine = Math.Clamp(Vector3.Dot(Vector3.Normalize(from), Vector3.Normalize(to)), -1f, 1f);
+            return MathF.Acos(cosine) * 180f / MathF.PI > ReanchorAngleDegrees;
+        }
+
         public Vector3 Step(HeadPose head, Vector3 current, Vector3 target, bool frozen, float deltaSeconds)
         {
             if (frozen || !Finite(deltaSeconds) || deltaSeconds <= 0f)

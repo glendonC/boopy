@@ -37,9 +37,12 @@ namespace Boopy.Quest
         public bool HandoffRecoveryVisible => handoffOpen && handoffRecordAvailable;
         public void SetHandoffRecovery(bool available, bool offered, string? packageId, string? requestId, bool storageFailed)
         {
+            // Every applied view sets this again; only a change shows the console anew, so an answer never re-reveals it.
+            var changed = handoffRecordAvailable != available || handoffRecoveryOffered != offered || handoffStorageFailed != storageFailed
+                || recoveryPackageId != packageId || recoveryPreparationId != requestId;
             handoffRecordAvailable = available; handoffRecoveryOffered = offered; handoffStorageFailed = storageFailed;
             recoveryPackageId = packageId; recoveryPreparationId = requestId;
-            Compose(); Assemble();
+            Compose(); if (changed) Assemble();
         }
         private readonly List<ContextualAction> suggestions = new List<ContextualAction>();
         private string? suppressedSuggestionSession, suppressedSuggestionUtterance, suppressedSuggestionAt;
@@ -277,6 +280,10 @@ namespace Boopy.Quest
             var newSession = view?.Id != returned.Id;
             var referentChanged = !string.IsNullOrWhiteSpace(returned.ReferentId) && view?.ReferentId != returned.ReferentId;
             if (newSession) { handoffState = "not-prepared"; handoffRequestId = null; }
+            // The answer to a turn: its line changes in place (DialogueStrip), so the console neither re-reveals nor sends Boopy home
+            // until the change is over.
+            var answersTurn = mode == "processing";
+            homeDelay = answersTurn ? HomeAfterReply : 0f;
             view = returned; busy = false;
             speechAvailable = connectionState != "unavailable" && returned.SpeechOutputAvailable;
             VoiceEnabled = speechAvailable && voicePreferred;
@@ -292,7 +299,7 @@ namespace Boopy.Quest
             else header!.Configure("", "", returned.Dialogue?.Choice?.Supported == true ? returned.Dialogue.Text : "Talk to continue.", .145f);
             if (ChoiceDismissed()) header.Configure("Next turn", "", nextTurnInstruction ?? "Talk to continue.", .145f);
             if (navigator.DetailsOpen) Pages();
-            Compose(); Assemble(); gameObject.SetActive(true);
+            Compose(); if (!answersTurn) Assemble(); gameObject.SetActive(true);
         }
 
         private void Compose()
@@ -776,9 +783,68 @@ namespace Boopy.Quest
         public void SetFocus(bool on) { if (!on) ClearFocus(); }
         public void ClearFocus() { focused = ConsoleAction.None; foreach (var control in actions.Values) { control.Focus(false); control.Press(false); } }
         public void SetPressed(bool on) { if (actions.TryGetValue(focused, out var control)) control.Press(on); }
+        // A turn's answer: Boopy starts home 650 ms after it is applied, 250 ms after its line has changed.
+        private const float HomeAfterReply = .65f;
+        private float homeDelay;
+        /// <summary>True once a turn's answer has fully shown and Boopy may start home.</summary>
+        public bool ReplySettled => homeDelay <= 0f;
+
+        // A move by fade: out over 150 ms, the place changes unseen, in over 150 ms. With no place the console hides and its
+        // line takes the fallback strip, as unseen.
+        private const float FadeSeconds = .15f;
+        private float relocateAge = -1f;
+        private Vector3? relocateTo;
+        private bool relocated;
+        /// <summary>True while the console fades to another place.</summary>
+        public bool Relocating => relocateAge >= 0f;
+        /// <summary>Where the console stands once any fade under way has moved it.</summary>
+        public Vector3 Destination => Relocating && relocateTo is Vector3 to ? to : transform.position;
+
+        /// <summary>
+        /// Goes to <paramref name="point"/> by fade, or with null hides behind the line's fallback strip by fade. A console not
+        /// shown yet, or already there, takes the place at once: nothing is seen moving either way.
+        /// </summary>
+        public void Relocate(Vector3? point)
+        {
+            // Behind the fallback strip only the control row shows; it fades the same way.
+            var shown = gameObject.activeSelf && new[] { header, bar }.Any(module => module != null
+                && module.gameObject.activeSelf && module.Opacity > .01f);
+            if (Relocating && (point is Vector3 same ? relocateTo is Vector3 going && (same - going).sqrMagnitude < 1e-6f
+                : relocateTo == null)) return;
+            if (point is Vector3 at && (!shown || (at - Destination).sqrMagnitude < 1e-6f)) { relocateAge = -1f; Place(at); return; }
+            if (point == null && !shown) { relocateAge = -1f; ShowControlsOnly(transform.position); dockedDialogue?.SetFallback(true); return; }
+            relocateTo = point;
+            if (relocateAge < 0f || relocated) { relocateAge = 0f; relocated = false; }
+            foreach (var module in new[] { header, card, options, bar }) module?.FadeTo(0f, FadeSeconds);
+        }
+
+        // Before the surfaces refresh: the place changes on the first frame after they are fully out, never while seen. One
+        // long frame does the whole move.
+        private void AdvanceRelocation(float delta)
+        {
+            if (relocateAge < 0f) return;
+            relocateAge += Mathf.Max(0f, delta);
+            var gone = new[] { header, bar }.All(module => module == null || !module.gameObject.activeSelf || module.Opacity <= .001f);
+            if (!relocated && (gone || relocateAge >= 2f * FadeSeconds))
+            {
+                // Marked before the move: placing composes the console, and composing refreshes it, which comes back here.
+                relocated = true;
+                var instant = relocateAge >= 2f * FadeSeconds;
+                if (instant) relocateAge = -1f;
+                if (relocateTo is Vector3 to) Place(to);
+                else { ShowControlsOnly(transform.position); dockedDialogue?.SetFallback(true); }
+                // Every part comes in from clear, also one the move has just shown.
+                foreach (var module in new[] { header, card, options, bar }) module?.FadeIn(instant ? .001f : FadeSeconds);
+            }
+            else if (relocated && relocateAge >= 2f * FadeSeconds) relocateAge = -1f;
+            if (relocateAge < 0f) { relocateTo = null; relocated = false; }
+        }
+
         public void RefreshVisuals(float delta)
         {
             if (!reduced) animationTime += Mathf.Max(0f, delta);
+            homeDelay = Mathf.Max(0f, homeDelay - Mathf.Max(0f, delta));
+            AdvanceRelocation(delta);
             Face();
             foreach (var module in new[] { header, card, options, bar }) if (module != null && module.gameObject.activeSelf) module.Refresh(delta);
             foreach (var control in actions.Values) if (control.gameObject.activeSelf)
@@ -787,7 +853,7 @@ namespace Boopy.Quest
             {
                 companion.SetVisible(gameObject.activeInHierarchy && !controlsOnly);
                 // Boopy stays whole while it works: the re-reveal when work starts fades the panel, never the companion.
-                companion.SetOpacity(mode == "processing" || visitPoint != null || returning ? 1f : header?.Opacity ?? 1f);
+                companion.SetOpacity(mode == "processing" ? 1f : header?.Opacity ?? 1f);
                 Travel(delta);
                 companion.Refresh(delta, reduced);
             }
@@ -828,7 +894,7 @@ namespace Boopy.Quest
         private void Travel(float delta)
         {
             if (companion == null) return;
-            if (visitPoint != null && mode != "processing") EndVisit();
+            if (visitPoint != null && mode != "processing" && homeDelay <= 0f) EndVisit();
             var step = FlightSpeed * Mathf.Max(0f, delta);
             if (visitPoint != null && !reduced)
             {

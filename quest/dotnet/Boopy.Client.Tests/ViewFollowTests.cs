@@ -29,6 +29,17 @@ namespace Boopy.Client.Tests
             Assert.That(Angle(current, At(30f)), Is.LessThanOrEqualTo(2.01f));
             Assert.That(follow.Following, Is.False);
         }
+        [Test] public void FixedInTheRoomReanchorsOnlyPastThirtyDegreesFromTheHome()
+        {
+            // After a turn the panel stays where it is in the room: a small turn or a step leaves it, and only a home more
+            // than 30 degrees away, as seen from the head, takes it there.
+            var home = At(28.8f);
+            Assert.That(ViewFollow.Reanchors(Head, home, home), Is.False);
+            Assert.That(ViewFollow.Reanchors(Head, At(28.8f - 29f), home), Is.False);
+            Assert.That(ViewFollow.Reanchors(Head, At(28.8f - 31f), home), Is.True);
+            var stepped = new HeadPose(new Vector3(.2f, 0f, 0f), Vector3.UnitZ);
+            Assert.That(ViewFollow.Reanchors(stepped, home, home + new Vector3(.2f, 0f, 0f)), Is.False);
+        }
         [Test] public void LargeHeadTurnReanchorsAtPeripheralTargetWithoutLongChase()
         {
             var follow = new ViewFollow();
