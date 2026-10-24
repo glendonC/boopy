@@ -163,5 +163,6 @@ a synthetic 16 x 12 captured-depth grid and the actual `GroundedOverlay` rendere
 concave shape. Reduced-motion assertions check a completed static boundary and constant fill.
 These
 are production shader/text/companion renders with synthetic content, not a concept illustration.
-The assistant gently follows view changes, freezing when targeted; object annotations remain
-world-anchored. No Meta-button recenter is intended for routine access. Validate this while worn.
+The console stays where the pinch put it until the answer has shown, then stays fixed in the room;
+it comes back in front by fade after a turn of more than 30 degrees, never while targeted. Object
+annotations remain world-anchored. No Meta-button recenter is intended for routine access. Validate this while worn.

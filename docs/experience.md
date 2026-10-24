@@ -40,6 +40,11 @@ about every three seconds, and none repeats until all have shown. With reduced m
 phrase changes with a cut and does not shimmer. The line shows no timer, and the phrases are
 never spoken. The Mac still records each stage of the turn in its journal; the line does not
 show those stage words. An answer to a task reads "Saving on your Mac…" instead.
+The console stays where the pinch put it for the whole turn. When the answer comes, the phrase
+fades and the same line grows upward into the answer; Boopy's voice follows when the Mac returns
+it, and Boopy flies home after the change. If the answer's own objects would sit under the console, it fades out and
+fades in at the nearest clear spot. After a turn the console stays put in the room; it comes back
+in front only after a turn of more than 30 degrees, while the person is not looking at it.
 
 After a first turn about a grounded subject, the headset asks the Mac for the session's task.
 A first turn that offers a choice opens no task; the choice stays on the console.

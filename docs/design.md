@@ -42,13 +42,13 @@ conversation already uses. A task adds no panel, tray, or card.
 | --- | --- |
 | Subject | One outlined subject in the room: a soft solid Ember edge with no dashes or corners and a brighter inner rim. A task outlines the grounded item its annotation names. A box with no mask is a rounded outline about 7 mrad outside the box as seen from where the person stands, its corners rounded at three times that, on one plane at the depth measured at its center, not at its corners, with no fill, so it stays approximate. A mask is outlined along its own contour and gets a low fill on the object, nothing past it. One sweep of light, about 0.6 s, crosses the subject itself from Boopy's side when it first appears and when Boopy starts working on it (the box itself, not the margin); reduced motion has no sweep. Up to four live outlines that cannot be tapped, unchanged. |
 | Annotation | A chip on saved evidence, with a solid hairline border; proposed shows in its words and tone, not in dashes. A task's chip sits where that item's chip goes, keeps the item's kind, and stays proposed. It keeps the item's gloss, confidence, and emphasis only when its text is the item's label. An item that is not in this room gets no chip. Live names are display only. |
-| Dialogue | A caption on the console, with optional local speech. A task's dialogue uses the same line. |
+| Dialogue | A caption on the console, with optional local speech. A task's dialogue uses the same line. A turn's answer replaces its thinking phrase in one change, in place: 150 ms after the answer arrives the phrase fades out over 100 ms while the line's panel grows upward over 200 ms, eased out, its bottom edge fixed; the answer fades in from 250 ms to 400 ms. Boopy's voice plays as soon as the Mac returns it; nothing holds it to 250 ms. With reduced motion the same order holds with one cut at 150 ms and no growth. An error cuts in. |
 | Choice | Boopy's prompt with one option at a time, paged on the panel; Choose in the row sends the one shown. A first turn with a choice opens no task. A task's choice draws no control yet. |
 | VoiceReply | The first tile of the row, labeled Answer, only while Boopy's line asks the person something: the prompt the Mac sends, with Talk's mic glyph, in Talk's place. The prompt is one short word on one line. It records a spoken answer on the task. Once the line shows the person's answer, or when the line asks nothing, Talk is the first tile again. |
 | TaskStep | Not built. A task's step draws no control. |
 | Detail | The evidence reader on the console. |
 | Status | Console notices. A task's status is the line's speaker: "Boopy · Not sent", or over an answer "You, as heard · Not sent" when recognition is uncertain and "You · Not sent" otherwise. |
-| AgentPresence | The orb. When a turn that works on the recorded view starts on an outlined subject, it flies beside the subject, never over it or the center of the view, faces it, and lights it with a soft amber cone for as long as the sweep runs. While it thinks, its eyes narrow and its body glows toward Ember, breathing. It returns beside the console when the answer lands. With reduced motion it stays home, turns to the subject, and only the glow changes. A turn without a photo, a choice, or a follow-up that names no observation leaves it home; its eyes and glow still show that it thinks. Not yet split into quiet, near, and present. |
+| AgentPresence | The orb. When a turn that works on the recorded view starts on an outlined subject, it flies beside the subject, never over it or the center of the view, faces it, and lights it with a soft amber cone for as long as the sweep runs. While it thinks, its eyes narrow and its body glows toward Ember, breathing. It returns beside the console 650 ms after the answer lands, once the line has changed. With reduced motion it stays home, turns to the subject, and only the glow changes. A turn without a photo, a choice, or a follow-up that names no observation leaves it home; its eyes and glow still show that it thinks. Not yet split into quiet, near, and present. |
 
 ## Placement
 
@@ -57,6 +57,12 @@ subject's outline and never crosses the object's face. The headset renders witho
 an outline or leader keeps about one pixel of width at its distance. Use a backing only where the
 scene makes the text hard to read. No sheets of glass and no bloom by default; no constant glow:
 only the low fill on a subject's mask, and Boopy's glow while it thinks.
+
+The console has one home: right of center and a little down (0.55 and -0.05 of the view frame, 1 m away) in
+the view taken at the pinch. A turn puts it there, by fade if it moves, and it stays there from the pinch until
+the answer has shown; only the reply's own objects move it, by fade (out 150 ms, moved unseen, in 150 ms) to the
+nearest clear spot, or behind the line's fallback strip if none is clear. After a turn it stays fixed in the
+room. It comes back home by fade only when home is more than 30 degrees away and the eyes are not on it.
 
 Do not use one large panel, a tilted tray of pieces, a tiny mixed-font scene, a flat stack of
 cards, a purple palette, or a column of identical pills.

@@ -47,6 +47,14 @@ namespace Boopy.Quest
         private BoxCollider? pageHit;
         private Transform? reveal;
         private float revealAge;
+        // A thinking line's one change into its answer, from when the answer came: its words fade out from ChangeStarts,
+        // the panel grows upward from ChangeStarts to GrowthEnds with its bottom edge fixed, and the answer's words fade in
+        // from AnswerShows. With reduced motion the same order holds with one cut at ChangeStarts. -1 when no change runs.
+        private const float ChangeStarts = .15f, AnswerShows = .25f, GrowthEnds = .35f, ChangeEnds = .40f;
+        private float changeAge = -1f;
+        private string leavingWords = "";
+        // The panel's left and right edges and its height, for the thinking line and for its answer.
+        private Vector3 leavingPanel, arrivingPanel;
         private Transform? captionBacking;
         private MeshRenderer? backingRenderer;
         private Mesh? backingMesh;
@@ -59,6 +67,11 @@ namespace Boopy.Quest
         /// <summary>The item the page shown holds, or -1 while the line's own words show.</summary>
         public int ShownItem => page < pageItems.Count ? pageItems[page] : -1;
         public IReadOnlyList<string> Items => items;
+        private bool Changing => changeAge >= 0f;
+        private bool Still => host?.ReducedMotion ?? reduced;
+        private float SwapAt => Still ? ChangeStarts : AnswerShows;
+        // The thinking line's words still show in place of the answer's.
+        private bool Holding => changeAge >= 0f && changeAge < SwapAt;
 
         public static DialogueStrip Create(Transform parent, Transform head)
         {
@@ -121,6 +134,9 @@ namespace Boopy.Quest
             if (speaker != null) speaker.alpha = 1f;
             if (caption != null) caption.alpha = 1f;
             if (shownItem != null) shownItem.alpha = 1f;
+            // The line fades in where it now stands, its answer whole.
+            EndChange();
+            revealAge = 0f;
             RefreshFallbackAction();
         }
 
@@ -146,8 +162,16 @@ namespace Boopy.Quest
             thinking = phrases;
         }
 
-        public void Show(DialogueStage stage, string words)
+        public void Show(DialogueStage stage, string words) => Present(stage, words, true);
+
+        private void Present(DialogueStage stage, string words, bool mayChange)
         {
+            // A docked thinking line changes into the line that answers it; any other line, an error too, cuts in.
+            float left = 0f, right = 0f, bottom = 0f, top = 0f;
+            var changes = mayChange && Stage == DialogueStage.Working && Answers(stage)
+                && dock != null && !fallback && !noticeActive && gameObject.activeSelf && caption != null && PanelEdges(out left, out right, out bottom, out top);
+            if (changes) { changeAge = 0f; leavingWords = caption!.text; leavingPanel = arrivingPanel = new Vector3(left, right, top - bottom); }
+            else changeAge = -1f;
             noticeActive = false; voicePreparing = false; taskSpeaker = null; thinking = null;
             Stage = stage; FullText = words; stageStartedAt = Time.unscaledTime;
             revealAge = 0f;
@@ -166,7 +190,7 @@ namespace Boopy.Quest
             host?.SetDialogueVisible(true);
             gameObject.SetActive(true); RefreshFallbackAction(); Face(); RefreshVisuals(0f);
         }
-        public void Hide() { noticeActive = false; gameObject.SetActive(false); host?.SetDialogueVisible(false); }
+        public void Hide() { noticeActive = false; changeAge = -1f; gameObject.SetActive(false); host?.SetDialogueVisible(false); }
         public void ShowNotice(string words, float seconds)
         {
             var visible = noticeActive ? restoreVisible : gameObject.activeSelf;
@@ -176,7 +200,7 @@ namespace Boopy.Quest
             var savedStartedAt = noticeActive ? previousStartedAt : stageStartedAt;
             var savedSpeaker = noticeActive ? previousTaskSpeaker : taskSpeaker;
             var savedThinking = noticeActive ? previousThinking : thinking;
-            Show(DialogueStage.Clarification, words);
+            Present(DialogueStage.Clarification, words, false);
             restoreVisible = visible; previousText = savedText; previousStage = savedStage; previousPage = savedPage; previousStartedAt = savedStartedAt;
             previousTaskSpeaker = savedSpeaker; previousThinking = savedThinking;
             noticeExpires = seconds > 0 ? Time.unscaledTime + seconds : float.PositiveInfinity;
@@ -192,14 +216,7 @@ namespace Boopy.Quest
         {
             if (!noticeActive) return;
             noticeActive = false;
-            if (!restoreVisible) { Hide(); return; }
-            var savedPage = previousPage;
-            Show(previousStage, previousText);
-            taskSpeaker = previousTaskSpeaker; thinking = previousThinking; stageStartedAt = previousStartedAt;
-            // The console rebuilds the line's pages, then the page that was covered comes back.
-            page = Mathf.Clamp(savedPage, 0, Mathf.Max(0, pages.Count - 1));
-            DrawPage();
-            host?.LinePaged();
+            if (restoreVisible) { Show(previousStage, previousText); taskSpeaker = previousTaskSpeaker; thinking = previousThinking; page = Mathf.Clamp(previousPage, 0, pages.Count - 1); stageStartedAt = previousStartedAt; DrawPage(); host?.LinePaged(); } else Hide();
         }
         /// <summary>Only an actual cancellable local wait may offer this fallback action.</summary>
         public void SetCancelableWait(bool value) { cancelableWait = value; RefreshFallbackAction(); }
@@ -292,6 +309,20 @@ namespace Boopy.Quest
             caption.rectTransform.sizeDelta = new Vector2(CaptionWidth, height);
             caption.transform.localPosition = new Vector3(caption.transform.localPosition.x, .042f - height / 2f, caption.transform.localPosition.z);
             DrawItem();
+            if (!Holding) return;
+            // The answer is measured now, so the panel can grow to it; the thinking words stay until they have faded.
+            if (PanelEdges(out var left, out var right, out var bottom, out var top)) arrivingPanel = new Vector3(left, right, top - bottom);
+            speaker.text = ""; caption.text = leavingWords;
+            if (shownItem != null) shownItem.gameObject.SetActive(false);
+        }
+
+        // Ends a change at once, the answer's words in place.
+        private void EndChange()
+        {
+            if (changeAge < 0f) return;
+            var held = Holding;
+            changeAge = -1f;
+            if (held) DrawPage();
         }
         // The item shown under the line: its ink starts one gap below the line's last words.
         private void DrawItem()
@@ -313,8 +344,10 @@ namespace Boopy.Quest
         private float Extra => page < pageHeights.Count ? pageHeights[page] - CaptionHeight : 0f;
         /// <summary>The panel's full height for the page shown: the line's, and a choice page's extra room.</summary>
         public float PanelHeight => Height + Extra;
-        private bool VoicePreparationStage => Stage == DialogueStage.Response || Stage == DialogueStage.Clarification
-            || Stage == DialogueStage.FreshView || Stage == DialogueStage.LocalSave;
+        private bool VoicePreparationStage => Answers(Stage);
+        // The stages that answer a turn, and may be spoken.
+        private static bool Answers(DialogueStage stage) => stage == DialogueStage.Response || stage == DialogueStage.Clarification
+            || stage == DialogueStage.FreshView || stage == DialogueStage.LocalSave;
         public void SetVoicePreparing(bool preparing)
         {
             voicePreparing = preparing && VoicePreparationStage;
@@ -366,20 +399,30 @@ namespace Boopy.Quest
             var still=host?.ReducedMotion ?? reduced;
             if(!still)animationTime+=Mathf.Max(0f,delta);
             revealAge += Mathf.Max(0f, delta);
+            if (changeAge >= 0f)
+            {
+                var before = changeAge;
+                changeAge += Mathf.Max(0f, delta);
+                if (before < SwapAt && changeAge >= SwapAt) DrawPage();
+                if (changeAge >= ChangeEnds) { changeAge = -1f; revealAge = 1f; }
+            }
+            var changing = changeAge >= 0f;
             // The working line is whole on its first frame, shimmer included: no fade of its own and none from
-            // the console's reveal. It is one line with no timer.
+            // the console's reveal. It is one line with no timer. A move by fade carries every line.
             var working = Stage == DialogueStage.Working;
             var entered = working ? 1f : Mathf.Clamp01(revealAge / (still ? .12f : .18f));
             var eased = entered * entered * (3f - 2f * entered);
-            if (reveal != null) reveal.localPosition = still ? Vector3.zero : Vector3.down * (.006f * (1f-eased));
-            var opacity = working ? 1f : entered * (dock != null && !fallback ? dock.Opacity : 1f);
+            if (reveal != null) reveal.localPosition = still || changing ? Vector3.zero : Vector3.down * (.006f * (1f-eased));
+            var carried = dock != null && !fallback && (!working || host?.Relocating == true) ? dock.Opacity : 1f;
+            var opacity = (changing ? ChangeWords(changeAge, still) : entered) * carried;
             if (speaker != null) speaker.alpha = opacity;
             fallbackStop?.Refresh(delta, 1f, host?.ReducedMotion ?? reduced);
-            RefreshBacking(opacity);
+            // The panel itself stays through a change: only its words fade.
+            RefreshBacking(changing ? carried : opacity);
             if (caption != null)
             {
                 caption.alpha = opacity;
-                TextShimmer.Apply(caption, animationTime, Stage == DialogueStage.Working && !still, opacity);
+                TextShimmer.Apply(caption, animationTime, (Stage == DialogueStage.Working || Holding) && !still, opacity);
             }
             if (shownItem != null) shownItem.alpha = opacity;
             if (dock != null && !fallback) return;
@@ -390,6 +433,11 @@ namespace Boopy.Quest
             transform.position = reduced ? Target() : Vector3.SmoothDamp(transform.position, Target(), ref velocity, .22f);
             Face();
         }
+        // The words' opacity in a change: the thinking words out, then the answer's in; with reduced motion one cut.
+        private static float ChangeWords(float age, bool still) => still || age < ChangeStarts ? 1f
+            : age < AnswerShows ? 1f - (age - ChangeStarts) / (AnswerShows - ChangeStarts)
+            : Mathf.Clamp01((age - AnswerShows) / (ChangeEnds - AnswerShows));
+
         // The speaker line's and caption's ink, in the line's own frame.
         private bool Ink(out Bounds bounds)
         {
@@ -405,20 +453,36 @@ namespace Boopy.Quest
             return found;
         }
 
-        /// <summary>The panel's height for this line alone: its ink with the backing's margins.</summary>
-        public float VisibleHeight => Ink(out var bounds) ? Mathf.Min(Height/2f,bounds.max.y+.008f)-Mathf.Max(-Height/2f-Extra,bounds.min.y-.008f) : 0f;
+        /// <summary>The panel's height for this line alone: its ink with the backing's margins. In a change, the answer's.</summary>
+        public float VisibleHeight => Changing ? arrivingPanel.z : PanelEdges(out _, out _, out var bottom, out var top) ? top - bottom : 0f;
+
+        // The panel around the words shown: 12 mm beside them, 8 mm above and below, inside the line's own bounds.
+        private bool PanelEdges(out float left, out float right, out float bottom, out float top)
+        {
+            left = right = bottom = top = 0f;
+            if (!Ink(out var bounds)) return false;
+            left=Mathf.Max(-CaptionWidth/2f-.012f,bounds.min.x-.012f);
+            right=Mathf.Min(CaptionWidth/2f+.012f,bounds.max.x+.012f);
+            bottom=Mathf.Max(-Height/2f-Extra,bounds.min.y-.008f);
+            top=Mathf.Min(Height/2f,bounds.max.y+.008f);
+            return true;
+        }
 
         private void RefreshBacking(float opacity)
         {
             if(captionBacking==null || backingRenderer==null || backingTint==null)return;
-            var found=Ink(out var bounds);
+            var found=PanelEdges(out var left, out var right, out var bottom, out var top);
             backingRenderer.sortingOrder=2;
             backingRenderer.enabled=found;
             if(!found)return;
-            var left=Mathf.Max(-CaptionWidth/2f-.012f,bounds.min.x-.012f);
-            var right=Mathf.Min(CaptionWidth/2f+.012f,bounds.max.x+.012f);
-            var bottom=Mathf.Max(-Height/2f-Extra,bounds.min.y-.008f);
-            var top=Mathf.Min(Height/2f,bounds.max.y+.008f);
+            if(changeAge>=0f && dock!=null && !fallback)
+            {
+                // From the thinking line's panel to the answer's, eased out, under the words' top margin; the bottom edge
+                // stays on the console panel's.
+                var grown=Still ? (changeAge<ChangeStarts ? 0f : 1f) : 1f-Mathf.Pow(1f-Mathf.Clamp01((changeAge-ChangeStarts)/(GrowthEnds-ChangeStarts)),3f);
+                var edges=Vector3.Lerp(leavingPanel,arrivingPanel,grown);
+                left=edges.x; right=edges.y; bottom=top-edges.z;
+            }
             captionBacking.localPosition=new Vector3((left+right)/2f,(bottom+top)/2f,.002f);
             captionBacking.localScale=new Vector3(Mathf.Max(.01f,right-left),Mathf.Max(.01f,top-bottom),1f);
             // Docked, the line's panel sits on the console panel's bottom edge, one gap above the row, and grows upward with
