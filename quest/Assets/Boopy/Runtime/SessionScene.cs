@@ -211,12 +211,21 @@ namespace Boopy.Quest
         }
 
         // The task's annotation, proposed, as the chip of the item it names: the same item for
-        // focus and correction, never the item's own label or verification.
+        // focus and correction, never the item's own label or verification. It keeps the item's
+        // kind, and the item's gloss, confidence and emphasis only while the annotation is the
+        // item's own label, so low confidence stays visible.
         private Item Shown(Item item)
         {
             var annotation = task?.ChipItem();
             if (annotation == null) return item;
             annotation.Id = item.Id;
+            annotation.Kind = item.Kind;
+            if (annotation.Label == item.Label)
+            {
+                annotation.Gloss = item.Gloss;
+                annotation.Confidence = item.Confidence;
+                annotation.Emphasis = item.Emphasis;
+            }
             return annotation;
         }
 
