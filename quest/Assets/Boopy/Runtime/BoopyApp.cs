@@ -619,14 +619,16 @@ namespace Boopy.Quest
 
         /// <summary>
         /// The answer goes to the task with the revision the person answered. The audio stays in
-        /// memory for this request only. A stale revision shows the Mac's current task instead;
-        /// no words gets its own retry line; any other refusal shows the Mac's words.
+        /// memory for this request only. A stale revision shows the Mac's current task instead,
+        /// with a notice that this answer was not recorded; no words gets its own retry line; any
+        /// other refusal shows the Mac's words.
         /// </summary>
         private async Task SendAnswer(InteractionPresentation answered, byte[] wav)
         {
+            const string unconfirmed = "Couldn't confirm the answer. The Mac may still record it. Reconnect before answering again.";
+            const string saving = "Saving on your Mac…";
             if (client == null || session == null || console == null) return;
             var sessionId = session.Id;
-            const string saving = "Saving on your Mac…";
             busy = true;
             SayStatus(null);
             console.ShowProcessing(false, saving);
@@ -637,6 +639,7 @@ namespace Boopy.Quest
             // A new event for each answer; a retry after a lost reply reuses it, so the Mac records the answer once.
             var eventId = TaskIds.NewEventId();
             string? reply = null, failure = null;
+            var stale = false;
             try
             {
                 reply = await AnswerAsync(answered, eventId, wav, request.Token);
@@ -650,18 +653,18 @@ namespace Boopy.Quest
             catch (ServiceException refused) when (refused.Status == 409 && refused.Code == "stale_revision")
             {
                 // The task changed on the Mac: present what it has now, never this headset's guess.
+                // The Mac refused this answer, so a read that is stopped or fails still says it was not recorded.
+                stale = true;
                 try
                 {
                     reply = await client.ReadTaskAsync(answered.TaskId, request.Token);
                     request.Token.ThrowIfCancellationRequested();
                     if (reply == null) failure = refused.Message;
                 }
-                catch (OperationCanceledException) { failure = "Stopped waiting. The Mac may still record this answer."; }
-                catch (ServiceException unread) { failure = unread.Message; }
-                catch (Exception) { failure = "Couldn't get the reply. The Mac may still finish this turn. Reconnect before trying again."; }
+                catch (Exception) { failure = "That answer was not recorded. Reconnect before answering again."; }
             }
             catch (ServiceException refused) { failure = refused.Message; }
-            catch (Exception) { failure = "Couldn't get the reply. The Mac may still finish this turn. Reconnect before trying again."; }
+            catch (Exception) { failure = unconfirmed; }
             finally
             {
                 if (ReferenceEquals(captureRequest, request)) captureRequest = null;
@@ -672,7 +675,7 @@ namespace Boopy.Quest
             if (session?.Id != sessionId) return;
             if (failure != null || reply == null)
             {
-                cancelledWaitNotice = failure ?? "Couldn't get the reply. The Mac may still finish this turn. Reconnect before trying again.";
+                cancelledWaitNotice = failure ?? unconfirmed;
                 ReportFailure(cancelledWaitNotice);
                 return;
             }
@@ -682,6 +685,12 @@ namespace Boopy.Quest
             {
                 cancelledWaitNotice = "The Mac returned an invalid task. Nothing on the headset changed.";
                 ReportFailure(cancelledWaitNotice);
+                return;
+            }
+            if (stale)
+            {
+                SayStatus("That answer was not recorded.", 5f);
+                Debug.Log("Boopy: task answer refused as stale; the Mac's task is shown. Not sent.");
                 return;
             }
             Debug.Log("Boopy: task answer recorded on the Mac. Not sent.");
