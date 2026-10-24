@@ -37,6 +37,7 @@ import {
   SupersedeRequest,
   type Supersession,
 } from './evidence-contract.ts';
+import { cueReferent } from './interpret/cue-referent.ts';
 import { type Interpreter, InterpreterUnavailableError } from './interpret/interpreter.ts';
 import { choiceForResponse, normalize } from './interpret/output.ts';
 import type { Journal, MediaStore, Recorded } from './journal.ts';
@@ -119,6 +120,11 @@ export interface TaskTurn {
   } | null;
   /** The session's selected subject. */
   readonly referent: Item | null;
+  /**
+   * Set when the Mac chose that subject from the person's near cue, not the model: the item of
+   * Boopy's own reply whose statement is the line, or null when there is none.
+   */
+  readonly cueChosen?: { readonly replyId: string | null };
 }
 
 /**
@@ -190,6 +196,11 @@ export class Boopy {
       first !== undefined && session.interpretationFailure?.utteranceId === first.utteranceId;
     const dialogue = session.dialogue;
     const referent = session.items.find((item) => item.id === session.referentId);
+    const reply = session.items.find((item) => item.id === `${first?.id}.__reply`);
+    const cueChosen =
+      referent !== undefined && first?.referentCue?.itemId === referent.id
+        ? { replyId: reply !== undefined && reply.statement === dialogue?.text ? reply.id : null }
+        : undefined;
     return {
       turn:
         observation === undefined || utterance === undefined || failed
@@ -210,6 +221,7 @@ export class Boopy {
               choice: dialogue.choice !== undefined,
             },
       referent: referent === undefined ? null : structuredClone(referent),
+      ...(cueChosen === undefined ? {} : { cueChosen }),
     };
   }
 
@@ -1243,6 +1255,12 @@ export class Boopy {
         scope,
         text: lines,
       });
+      // A subject the model did not name may come from the person's near cue, never on a turn
+      // about the whole scene or a selected record. Its reply and follow-ups stay unattached.
+      const fromCue =
+        selectedTarget === undefined && scope !== 'scene' && normalized.referentId === null
+          ? cueReferent(normalized.items, observation)
+          : null;
       const answer = result.output.response?.trim() ?? '';
       if (answer !== '') {
         const answerId = `${interpretationId}.__reply`;
@@ -1312,6 +1330,9 @@ export class Boopy {
           model: interpreter.model,
           latencyMs,
           ...normalized,
+          ...(fromCue === null
+            ? {}
+            : { referentId: fromCue.itemId, referentCue: fromCue.referentCue }),
           ...(selectedTarget === undefined ? {} : { referentId: selectedTarget.id }),
           raw: result.raw,
           actions,

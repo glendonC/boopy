@@ -55,6 +55,10 @@ export interface Interpretation {
   readonly latencyMs: number;
   readonly observationId: string;
   readonly utteranceId: string;
+  /** Set when the Mac, not the model, chose this turn's subject from the person's near cue. */
+  readonly referentCue?: import('./interpret/cue-referent.ts').ReferentCue & {
+    readonly itemId: string;
+  };
 }
 
 export interface SessionState {
@@ -302,6 +306,9 @@ export class Projection {
           latencyMs: event.data.latencyMs,
           observationId: event.data.observationId,
           utteranceId: event.data.utteranceId,
+          ...(event.data.referentCue === undefined || event.data.referentId === null
+            ? {}
+            : { referentCue: { ...event.data.referentCue, itemId: event.data.referentId } }),
         });
         return;
       case 'interpretation.failed':

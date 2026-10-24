@@ -71,11 +71,13 @@ body.
 Otherwise the route opens the task from the session's first completed visual turn. That turn
 must hold Boopy's latest reply in the session. That reply must carry no choice card, because a
 choice is the reply's own action and a task would add a second one. The selected subject must
-be grounded on that turn's view and must not be rejected or ignored. The person's words for
-that turn must be one line of 1 to 400 characters. A session without such a turn gets 409
-`task_unavailable`, and nothing is journaled. An unknown session gets 404. An event id that any
-journal event already holds gets 409 `duplicate_conflict`. A task id that names another
-session's task gets 409 `task_exists`.
+be grounded on that turn's view and must not be rejected or ignored. When the model names no
+subject and the person did not ask about the whole scene, the subject is the one proposed object
+or text box that holds a cue on a surface at most 0.8 m away and whose own median depth is at
+most 0.8 m, and otherwise it stays unknown. The person's words for that turn must be one line of
+1 to 400 characters. A session without such a turn gets 409 `task_unavailable`, and nothing is
+journaled. An unknown session gets 404. An event id that any journal event already holds gets
+409 `duplicate_conflict`. A task id that names another session's task gets 409 `task_exists`.
 
 A task the session already has at revision 0, without a first result, gets one only when its
 opening matches that turn. Otherwise the route answers 409 `task_unavailable` and does not
@@ -96,10 +98,11 @@ assistant, and the journal marks it `simulator: true`. The system is its actor.
 The parts are, in order: a subject on the task's source, an annotation with the subject's
 label, and a dialogue line with Boopy's reply. A voice reply that prompts "Answer." follows only
 when that line asks the person something, which means it ends with a question mark before any
-closing quotes or brackets. The annotation and the dialogue cite the subject's item id. A label
-or reply that breaks the display rules is left out. It is never shortened or rewritten. Without
-Boopy's line there is nothing to answer, so a reply that is left out opens no task, and the
-route answers 409 `task_unavailable`.
+closing quotes or brackets. The annotation cites the subject's item id, and so does the
+dialogue unless the cue chose the subject: then it cites Boopy's own reply item, and without
+one no task opens. A label or reply that breaks the display rules is left out. It is never
+shortened or rewritten. Without Boopy's line there is nothing to answer, so a reply that is
+left out opens no task, and the route answers 409 `task_unavailable`.
 
 The opening and the result are appended in one journal transaction. Both are kept, or neither
 is. The result id is derived from the session, the reply's utterance, and the reply's time, so

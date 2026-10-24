@@ -181,6 +181,8 @@ export type BoopyEvent =
         readonly latencyMs: number;
         readonly scope: Scope;
         readonly referentId: string | null;
+        /** Set when the Mac, not the model, chose the subject from the person's near cue. */
+        readonly referentCue?: import('./interpret/cue-referent.ts').ReferentCue;
         readonly intentId: string | null;
         readonly items: readonly Item[];
         readonly relations: readonly Relation[];

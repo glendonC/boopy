@@ -24,14 +24,16 @@ const CLOSING = /[\p{Pe}\p{Pf}"']+$/u;
  * be one line of at most 400 characters. A label or reply the display rules refuse is left out,
  * never shortened or rewritten. An answer is offered only under a shown line that asks the person
  * something, so a reply that is left out opens no task. The result id comes from the reply, so a
- * retry names the same result.
+ * retry names the same result. When the Mac chose the subject from the person's cue, the model
+ * never said its reply is about that item, so the line cites Boopy's own reply item instead, and
+ * without one no task opens.
  */
 export function standIn(
   sessionId: string,
   ids: { readonly eventId: string; readonly taskId: string },
   facts: TaskTurn,
 ): { readonly open: OpenTask; readonly result: ProviderResult } | null {
-  const { turn, dialogue, referent } = facts;
+  const { turn, dialogue, referent, cueChosen } = facts;
   // A choice card is the reply's own action, so the task would put a second one beside it.
   if (
     turn === null ||
@@ -52,12 +54,15 @@ export function standIn(
     return null;
   const sourceId = `src_${turn.observationId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)}`;
   const source = { sourceId, sourceRevision: 1, sha256: turn.frameSha256 };
-  const evidenceIds = [referent.id];
+  const replyId = cueChosen?.replyId;
+  if (replyId === null) return null;
+  const lineIds = replyId === undefined ? [referent.id] : [replyId];
+  const evidenceIds = replyId === undefined ? [referent.id] : [referent.id, replyId];
   const components: Component[] = [{ type: 'subject', sourceId, maskId: null }];
   if (unchanged(LABEL, referent.label))
-    components.push({ type: 'annotation', text: referent.label, evidenceIds });
+    components.push({ type: 'annotation', text: referent.label, evidenceIds: [referent.id] });
   if (unchanged(LINE, dialogue.text)) {
-    components.push({ type: 'dialogue', text: dialogue.text, evidenceIds });
+    components.push({ type: 'dialogue', text: dialogue.text, evidenceIds: lineIds });
     if (asks(dialogue.text)) components.push({ type: 'voice_reply', prompt: ANSWER_PROMPT });
   }
   const digest = createHash('sha256')

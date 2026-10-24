@@ -634,6 +634,85 @@ describe('open the session task', () => {
   });
 });
 
+/** The capture with depth: the room at 2.5 m, and the photo the person holds around the cue. */
+function heldUp(meters = 0.4) {
+  const request = capture(SAID);
+  const grid = Array.from({ length: 16 * 12 }, (_, index) => {
+    const x = ((index % 16) + 0.5) / 16;
+    const y = (Math.floor(index / 16) + 0.5) / 12;
+    return x >= 0.25 && x <= 0.65 && y >= 0.38 && y <= 0.72 ? meters : 2.5;
+  });
+  return {
+    ...request,
+    frame: { ...request.frame, depth: { columns: 16, rows: 12, meters: grid } },
+  };
+}
+
+/** The model proposes its items but names none of them as the subject. */
+const NAMES_NONE: Change = (output) => ({
+  ...output,
+  referent: { ...output.referent, key: null },
+  response: 'It looks like a photo of a desert.',
+});
+
+describe('a subject from the person’s near cue', () => {
+  it('opens the task on it, and Boopy’s line cites its own reply, not the subject', async () => {
+    const ctx = setup(NAMES_NONE);
+    try {
+      const session = await ctx.start(heldUp());
+      const referent = session.items.find((item) => item.id === session.referentId);
+      const reply = session.items.find((item) => item.id.endsWith('.__reply'));
+      assert.ok(referent && reply && session.dialogue);
+      assert.equal(reply.statement, session.dialogue.text);
+      const response = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
+      assert.equal(response.statusCode, 200, response.body);
+      const view = response.json();
+      assert.deepEqual(view.components, [
+        { type: 'subject', sourceId: view.source.sourceId, maskId: null },
+        { type: 'annotation', text: referent.label, evidenceIds: [referent.id] },
+        { type: 'dialogue', text: session.dialogue.text, evidenceIds: [reply.id] },
+        { type: 'status', code: 'not-sent' },
+      ]);
+      const result = ctx.journal.all().find((event) => event.type === 'task.provider-accepted');
+      assert.ok(result?.type === 'task.provider-accepted');
+      assert.deepEqual(result.data.evidenceIds, [referent.id, reply.id]);
+      assert.deepEqual((await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json(), view);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('opens no task when the model gave no reply for the line to cite', async () => {
+    const ctx = setup((output) => ({ ...output, referent: { ...output.referent, key: null } }));
+    try {
+      const session = await ctx.start(heldUp());
+      assert.ok(session.referentId !== null && session.dialogue);
+      const before = ctx.journal.all().length;
+      const response = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
+      assert.equal(response.statusCode, 409, response.body);
+      assert.equal(response.json().error.code, 'task_unavailable');
+      assert.equal(ctx.journal.all().length, before);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('opens no task when the cue meets the room behind', async () => {
+    const ctx = setup(NAMES_NONE);
+    try {
+      const session = await ctx.start(heldUp(2.5));
+      assert.equal(session.referentId, null);
+      const before = ctx.journal.all().length;
+      const response = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
+      assert.equal(response.statusCode, 409, response.body);
+      assert.equal(response.json().error.code, 'task_unavailable');
+      assert.equal(ctx.journal.all().length, before);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
 describe('answer a task aloud', () => {
   it('records the transcript as an uncertain practice attempt that stays local and not sent', async () => {
     const ctx = setup(ASKS);
