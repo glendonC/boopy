@@ -69,6 +69,68 @@ def best_noun(token_scores, spans, threshold):
     return NOUNS[scores.index(best)], best
 
 
+def turn(a, b, c):
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def meets(a, b, c, d):
+    """Whether two edges cross or touch, the headset's own test."""
+    def within(p, q, r):
+        return (min(p[0], q[0]) - 1e-8 <= r[0] <= max(p[0], q[0]) + 1e-8
+                and min(p[1], q[1]) - 1e-8 <= r[1] <= max(p[1], q[1]) + 1e-8)
+    x, y, u, v = turn(a, b, c), turn(a, b, d), turn(c, d, a), turn(c, d, b)
+    return ((x * y < 0 and u * v < 0) or (abs(x) < 1e-8 and within(a, b, c)) or (abs(y) < 1e-8 and within(a, b, d))
+            or (abs(u) < 1e-8 and within(c, d, a)) or (abs(v) < 1e-8 and within(c, d, b)))
+
+
+def simple_outline(points):
+    """Whether the headset can draw this outline, by its own rule (SurfaceGeometry.TryTriangulate):
+    3 to 256 points within the frame, no repeated point, no edge that crosses or touches another,
+    some area, and an ear-clipping triangulation."""
+    n = len(points)
+    if n < 3 or n > 256:
+        return False
+    area = 0.0
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        if not (0 <= a[0] <= 1 and 0 <= a[1] <= 1):
+            return False
+        if (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 < 1e-12:
+            return False
+        area += a[0] * b[1] - a[1] * b[0]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            if meets(a, b, points[j], points[(j + 1) % n]):
+                return False
+    if abs(area) < 1e-6:
+        return False
+    winding = 1 if area > 0 else -1
+    remaining = list(range(n))
+    while len(remaining) > 3:
+        found = False
+        for i in range(len(remaining)):
+            a, b, c = remaining[i - 1], remaining[i], remaining[(i + 1) % len(remaining)]
+            cross = turn(points[a], points[b], points[c]) * winding
+            if abs(cross) < 1e-8:
+                remaining.pop(i)
+                found = True
+                break
+            if cross < 0:
+                continue
+            if any(p not in (a, b, c)
+                   and turn(points[a], points[b], points[p]) * winding >= -1e-8
+                   and turn(points[b], points[c], points[p]) * winding >= -1e-8
+                   and turn(points[c], points[a], points[p]) * winding >= -1e-8 for p in remaining):
+                continue
+            remaining.pop(i)
+            found = True
+            break
+        if not found or len(remaining) < 3:
+            return False
+    return True
+
+
 def mask_geometry(mask):
     """Return a simple mask boundary, never a bounding box substituted for a mask."""
     binary = np.asarray(mask, dtype=np.uint8)
@@ -96,10 +158,13 @@ def mask_geometry(mask):
         simplified = cv2.approxPolyDP(contour, perimeter * fraction, True)
     if len(simplified) < 3 or len(simplified) > 64 or abs(cv2.contourArea(simplified) - area) > area * .08:
         return None
+    outline = [(float(point[0][0]) / w, float(point[0][1]) / h) for point in simplified]
+    if not simple_outline(outline):
+        return None  # Simplifying can cross edges; the headset refuses such a frame, so leave it out.
     x, y, bw, bh = cv2.boundingRect(contour)
     return {
         "box": {"x0": x / w, "y0": y / h, "x1": min(1, (x + bw) / w), "y1": min(1, (y + bh) / h)},
-        "contour": [{"x": float(point[0][0]) / w, "y": float(point[0][1]) / h} for point in simplified],
+        "contour": [{"x": px, "y": py} for px, py in outline],
         "maskSha256": hashlib.sha256(binary.tobytes()).hexdigest(),
         "maskPixels": pixels,
     }

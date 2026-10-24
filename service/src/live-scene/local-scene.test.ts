@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { LocalScenePerceiver } from './local-scene.ts';
+import { LocalScenePerceiver, simpleOutline } from './local-scene.ts';
 
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const object = {
@@ -19,11 +19,19 @@ const object = {
   maskSha256: 'a'.repeat(64),
   maskPixels: 300,
 };
+const points = (...values: [number, number][]) => values.map(([x, y]) => ({ x, y }));
+const bowTie = points([0.1, 0.1], [0.4, 0.4], [0.4, 0.1], [0.1, 0.4]);
+/** The fourth point lies on the first edge, so two edges touch without crossing. */
+const touching = points([0.1, 0.1], [0.5, 0.1], [0.5, 0.5], [0.3, 0.1], [0.1, 0.5]);
 /**
  * Deadlines default to generous values so a slow worker start on a heavily loaded machine cannot
  * fail a test that is not about deadlines; a test about a deadline makes only that one short.
  */
-async function fixture(mode = 'normal', deadlines: { startup?: number; inference?: number } = {}) {
+async function fixture(
+  mode = 'normal',
+  deadlines: { startup?: number; inference?: number } = {},
+  objects: readonly unknown[] = [object],
+) {
   const directory = await mkdtemp(join(tmpdir(), 'boopy-local-scene-'));
   const workerPath = join(directory, 'worker.mjs');
   await writeFile(
@@ -35,7 +43,7 @@ let count=0;for await(const line of createInterface({input:process.stdin})){
  const request=JSON.parse(line);count++;if(mode==='slow')await new Promise(r=>setTimeout(r,150));
  if(mode==='late')await new Promise(r=>setTimeout(r,60000));
  if(mode==='malformed'){console.log('not json');continue;}
- console.log(JSON.stringify({type:'result',id:mode==='wrong-id'?request.id+1:request.id,objects:[${JSON.stringify(object)}],latencyMs:count}));
+ console.log(JSON.stringify({type:'result',id:mode==='wrong-id'?request.id+1:request.id,objects:${JSON.stringify(objects)},latencyMs:count}));
 }`,
   );
   const provider = new LocalScenePerceiver({
@@ -69,6 +77,42 @@ test('persistent local worker returns contour metadata without altering uncertai
   } finally {
     await f.close();
   }
+});
+test('an outline whose edges cross or touch is left out with its object, and the frame keeps the rest', async () => {
+  const crossing = {
+    ...object,
+    label: 'synthetic crossing',
+    maskSha256: 'b'.repeat(64),
+    contour: bowTie,
+  };
+  const pinched = {
+    ...object,
+    label: 'synthetic pinch',
+    maskSha256: 'c'.repeat(64),
+    contour: touching,
+  };
+  const f = await fixture('normal', {}, [crossing, object, pinched]);
+  try {
+    const first = await f.provider.observe(jpeg);
+    assert.deepEqual(first.objects, [object]);
+    // Leaving an outline out is not a worker failure: the same worker serves the next frame.
+    const second = await f.provider.observe(jpeg);
+    assert.deepEqual(second.objects, [object]);
+    assert.equal(second.latencyMs, 2);
+    assert.equal(f.provider.device, 'cpu');
+  } finally {
+    await f.close();
+  }
+});
+test("simple outlines follow the headset's rule: no crossing, touching, repeated point or empty area", () => {
+  assert.equal(simpleOutline(object.contour), true);
+  const concave = points([0.1, 0.1], [0.5, 0.1], [0.5, 0.2], [0.2, 0.2], [0.2, 0.5], [0.1, 0.5]);
+  assert.equal(simpleOutline(concave), true);
+  assert.equal(simpleOutline(bowTie), false);
+  assert.equal(simpleOutline(touching), false);
+  assert.equal(simpleOutline(points([0.1, 0.1], [0.4, 0.1], [0.4, 0.1], [0.2, 0.4])), false);
+  assert.equal(simpleOutline(points([0.1, 0.1], [0.2, 0.2], [0.3, 0.3])), false);
+  assert.equal(simpleOutline(points([0.1, 0.1], [0.4, 0.1])), false);
 });
 test('a worker that starts slowly, as on a heavily loaded machine, still serves frames', async () => {
   const f = await fixture('slow-start');

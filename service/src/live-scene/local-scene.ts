@@ -29,6 +29,83 @@ const Result = z.object({
   latencyMs: z.number().finite().nonnegative(),
 });
 export type LocalSceneResult = z.infer<typeof Result>;
+
+type Vertex = { readonly x: number; readonly y: number };
+const turn = (a: Vertex, b: Vertex, c: Vertex) =>
+  (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+const within = (p: Vertex, q: Vertex, r: Vertex) =>
+  r.x >= Math.min(p.x, q.x) - 1e-8 &&
+  r.x <= Math.max(p.x, q.x) + 1e-8 &&
+  r.y >= Math.min(p.y, q.y) - 1e-8 &&
+  r.y <= Math.max(p.y, q.y) + 1e-8;
+/** Whether two edges cross or touch, the headset's own test. */
+function meets(a: Vertex, b: Vertex, c: Vertex, d: Vertex): boolean {
+  const [x, y, u, v] = [turn(a, b, c), turn(a, b, d), turn(c, d, a), turn(c, d, b)];
+  return (
+    (x * y < 0 && u * v < 0) ||
+    (Math.abs(x) < 1e-8 && within(a, b, c)) ||
+    (Math.abs(y) < 1e-8 && within(a, b, d)) ||
+    (Math.abs(u) < 1e-8 && within(c, d, a)) ||
+    (Math.abs(v) < 1e-8 && within(c, d, b))
+  );
+}
+
+/**
+ * Whether the headset can draw this outline, by its own rule (SurfaceGeometry.TryTriangulate in
+ * the client package): 3 to 256 points within the frame, no repeated point, no edge that crosses
+ * or touches another, some area, and an ear-clipping triangulation.
+ */
+export function simpleOutline(contour: readonly Vertex[]): boolean {
+  const n = contour.length;
+  if (n < 3 || n > 256) return false;
+  const at = (index: number) => contour[index] as Vertex;
+  let area = 0;
+  for (let i = 0; i < n; i += 1) {
+    const a = at(i);
+    const b = at((i + 1) % n);
+    if (![a.x, a.y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1))
+      return false;
+    if ((a.x - b.x) ** 2 + (a.y - b.y) ** 2 < 1e-12) return false;
+    area += a.x * b.y - a.y * b.x;
+    for (let j = i + 2; j < n; j += 1) {
+      if (i === 0 && j === n - 1) continue;
+      if (meets(a, b, at(j), at((j + 1) % n))) return false;
+    }
+  }
+  if (Math.abs(area) < 1e-6) return false;
+  const winding = Math.sign(area);
+  const remaining = Array.from({ length: n }, (_, index) => index);
+  while (remaining.length > 3) {
+    let found = false;
+    for (let i = 0; i < remaining.length; i += 1) {
+      const a = remaining[(i + remaining.length - 1) % remaining.length] as number;
+      const b = remaining[i] as number;
+      const c = remaining[(i + 1) % remaining.length] as number;
+      const cross = turn(at(a), at(b), at(c)) * winding;
+      if (Math.abs(cross) < 1e-8) {
+        remaining.splice(i, 1);
+        found = true;
+        break;
+      }
+      if (cross < 0) continue;
+      const occupied = remaining.some(
+        (point) =>
+          point !== a &&
+          point !== b &&
+          point !== c &&
+          turn(at(a), at(b), at(point)) * winding >= -1e-8 &&
+          turn(at(b), at(c), at(point)) * winding >= -1e-8 &&
+          turn(at(c), at(a), at(point)) * winding >= -1e-8,
+      );
+      if (occupied) continue;
+      remaining.splice(i, 1);
+      found = true;
+      break;
+    }
+    if (!found || remaining.length < 3) return false;
+  }
+  return true;
+}
 export interface LocalSceneOptions {
   python: string;
   detectorModel: string;
@@ -189,7 +266,10 @@ export class LocalScenePerceiver {
       const result = Result.safeParse(value);
       if (result.success) {
         this.#pending = null;
-        pending.resolve(result.data);
+        // The headset refuses a whole frame when one outline is not simple, so such an object is
+        // left out here, never reshaped, and the frame keeps its other objects.
+        const objects = result.data.objects.filter((object) => simpleOutline(object.contour));
+        pending.resolve({ ...result.data, objects });
         return;
       }
     }

@@ -1,8 +1,14 @@
 """Synthetic mask geometry and label tests; model inference is verified separately by synthetic-probe.ts."""
 import unittest
+from unittest import mock
 import cv2
 import numpy as np
-from worker import NOUNS, best_noun, mask_geometry, noun_spans
+import worker
+from worker import NOUNS, best_noun, mask_geometry, noun_spans, simple_outline
+
+BOW_TIE = [(.1, .1), (.4, .4), (.4, .1), (.1, .4)]
+# The fourth point lies on the first edge, so two edges touch without crossing.
+TOUCHING = [(.1, .1), (.5, .1), (.5, .5), (.3, .1), (.1, .5)]
 
 
 def prompt_tokens():
@@ -91,6 +97,32 @@ class MaskGeometryTests(unittest.TestCase):
         holey = empty.copy(); cv2.circle(holey,(100,100),50,1,-1);cv2.circle(holey,(100,100),25,0,-1)
         for mask in [empty,tiny,np.ones((200,300),np.uint8),fragmented,holey]:
             self.assertIsNone(mask_geometry(mask))
+
+    def test_a_simplified_outline_whose_edges_cross_is_left_out_never_reshaped(self):
+        mask = np.zeros((200, 300), np.uint8)
+        mask[50:150, 100:200] = 1
+        # Within the area tolerance of the square, but its last edges cross.
+        crossing = np.array([[100, 50], [199, 50], [199, 149], [100, 145], [105, 149]], np.int32).reshape(-1, 1, 2)
+        with mock.patch.object(worker.cv2, 'approxPolyDP', return_value=crossing):
+            self.assertIsNone(mask_geometry(mask))
+        self.assertIsNotNone(mask_geometry(mask))
+
+
+class OutlineTests(unittest.TestCase):
+    """The headset's own rule (SurfaceGeometry.TryTriangulate), so it never refuses a frame."""
+
+    def test_crossing_or_touching_edges_are_not_simple(self):
+        self.assertFalse(simple_outline(BOW_TIE))
+        self.assertFalse(simple_outline(TOUCHING))
+
+    def test_a_simple_outline_concave_or_not_is_kept(self):
+        self.assertTrue(simple_outline([(.1, .1), (.4, .1), (.2, .4)]))
+        self.assertTrue(simple_outline([(.1, .1), (.5, .1), (.5, .2), (.2, .2), (.2, .5), (.1, .5)]))
+
+    def test_a_repeated_point_no_area_or_too_few_points_is_not_simple(self):
+        self.assertFalse(simple_outline([(.1, .1), (.4, .1), (.4, .1), (.2, .4)]))
+        self.assertFalse(simple_outline([(.1, .1), (.2, .2), (.3, .3)]))
+        self.assertFalse(simple_outline([(.1, .1), (.4, .1)]))
 
 if __name__ == '__main__':
     unittest.main()
