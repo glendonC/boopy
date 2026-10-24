@@ -1008,13 +1008,21 @@ namespace Boopy.Quest
         /// <summary>
         /// One task view on the parts already in the scene: the chip on the outlined subject, the
         /// docked dialogue line with "Not sent" in its speaker line, and at most one control under it.
-        /// The view must belong to the current session.
+        /// The view must belong to the current session. A view with neither its chip and line, an
+        /// answer, nor the wrong-item status gives the session's own presentation back.
         /// </summary>
         public void PresentTask(string json)
         {
             var presented = InteractionPresentation.Read(json);
             if (session == null || presented.SessionId != session.Id)
                 throw new ArgumentException("The task belongs to another session.");
+            if (!presented.Presentable)
+            {
+                var shown = task != null;
+                EndTask();
+                if (shown && inputAllowed && isActiveAndEnabled) Apply(session);
+                return;
+            }
             task = presented;
             if (inputAllowed && isActiveAndEnabled) ShowTask();
         }
@@ -1082,7 +1090,7 @@ namespace Boopy.Quest
             InteractionPresentation? opened = null;
             try { if (json != null) opened = InteractionPresentation.Read(json); }
             catch (ArgumentException) { }
-            if (opened == null || opened.SessionId != view.Id || busy || voice.Recording || buttonTalk.Recording)
+            if (opened == null || opened.SessionId != view.Id || !opened.Presentable || busy || voice.Recording || buttonTalk.Recording)
             {
                 console?.EndTask();
                 return;

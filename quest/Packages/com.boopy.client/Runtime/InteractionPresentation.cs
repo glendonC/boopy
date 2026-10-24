@@ -64,10 +64,13 @@ namespace Boopy.Client
 
         /// <summary>
         /// Whether the headset draws this view on the subject: it has both its chip and Boopy's
-        /// line, or a recorded answer. A part left out, such as a line too long for the task,
-        /// keeps the session's own presentation so nothing it shows vanishes.
+        /// line, a recorded answer, or the wrong-item status. A part left out, such as a line too
+        /// long for the task, keeps the session's own presentation so nothing it shows vanishes.
+        /// A wrong item is shown as one, so the session's chip does not come back on it.
         /// </summary>
-        public bool Presentable => (Chip.Length > 0 && Dialogue.Length > 0) || LastAttempt != null;
+        public bool Presentable => (Chip.Length > 0 && Dialogue.Length > 0) || LastAttempt != null || wrongItem;
+
+        private bool wrongItem;
 
         private InteractionPresentation() { }
 
@@ -151,6 +154,7 @@ namespace Boopy.Client
             if (status == "wrong-item")
             {
                 // The assistant's parts are cleared: no chip, no subject, no control. The answer stays recorded.
+                presentation.wrongItem = true;
                 presentation.StatusLine = "Wrong item";
                 presentation.Caption = "Wrong item.";
                 presentation.SpeakerLine = "Boopy" + NotSent;

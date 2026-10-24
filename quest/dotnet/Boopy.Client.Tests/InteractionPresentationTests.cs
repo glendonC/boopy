@@ -340,7 +340,7 @@ namespace Boopy.Client.Tests
         }
 
         [Test]
-        public void OnlyAChipWithBoopysLineOrARecordedAnswerIsPresented()
+        public void OnlyAChipWithBoopysLineARecordedAnswerOrAWrongItemIsPresented()
         {
             Assert.That(InteractionPresentation.Read(Lesson()).Presentable, Is.True);
             Assert.That(InteractionPresentation.Read(Manual()).Presentable, Is.True);
@@ -349,7 +349,8 @@ namespace Boopy.Client.Tests
             Assert.That(InteractionPresentation.Read(Without(Lesson(), "annotation")).Presentable, Is.False,
                 "The label was too long for the task: the session keeps its own chip and outline.");
             Assert.That(InteractionPresentation.Read(OpenSave()).Presentable, Is.False);
-            Assert.That(InteractionPresentation.Read(WrongItem()).Presentable, Is.False);
+            Assert.That(InteractionPresentation.Read(WrongItem()).Presentable, Is.True,
+                "A wrong item drops the chip and says Wrong item.; handing back the session's chip would show the wrong item again.");
             foreach (var partial in new[] { Without(Lesson(), "dialogue"), Without(Lesson(), "annotation"), OpenSave(), WrongItem() })
             {
                 var answered = JObject.Parse(partial);
