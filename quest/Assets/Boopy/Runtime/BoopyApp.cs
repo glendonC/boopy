@@ -114,6 +114,16 @@ namespace Boopy.Quest
         private ThinkingPhrases thinkingWithoutPicture = new ThinkingPhrases(Environment.TickCount + 1, picture: false);
         private ThinkingPhrases Thinking(bool picture) => picture ? thinking : thinkingWithoutPicture;
 
+        // Work on an outlined subject: Boopy goes beside it, faces it, and on arrival lights it with one sweep. Like the
+        // phrases, only a turn that works on the recorded view does: a turn without a photo, a choice and a follow-up
+        // that names no observation leave Boopy home, its eyes and glow still showing that it thinks.
+        private void VisitSubject(bool picture)
+        {
+            if (!picture || scene == null || console == null) return;
+            if (!scene.TryGetSubjectVisit(console.transform.position, out var visit, out var anchor, out var outline)) return;
+            console.VisitSubject(visit, anchor, outline, () => scene.SweepSubject(visit), () => scene.SubjectSweepProgress);
+        }
+
         private void Start()
         {
             var rig = FindAnyObjectByType<OVRCameraRig>();
@@ -884,16 +894,6 @@ namespace Boopy.Quest
                 !inputAllowed || !isActiveAndEnabled || (expectedSession != null && session?.Id != expectedSession)) return;
             // The actual stage goes to the console's processing line; the strip keeps Boopy's thinking phrases.
             console?.ShowTurnProgress(progress);
-        }
-
-        // Work on an outlined subject: Boopy goes beside it, faces it, and on arrival lights it with one sweep. A turn
-        // without a photo, and a follow-up that names no observation, leave Boopy home. Its eyes and glow still show that it thinks.
-        private void VisitSubject(bool picture)
-        {
-            if (!picture || scene == null || console == null) return;
-            var place = scene;
-            if (!place.TryGetSubjectVisit(console.transform.position, out var visit, out var anchor, out var outline)) return;
-            console.VisitSubject(visit, anchor, outline, () => place.SweepSubject(visit), () => place.SubjectSweepProgress);
         }
 
         private async Task Send(byte[] wav)
