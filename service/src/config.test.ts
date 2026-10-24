@@ -116,6 +116,13 @@ describe('Meta Model API key configuration', () => {
   });
 });
 
+it('keeps the connection reply routes off unless BOOPY_CONNECTION_REPLIES is 1', () => {
+  const env = { BOOPY_INTERPRETER: 'fixture', BOOPY_LOG: '0' };
+  assert.equal(loadConfig(env).connectionReplies, false);
+  assert.equal(loadConfig({ ...env, BOOPY_CONNECTION_REPLIES: 'true' }).connectionReplies, false);
+  assert.equal(loadConfig({ ...env, BOOPY_CONNECTION_REPLIES: '1' }).connectionReplies, true);
+});
+
 it('keeps local memory opt-in and rejects unknown backends without provider fallback', () => {
   const env = { BOOPY_INTERPRETER: 'fixture', BOOPY_LOG: '0' };
   assert.equal(loadConfig(env).memory, 'none');

@@ -44,6 +44,11 @@ export interface Config {
   } | null;
   readonly ocrBinary: string | null;
   readonly logger: boolean;
+  /**
+   * The local routes for a reply from a named connection. Off until the headset can say which
+   * connection a reply came through; before that, it would show under Boopy's own name.
+   */
+  readonly connectionReplies: boolean;
   readonly memory: 'none' | 'hmem';
   readonly semanticMemory: {
     pythonPath: string;
@@ -94,6 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         ? undefined
         : required(env, 'BOOPY_ZETARIS_REFERENCE_CREDENTIAL_FILE'),
     logger: env.BOOPY_LOG !== '0',
+    connectionReplies: env.BOOPY_CONNECTION_REPLIES === '1',
   };
 }
 
