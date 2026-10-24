@@ -287,6 +287,111 @@ export const ProviderRejectedData = z.strictObject({
 });
 export type ProviderRejectedData = z.infer<typeof ProviderRejectedData>;
 
+export const ConnectionId = z.string().regex(/^con_[A-Za-z0-9_-]{1,64}$/);
+export const RequestId = z.string().regex(/^trq_[A-Za-z0-9_-]{1,64}$/);
+const Nonce = z.string().regex(/^[a-f0-9]{32}$/);
+
+/**
+ * A connection the person names on the Mac and carries files through, such as a chat with their
+ * own assistant. The label is theirs, shown as typed; Boopy never knows who answers through it.
+ */
+export const Connect = z.strictObject({
+  eventId: EventId,
+  connectionId: ConnectionId,
+  label: displayText(40),
+});
+export type Connect = z.infer<typeof Connect>;
+
+export const ConnectionCreatedData = z.strictObject({
+  payloadSha256: Sha256,
+  eventId: EventId,
+  connectionId: ConnectionId,
+  label: displayText(40),
+  channel: z.literal('person-file'),
+});
+export type ConnectionCreatedData = z.infer<typeof ConnectionCreatedData>;
+
+export const PrepareRequest = z.strictObject({
+  eventId: EventId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  connectionId: ConnectionId,
+  requestId: RequestId,
+  nonce: Nonce,
+});
+export type PrepareRequest = z.infer<typeof PrepareRequest>;
+
+/** The journal keeps the nonce's digest, never the nonce. */
+export const RequestPreparedData = z.strictObject({
+  payloadSha256: Sha256,
+  eventId: EventId,
+  requestId: RequestId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  connectionId: ConnectionId,
+  revision: Revision,
+  evidenceIds: z.array(EvidenceId).min(1).max(4),
+  fileSha256: Sha256,
+  nonceSha256: Sha256,
+});
+export type RequestPreparedData = z.infer<typeof RequestPreparedData>;
+
+/**
+ * A reply file: Boopy's respondWith, filled in by whoever answered through the connection. Only a
+ * line and an answer prompt; the subject and its chip stay Boopy's. Nothing else is accepted.
+ */
+export const TaskReply = z.strictObject({
+  type: z.literal('boopy.task-reply'),
+  version: z.literal(1),
+  requestId: RequestId,
+  taskId: TaskId,
+  baseTaskRevision: Revision,
+  source: SourceRef,
+  nonce: Nonce,
+  previousReplyId: z.null(),
+  components: z
+    .array(z.discriminatedUnion('type', [Dialogue, VoiceReply]))
+    .min(1)
+    .max(2),
+});
+export type TaskReply = z.infer<typeof TaskReply>;
+
+export const ReplyMatchedData = z.strictObject({
+  payloadSha256: Sha256,
+  requestId: RequestId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  connectionId: ConnectionId,
+  label: displayText(40),
+  fileSha256: Sha256,
+  baseRevision: Revision,
+  revision: Revision,
+  components: z.array(Component).min(1).max(2),
+  authorship: z.literal('claimed-by-file'),
+  outcome: z.literal('accepted'),
+});
+export type ReplyMatchedData = z.infer<typeof ReplyMatchedData>;
+
+export const ReplyCode = z.enum([
+  'reply_invalid',
+  'nonce_mismatch',
+  'source_mismatch',
+  'cancelled',
+  'stale_revision',
+  'duplicate_conflict',
+]);
+export const ReplyRejectedData = z.strictObject({
+  payloadSha256: Sha256,
+  requestId: RequestId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  fileSha256: Sha256,
+  revision: Revision,
+  code: ReplyCode,
+  outcome: z.literal('rejected'),
+});
+export type ReplyRejectedData = z.infer<typeof ReplyRejectedData>;
+
 type Envelope<Type extends string, Actor extends 'person' | 'system', Data> = {
   readonly type: Type;
   readonly session: string;
@@ -300,7 +405,11 @@ export type TaskEvent =
   | Envelope<'task.action-accepted', 'person', ActionAcceptedData>
   | Envelope<'task.action-rejected', 'person', ActionRejectedData>
   | Envelope<'task.provider-accepted', 'system', ProviderAcceptedData>
-  | Envelope<'task.provider-rejected', 'system', ProviderRejectedData>;
+  | Envelope<'task.provider-rejected', 'system', ProviderRejectedData>
+  | Envelope<'connection.created', 'person', ConnectionCreatedData>
+  | Envelope<'task.request-prepared', 'person', RequestPreparedData>
+  | Envelope<'task.reply-matched', 'person', ReplyMatchedData>
+  | Envelope<'task.reply-rejected', 'person', ReplyRejectedData>;
 
 export type Attempt = {
   readonly eventId: string;
@@ -323,6 +432,8 @@ export type TaskView = {
   readonly components: readonly ViewComponent[];
   readonly attempts: readonly Attempt[];
   readonly lastRejection: { readonly eventId: string; readonly code: string } | null;
+  /** After a matched reply: the person's name for the connection it came through, nothing more. */
+  readonly reply?: { readonly connection: string };
 };
 
 export type TaskOutcome =
@@ -339,4 +450,34 @@ export type TaskOutcome =
         | 'source_mismatch'
         | 'answer_not_offered';
       readonly task: TaskView | null;
+    };
+
+/** What a reply file the person brought back did to its task. */
+export type ReplyOutcome =
+  | { readonly status: 'accepted'; readonly task: TaskView }
+  | {
+      readonly status: 'rejected';
+      readonly code: 'reply_unreadable' | 'unknown_request' | z.infer<typeof ReplyCode>;
+      readonly task: TaskView | null;
+    };
+
+export type RequestOutcome =
+  | {
+      readonly status: 'accepted';
+      readonly requestId: string;
+      readonly fileName: string;
+      readonly file: string;
+      readonly fileSha256: string;
+    }
+  | {
+      readonly status: 'rejected';
+      readonly code:
+        | 'unknown_task'
+        | 'session_mismatch'
+        | 'unknown_connection'
+        | 'request_exists'
+        | 'request_unavailable'
+        | 'cancelled'
+        | 'duplicate_conflict';
+      readonly requestId: string | null;
     };
