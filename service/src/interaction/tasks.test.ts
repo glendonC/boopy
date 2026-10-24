@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { Journal } from '../journal.ts';
 import { Projection } from '../session.ts';
@@ -925,5 +926,219 @@ describe('a task opened together with its first result', () => {
     assert.equal(journal.all().length, after);
     // The bare opening, the asking task's opening and result, and the correction; no answer check.
     assert.equal(after, before + 4);
+  });
+});
+
+describe('a reply from a named connection', () => {
+  const NONCE = 'b'.repeat(32);
+  const TASK = 'tsk_sahara_later';
+  const REQUEST = {
+    eventId: 'evt_request_one',
+    taskId: TASK,
+    sessionId: SESSION,
+    connectionId: 'con_study',
+    requestId: 'trq_one',
+    nonce: NONCE,
+  };
+  const LINE = {
+    type: 'dialogue',
+    text: 'A camel at rest. Where was this?',
+    evidenceIds: ['ev_camel'],
+  };
+  const PROMPT = { type: 'voice_reply', prompt: 'Answer.' };
+
+  /** A task with Boopy's parts, the person's named connection, and one request for revision 1. */
+  function requested(journal = Journal.open(':memory:')) {
+    const tasks = new TaskStore(journal);
+    assert.equal(open(tasks).status, 'accepted');
+    assert.equal(tasks.receive(lesson, AT).status, 'accepted');
+    const connected = tasks.connect(
+      { eventId: 'evt_connect_study', connectionId: 'con_study', label: 'My study chat' },
+      AT,
+    );
+    assert.equal(connected.status, 'accepted');
+    const prepared = tasks.prepareRequest(REQUEST, AT);
+    assert.equal(prepared.status, 'accepted');
+    return { tasks, journal, prepared };
+  }
+
+  type Body = Record<string, unknown>;
+  const reply = (change: (body: Body) => Body = (body) => body) =>
+    JSON.stringify(
+      change({
+        type: 'boopy.task-reply',
+        version: 1,
+        requestId: 'trq_one',
+        taskId: TASK,
+        baseTaskRevision: 1,
+        source: SOURCE,
+        nonce: NONCE,
+        previousReplyId: null,
+        components: [LINE, PROMPT],
+      }),
+    );
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+
+  it('prepares one request per task revision and keeps only the digest of its nonce', () => {
+    const { tasks, journal, prepared } = requested();
+    if (prepared.status !== 'accepted') return;
+    assert.equal(prepared.requestId, 'trq_one');
+    assert.ok(prepared.file.includes(NONCE));
+    const event = journal.all().find((entry) => entry.type === 'task.request-prepared');
+    assert.ok(event?.type === 'task.request-prepared');
+    assert.equal(event.data.nonceSha256, digest(NONCE));
+    assert.equal(event.data.fileSha256, prepared.fileSha256);
+    assert.equal(JSON.stringify(journal.all()).includes(NONCE), false);
+    const again = tasks.prepareRequest(
+      { ...REQUEST, eventId: 'evt_request_two', requestId: 'trq_two' },
+      AT,
+    );
+    assert.deepEqual(again, { status: 'rejected', code: 'request_exists', requestId: 'trq_one' });
+    const nowhere = tasks.prepareRequest(
+      { ...REQUEST, eventId: 'evt_request_three', requestId: 'trq_three', connectionId: 'con_x' },
+      AT,
+    );
+    assert.equal(nowhere.status === 'rejected' && nowhere.code, 'unknown_connection');
+  });
+
+  it('gives an identical retry the same file and journals nothing; any other change conflicts', () => {
+    const { tasks, journal, prepared } = requested();
+    const count = journal.all().length;
+    assert.deepEqual(tasks.prepareRequest(REQUEST, AT), prepared);
+    for (const change of [
+      { nonce: 'c'.repeat(32) },
+      { connectionId: 'con_other' },
+      { taskId: 'tsk_other' },
+    ]) {
+      const other = tasks.prepareRequest({ ...REQUEST, ...change }, AT);
+      assert.equal(other.status === 'rejected' && other.code, 'duplicate_conflict');
+    }
+    assert.equal(journal.all().length, count);
+  });
+
+  it('cannot give a retry its file once the task moved on', () => {
+    const { tasks } = requested();
+    const retry = { type: 'retry' } as const;
+    tasks.act(
+      {
+        eventId: 'evt_retry',
+        sessionId: SESSION,
+        taskId: TASK,
+        expectedRevision: 1,
+        action: retry,
+      },
+      AT,
+    );
+    const late = tasks.prepareRequest(REQUEST, AT);
+    assert.equal(late.status === 'rejected' && late.code, 'request_unavailable');
+  });
+
+  it('asks nothing for a task without Boopy’s parts', () => {
+    const tasks = store();
+    assert.equal(open(tasks).status, 'accepted');
+    tasks.connect({ eventId: 'evt_connect_study', connectionId: 'con_study', label: 'Study' }, AT);
+    const prepared = tasks.prepareRequest({ ...REQUEST }, AT);
+    assert.equal(prepared.status === 'rejected' && prepared.code, 'request_unavailable');
+  });
+
+  it('takes a matching reply as the next revision through the named connection, still not sent', () => {
+    const { tasks, journal } = requested();
+    const content = reply();
+    const matched = tasks.matchReply(content, AT);
+    assert.equal(matched.status, 'accepted');
+    if (matched.status !== 'accepted') return;
+    assert.equal(matched.task.revision, 2);
+    assert.equal(matched.task.delivery, 'not-sent');
+    assert.equal(matched.task.continuity, 'local-only');
+    assert.deepEqual(matched.task.reply, { connection: 'My study chat' });
+    // The subject and its chip stay Boopy's; the connection never saw the picture.
+    assert.deepEqual(matched.task.components, [
+      lesson.components[0],
+      lesson.components[1],
+      LINE,
+      PROMPT,
+      { type: 'status', code: 'not-sent' },
+    ]);
+    const event = journal.all().at(-1);
+    assert.ok(event?.type === 'task.reply-matched');
+    assert.equal(event.actor, 'person');
+    assert.equal(event.data.fileSha256, digest(content));
+    assert.equal(event.data.authorship, 'claimed-by-file');
+    const count = journal.all().length;
+    assert.deepEqual(tasks.matchReply(content, AT), matched);
+    assert.equal(journal.all().length, count);
+    assert.deepEqual(new TaskStore(journal).get(TASK), matched.task);
+  });
+
+  it('records a reply that does not match by its digest and a code, and changes nothing', () => {
+    const cases: [string, (body: Body) => Body][] = [
+      ['reply_invalid', (body) => ({ ...body, delivery: 'sent' })],
+      ['reply_invalid', (body) => ({ ...body, components: [PROMPT] })],
+      ['reply_invalid', (body) => ({ ...body, components: [{ ...LINE, evidenceIds: ['ev_x'] }] })],
+      ['nonce_mismatch', (body) => ({ ...body, nonce: 'c'.repeat(32) })],
+      ['source_mismatch', (body) => ({ ...body, source: { ...SOURCE, sha256: 'd'.repeat(64) } })],
+      ['stale_revision', (body) => ({ ...body, baseTaskRevision: 0 })],
+    ];
+    for (const [code, change] of cases) {
+      const { tasks, journal } = requested();
+      const before = tasks.get(TASK);
+      const content = reply(change);
+      const refused = tasks.matchReply(content, AT);
+      assert.equal(refused.status === 'rejected' && refused.code, code, code);
+      assert.equal(tasks.get(TASK)?.revision, before?.revision, code);
+      assert.deepEqual(tasks.get(TASK)?.components, before?.components, code);
+      const event = journal.all().at(-1);
+      assert.ok(event?.type === 'task.reply-rejected', code);
+      assert.deepEqual([event.data.fileSha256, event.data.code], [digest(content), code]);
+      assert.equal(JSON.stringify(event).includes('camel at rest'), false, code);
+    }
+  });
+
+  it('refuses a reply once the task moved on, was cancelled, or already took another reply', () => {
+    const moved = requested();
+    moved.tasks.act(
+      {
+        eventId: 'evt_retry',
+        sessionId: SESSION,
+        taskId: TASK,
+        expectedRevision: 1,
+        action: { type: 'retry' },
+      },
+      AT,
+    );
+    const late = moved.tasks.matchReply(reply(), AT);
+    assert.equal(late.status === 'rejected' && late.code, 'stale_revision');
+    const cancelled = requested();
+    cancelled.tasks.act(
+      {
+        eventId: 'evt_cancel',
+        sessionId: SESSION,
+        taskId: TASK,
+        expectedRevision: 1,
+        action: { type: 'cancel' },
+      },
+      AT,
+    );
+    const closed = cancelled.tasks.matchReply(reply(), AT);
+    assert.equal(closed.status === 'rejected' && closed.code, 'cancelled');
+    const answered = requested();
+    assert.equal(answered.tasks.matchReply(reply(), AT).status, 'accepted');
+    const other = reply((body) => ({ ...body, components: [LINE] }));
+    const second = answered.tasks.matchReply(other, AT);
+    assert.equal(second.status === 'rejected' && second.code, 'duplicate_conflict');
+    assert.equal(answered.tasks.get(TASK)?.revision, 2);
+  });
+
+  it('journals nothing for a file it cannot read or a request it never prepared', () => {
+    const { tasks, journal } = requested();
+    const count = journal.all().length;
+    const unread = tasks.matchReply('Here is my reply.', AT);
+    assert.equal(unread.status === 'rejected' && unread.code, 'reply_unreadable');
+    const stranger = tasks.matchReply(
+      reply((body) => ({ ...body, requestId: 'trq_other' })),
+      AT,
+    );
+    assert.equal(stranger.status === 'rejected' && stranger.code, 'unknown_request');
+    assert.equal(journal.all().length, count);
   });
 });
