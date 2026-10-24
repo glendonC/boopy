@@ -1009,11 +1009,23 @@ describe('a reply from a named connection', () => {
       { nonce: 'c'.repeat(32) },
       { connectionId: 'con_other' },
       { taskId: 'tsk_other' },
+      { eventId: 'evt_request_again' },
     ]) {
       const other = tasks.prepareRequest({ ...REQUEST, ...change }, AT);
       assert.equal(other.status === 'rejected' && other.code, 'duplicate_conflict');
     }
     assert.equal(journal.all().length, count);
+  });
+
+  it('writes the model’s confidence into the request when Boopy knows it', () => {
+    const tasks = store();
+    assert.equal(open(tasks).status, 'accepted');
+    assert.equal(tasks.receive(lesson, AT).status, 'accepted');
+    tasks.connect({ eventId: 'evt_connect_study', connectionId: 'con_study', label: 'Study' }, AT);
+    const known = tasks.prepareRequest({ ...REQUEST, subjectConfidence: 0.85 }, AT);
+    assert.ok(known.status === 'accepted');
+    assert.equal(JSON.parse(known.file).task.subject.confidence, 0.85);
+    assert.deepEqual(tasks.prepareRequest({ ...REQUEST, subjectConfidence: 0.85 }, AT), known);
   });
 
   it('cannot give a retry its file once the task moved on', () => {

@@ -45,7 +45,9 @@ Node 24. The main pieces:
 - A SQLite journal. Every change is appended. Current sessions and saved context are rebuilt
   from that log.
 - A read-only connector, MCP and REST, behind a bearer token. Each read is written to the
-  journal. Images stay on the Mac unless a later, explicit choice shares one.
+  journal. Images stay on the Mac unless a later, explicit choice shares one. The same token is
+  the local operator's credential for the `/v1/local-*` routes on the Mac, and the journal
+  records whoever holds it there as the person.
 
 Coordinates inside Boopy are normalized from 0 to 1, origin at the top left. Each model
 adapter converts its own grid at the boundary.

@@ -126,6 +126,7 @@ const connector = connectorApp(boopy, {
   handoff,
   activities,
   activityCalls,
+  ...(config.connectionReplies ? { tasks } : {}),
   logger: config.logger,
 });
 

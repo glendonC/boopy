@@ -12,12 +12,14 @@ import { BoopyError, summarize } from '../boopy.ts';
 import type { ContextPackage } from '../contracts.ts';
 import { evidenceRecords, evidenceSourceId } from '../evidence-contract.ts';
 import type { HandoffPreparation } from '../handoff-preparation.ts';
+import type { TaskStore } from '../interaction/tasks.ts';
 import type { NvidiaEmbeddingWorker } from '../memory/nvidia.ts';
 import { MemoryRecall } from '../memory/recall.ts';
 import { registerLocalActivityRoutes } from './activities.ts';
 import { error, handleError } from './headset.ts';
 import { openApiDocument } from './openapi.ts';
 import { CLOSE_GRACE_MS, drainOnClose } from './shutdown.ts';
+import { registerLocalTaskRoutes } from './tasks.ts';
 
 export interface ConnectorOptions {
   /** The bearer token agents must send. */
@@ -30,6 +32,8 @@ export interface ConnectorOptions {
   /** Local operator activity routes; registered only beside the local handoff routes. */
   readonly activities?: ActivityStore;
   readonly activityCalls?: ActivityCalls;
+  /** Local operator routes for a reply from a named connection; beside the handoff routes. */
+  readonly tasks?: TaskStore;
   readonly semanticRanker?: Pick<NvidiaEmbeddingWorker, 'rank'>;
   /** How long close() lets requests in progress run; tests shorten it. */
   readonly closeGraceMs?: number;
@@ -165,6 +169,7 @@ export function connectorApp(boopy: Boopy, options: ConnectorOptions): FastifyIn
       );
     if (options.activities)
       registerLocalActivityRoutes(app, options.activities, localOnly, options.activityCalls);
+    if (options.tasks) registerLocalTaskRoutes(app, boopy, options.tasks, localOnly);
   }
 
   const mcp = toNodeHandler(

@@ -899,12 +899,16 @@ function apply(event: Recorded, { tasks, seen, requests }: Fold): void {
 
 /**
  * The request file for a task at its current revision, or null when the task has no chip to ask
- * about or the file would be larger than 16 KiB. The task store does not know the model's
- * confidence, so the file says it is unknown.
+ * about or the file would be larger than 16 KiB. The model's confidence comes from Boopy's
+ * session, and null when it is unknown.
  */
 function requestFile(
   state: State,
-  request: { readonly requestId: string; readonly nonce: string },
+  request: {
+    readonly requestId: string;
+    readonly nonce: string;
+    readonly subjectConfidence: number | null;
+  },
 ) {
   const annotation = state.providerComponents.find((part) => part.type === 'annotation');
   const line = state.providerComponents.find((part) => part.type === 'dialogue');
@@ -917,7 +921,7 @@ function requestFile(
     nonce: request.nonce,
     utterance: state.utterance,
     subject: annotation.text,
-    subjectConfidence: null,
+    subjectConfidence: request.subjectConfidence,
     boopyLine: line?.type === 'dialogue' ? line.text : null,
     answers: state.attempts,
     evidenceIds: annotation.evidenceIds,

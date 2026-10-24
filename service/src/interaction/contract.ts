@@ -318,6 +318,8 @@ export const PrepareRequest = z.strictObject({
   connectionId: ConnectionId,
   requestId: RequestId,
   nonce: Nonce,
+  /** The model's confidence in the subject's label, from Boopy's session; null when unknown. */
+  subjectConfidence: z.number().min(0).max(1).nullable().default(null),
 });
 export type PrepareRequest = z.infer<typeof PrepareRequest>;
 

@@ -3,8 +3,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { type Boopy, BoopyError } from '../boopy.ts';
 import {
+  Connect,
+  ConnectionId,
   EventId,
   personLine,
+  type ReplyOutcome,
+  RequestId,
+  type RequestOutcome,
   Revision,
   SessionId,
   TaskId,
@@ -194,6 +199,108 @@ export function registerTaskRoutes(app: FastifyInstance, tasks: TaskStore, boopy
     if (answering.has(body.eventId)) return settle(CONFLICT);
     return settle(tasks.act({ ...body, taskId }, new Date().toISOString()));
   });
+}
+
+const LocalRequest = z.strictObject({
+  eventId: EventId,
+  taskId: TaskId,
+  connectionId: ConnectionId,
+  requestId: RequestId,
+  nonce: z.string(),
+});
+const LocalReply = z.strictObject({ content: z.string() });
+
+const REQUEST_REFUSALS = {
+  unknown_task: [404, 'No such task.'],
+  session_mismatch: [409, 'This task belongs to another session.'],
+  unknown_connection: [404, 'No such connection. Name it on the Mac first.'],
+  request_exists: [
+    409,
+    'This task revision already has a request. To ask again, retry or cancel the task to move it to a new revision.',
+  ],
+  request_unavailable: [409, 'This task has nothing to ask about at this revision.'],
+  cancelled: [409, 'This task is closed.'],
+  duplicate_conflict: [409, 'These ids were already used for another request.'],
+} as const;
+
+const REPLY_REFUSALS = {
+  reply_unreadable: [400, 'The file is not one JSON object of at most 16 KiB.'],
+  unknown_request: [404, 'The file answers no request Boopy prepared.'],
+  reply_invalid: [422, 'The file is not a reply Boopy can show.'],
+  nonce_mismatch: [409, 'The file does not answer this request.'],
+  source_mismatch: [409, 'The file names another task or source.'],
+  duplicate_conflict: [409, 'This request already took another reply.'],
+  cancelled: [409, 'This task is closed.'],
+  stale_revision: [409, 'This task has moved on since the request.'],
+} as const;
+
+/**
+ * The person's own steps for a reply from a named connection, on the connector behind its bearer
+ * token and the local-only guard, like the local activity routes. Absent from OpenAPI and MCP.
+ * Files come back as content and the command-line tool writes them; nothing here is logged.
+ */
+export function registerLocalTaskRoutes(
+  app: FastifyInstance,
+  boopy: Boopy,
+  tasks: TaskStore,
+  localOnly: (request: FastifyRequest) => Promise<void>,
+) {
+  const options = {
+    bodyLimit: BODY_CAP * 2,
+    onRequest: [
+      localOnly,
+      async (_request: FastifyRequest, reply: FastifyReply) => {
+        reply
+          .header('Cache-Control', 'no-store')
+          .header('X-Content-Type-Options', 'nosniff')
+          .header('Referrer-Policy', 'no-referrer');
+      },
+    ],
+  };
+  app.post('/v1/local-tasks/connections', options, async (request) => {
+    const body = Connect.parse(request.body);
+    const outcome = tasks.connect(body, new Date().toISOString());
+    if (outcome.status === 'rejected')
+      throw new BoopyError(409, outcome.code, 'This connection id names another connection.');
+    return { connectionId: body.connectionId, label: body.label };
+  });
+  app.post('/v1/local-tasks/requests', options, async (request) => {
+    const body = LocalRequest.parse(request.body);
+    const task = tasks.get(body.taskId);
+    if (task === undefined) return refuseRequest('unknown_task');
+    // The chip's item in Boopy's session carries the model's confidence; unknown stays null.
+    const annotation = task.components.find((part) => part.type === 'annotation');
+    const subjectId = annotation?.type === 'annotation' ? annotation.evidenceIds[0] : undefined;
+    const subject = boopy.view(task.sessionId).items.find((item) => item.id === subjectId);
+    const outcome = tasks.prepareRequest(
+      { ...body, sessionId: task.sessionId, subjectConfidence: subject?.confidence ?? null },
+      new Date().toISOString(),
+    );
+    if (outcome.status === 'rejected') return refuseRequest(outcome.code, outcome.requestId);
+    return outcome;
+  });
+  app.post('/v1/local-tasks/replies', options, async (request) => {
+    const outcome: ReplyOutcome = tasks.matchReply(
+      LocalReply.parse(request.body).content,
+      new Date().toISOString(),
+    );
+    if (outcome.status === 'accepted') return outcome.task;
+    const [status, message] = REPLY_REFUSALS[outcome.code];
+    throw new BoopyError(status, outcome.code, message);
+  });
+}
+
+function refuseRequest(
+  code: Extract<RequestOutcome, { status: 'rejected' }>['code'],
+  requestId: string | null = null,
+): never {
+  const [status, message] = REQUEST_REFUSALS[code];
+  // The request the revision already has is named, since its file may not have been kept.
+  const named =
+    code === 'request_exists' && requestId !== null
+      ? message.replace('a request.', `the request ${requestId}.`)
+      : message;
+  throw new BoopyError(status, code, named);
 }
 
 /** An accepted outcome is the view; a refusal keeps the store's code. */
