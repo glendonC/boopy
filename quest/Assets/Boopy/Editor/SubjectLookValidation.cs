@@ -129,23 +129,6 @@ namespace Boopy.Quest.Editor
             Require(appeared.SweepProgress == null && !band.enabled, "The sweep did not end after 0.6 s.");
         }
 
-
-        // A standing stone's silhouette, box-relative with y down: a flat base, sides that narrow a little,
-        // and a rounded top a little higher on the right. Synthetic, not a mask any model returned.
-        private static readonly Vector2[] Stone = StoneOutline();
-
-        private static Vector2[] StoneOutline()
-        {
-            var points = new List<Vector2> { new Vector2(.03f, 1f), new Vector2(.07f, .70f) };
-            for (var step = 0; step <= 16; step++)
-            {
-                var angle = Mathf.PI * (1f - step / 16f);
-                points.Add(new Vector2(.5f + .4f * Mathf.Cos(angle), .4f - (.38f + .03f * step / 16f) * Mathf.Sin(angle)));
-            }
-            points.Add(new Vector2(.93f, .70f)); points.Add(new Vector2(.97f, 1f));
-            return points.ToArray();
-        }
-
         // A mask (the synthetic stone) is filled low on its own contour, the object and nothing past it. Its outline
         // crowds its points at the rounded top; swept from level with the middle of the subject, the band travels
         // toward that middle and stands upright, not toward the average of the points, which sits high, and slants.
@@ -155,7 +138,7 @@ namespace Boopy.Quest.Editor
             try
             {
                 var overlay = GroundedOverlay.Create(root.transform, attended: true);
-                var stone = Stone;
+                var stone = TaskPresentationRender.Stone;
                 var grounding = new Grounding
                 {
                     Kind = "box", ObservationId = TaskPresentationValidation.ObservationId, Box = new Box2 { X0 = 0f, Y0 = 0f, X1 = 1f, Y1 = 1f },
