@@ -264,6 +264,7 @@ namespace Boopy.Quest
                 }
                 chip.gameObject.SetActive(true);
                 chip.Show(Shown(item), false);
+                chip.SetSubjectOutline(overlays.TryGetValue(item.Id, out var outline) ? outline.Boundary : Array.Empty<Vector3>());
                 if (accents.TryGet(item.Id, out var slot)) chip.SetIdentityAccent(slot);
                 chip.Focus(item.Id == focusedItemId);
                 chip.SetPeerFocused(focusedItemId != null && item.Id != focusedItemId);
@@ -364,8 +365,7 @@ namespace Boopy.Quest
         public bool TryGetSubjectVisit(Vector3 home, out Vector3 visit, out Vector3 anchor, out IReadOnlyList<Vector3> outline)
         {
             visit = default; anchor = default; outline = Array.Empty<Vector3>();
-            var overlay = Subject();
-            if (head == null || !TryGetActiveAnchor(out anchor) || overlay == null || overlay.Boundary.Count < 3) return false;
+            if (head == null || !TryGetActiveAnchor(out anchor) || Subject() is not GroundedOverlay overlay || overlay.Boundary.Count < 3) return false;
             outline = overlay.Boundary;
             var eyes = head.position;
             var forward = head.forward;
@@ -625,6 +625,9 @@ namespace Boopy.Quest
         private void LateUpdate()
         {
             if (head == null) return;
+            // Subject outlines keep their angle as the eyes move; chips face the eyes and end their leaders at the outline.
+            foreach (var overlay in overlays.Values)
+                if (overlay.gameObject.activeSelf) overlay.SetViewer(head.position);
             foreach (var chip in chips.Values)
                 if (chip.gameObject.activeSelf) chip.Face(head);
         }

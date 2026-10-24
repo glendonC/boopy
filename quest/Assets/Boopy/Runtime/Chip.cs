@@ -1,4 +1,6 @@
 #nullable enable
+using System;
+using System.Collections.Generic;
 using Boopy.Client;
 using TMPro;
 using UnityEngine;
@@ -30,6 +32,9 @@ namespace Boopy.Quest
         private Color identityAccent;
         private bool peerFocused;
         private bool presentationOnly;
+        // The leader stops this far short of the subject's outline, toward the chip.
+        private const float LeaderGap = .005f;
+        private IReadOnlyList<Vector3> subjectOutline = Array.Empty<Vector3>();
 
         public string ItemId { get; private set; } = "";
         public Vector3? Anchor { get; private set; }
@@ -224,6 +229,34 @@ namespace Boopy.Quest
 
         public void Focus(bool on) => focused = on;
 
+        /// <summary>The subject's drawn outline, or none. The leader stops just outside it, never on the object's face.</summary>
+        public void SetSubjectOutline(IReadOnlyList<Vector3> outline) => subjectOutline = outline;
+
+        // Where the leader first meets the subject's outline as seen from the eyes, pulled back toward the
+        // chip; the anchor when there is no outline; null when the leader would start on or inside it.
+        private Vector3? LeaderEnd(Vector3 eyes, Vector3 from, Vector3 to)
+        {
+            if (subjectOutline.Count < 3) return to;
+            var first = float.PositiveInfinity;
+            for (var index = 0; index < subjectOutline.Count; index++)
+            {
+                var a = subjectOutline[index] - eyes;
+                var b = subjectOutline[(index + 1) % subjectOutline.Count] - eyes;
+                // The plane through the eyes and this edge; the leader crosses the edge where it crosses that plane between its ends.
+                var normal = Vector3.Cross(a, b);
+                var start = Vector3.Dot(normal, from - eyes);
+                var finish = Vector3.Dot(normal, to - eyes);
+                if (Mathf.Abs(start - finish) < 1e-9f) continue;
+                var along = start / (start - finish);
+                if (along < 0f || along > 1f || along >= first) continue;
+                var crossing = from + (to - from) * along - eyes;
+                if (Vector3.Dot(Vector3.Cross(a, crossing), normal) < 0f || Vector3.Dot(Vector3.Cross(crossing, b), normal) < 0f) continue;
+                first = along;
+            }
+            if (float.IsPositiveInfinity(first) || Vector3.Distance(from, to) * first <= LeaderGap) return null;
+            return Vector3.MoveTowards(from + (to - from) * first, from, LeaderGap);
+        }
+
         /// <summary>Turns the visual to the eyes; focus accents never move or resize the collider.</summary>
         public void Face(Transform head)
         {
@@ -243,8 +276,12 @@ namespace Boopy.Quest
             if (leader != null && Anchor != null && leader.enabled)
             {
                 var bottom = transform.TransformPoint(new Vector3(0f, -size.y / 2f, 0f));
+                var end = LeaderEnd(head.position, bottom, Anchor.Value);
+                leader.forceRenderingOff = end == null;
                 leader.SetPosition(0, bottom);
-                leader.SetPosition(1, Anchor.Value);
+                leader.SetPosition(1, end ?? bottom);
+                // With AA disabled a thinner line can draw nothing: hold 1.3 mrad at the farther end.
+                leader.widthMultiplier = Mathf.Max(.0007f, .0013f * Mathf.Max(Vector3.Distance(head.position, bottom), Vector3.Distance(head.position, end ?? bottom)));
             }
         }
     }
