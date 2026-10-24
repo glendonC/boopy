@@ -68,7 +68,8 @@ ends. With multiple headsets, select one using `BOOPY_QUEST_SERIAL`; `BOOPY_ADB`
 verified Unity adb path. `--once` performs a single check. Tests: `node --test quest/scripts/tether.test.mjs`.
 Without the guard, restore the reverse mapping manually after every Unity build.
 Before any install, check a built APK carries none of the Interaction SDK's telemetry:
-`node quest/scripts/apk-privacy.mjs quest/Builds/Boopy.apk` (tests: `node --test quest/scripts/apk-privacy.test.mjs`).
+`node quest/scripts/apk-privacy.mjs quest/Builds/Boopy.apk`
+(tests: `node --test quest/scripts/apk-privacy.test.mjs`).
 
 On the Mac, start Ollama (`OLLAMA_NO_CLOUD=1 OLLAMA_HOST=127.0.0.1:11434 ollama serve`) and the
 service (`cd ../service && pnpm start`). Reuse an existing local-only Ollama server when available;
@@ -83,10 +84,10 @@ returns an actual answer with an optional local voice. One active source annotat
 
 When that first answer is about a grounded subject, the headset shows the session's task from the
 Mac. The chip on the outlined subject shows the task's label and stays proposed. The line beside
-the companion shows Boopy's words under "Boopy · Not sent". Only while the line asks you something
+the companion shows Boopy's words under "Boopy · Not sent to your AI". Only while the line asks you something
 is the first tile of the row under it **Answer**, the prompt the Mac sends, with Talk's mic, in
 **Talk**'s place. Pinch it, speak, then tap **Finish**. The line reads "Saving on your Mac…"
-while the Mac records your words on the task, then shows them under "You, as heard · Not sent",
+while the Mac records your words on the task, then shows them under "You, as heard · Not sent to your AI",
 and **Talk** is the first tile again. When the line asks nothing, Talk stays first. Nothing reaches your own assistant. A first answer that
 offers a choice shows its choice and no task. A later Talk turn returns to the conversation's
 own line.
@@ -103,9 +104,9 @@ its place, then **Settings** and **Back**. **Context** opens evolving context an
 its actions page with **More** in the row, ending in **Back**, and the reader pages its items and
 sources with a short pinch on its card. Correct a selected reference through speech, with a held
 pinch on the card, or explicitly confirm or exclude an item. **Prepare → Use** creates the local
-context snapshot. **Settings** shows one setting per page, pinched to the next, with **Turn on** or
-**Turn off**. The receipt reads **Ready on your Mac. Not sent.** Boopy does not send it. An agent
-you connect to the Mac's connector can read it.
+context snapshot. **Settings** opens with what is connected, then shows one setting per page,
+pinched to the next, with **Turn on** or **Turn off**. The receipt reads **Ready on your Mac. Not sent.**
+Boopy does not send it. An agent you connect to the Mac's connector can read it.
 
 A successful build is not a worn test. Segmentation is optional and off unless the service
 enables it. Boxes stay approximate until a mask exists.

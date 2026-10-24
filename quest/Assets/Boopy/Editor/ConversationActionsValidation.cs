@@ -80,7 +80,7 @@ namespace Boopy.Quest.Editor
                 Require(Label(console, ConsoleAction.Save) == "Use", "Preparation confirmation hides its purpose.");
                 console.Activate(ConsoleAction.Back); Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.Activate(ConsoleAction.More); console.Activate(ConsoleAction.More); Hit(console, eyes, ConsoleAction.Settings);
-                console.Activate(ConsoleAction.Settings); console.Activate(ConsoleAction.Size); Hit(console, eyes, ConsoleAction.Size);
+                console.Activate(ConsoleAction.Settings); console.NextPage(); console.Activate(ConsoleAction.Size); Hit(console, eyes, ConsoleAction.Size);
                 console.Activate(ConsoleAction.ShelfBack);
                 Questions(console, dialogue, eyes, "question-one", "question-two");
                 console.ShowProcessing(); Only(console, ConsoleAction.Cancel);

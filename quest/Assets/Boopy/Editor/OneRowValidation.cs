@@ -253,7 +253,8 @@ namespace Boopy.Quest.Editor
                 f.Console.Activate(ConsoleAction.ShelfBack);
                 f.Console.SetHandoffRecovery(false, false, null, null, false);
 
-                // Settings, one per page: Turn on or Turn off with the setting's glyph, then Back.
+                // Settings: first what is connected, with no left tile; then one setting per page, Turn on or Turn off with the
+                // setting's glyph, then Back.
                 Apply(f, statement);
                 f.Console.Activate(ConsoleAction.More); f.Console.Activate(ConsoleAction.More); f.Console.Activate(ConsoleAction.Settings);
                 var pages = new[]
@@ -265,16 +266,29 @@ namespace Boopy.Quest.Editor
                 // Every page keeps the first page's height, so the sheet stays under the pinch that pages it.
                 Settle(f);
                 var sheetHeight = Sheet(f).Size.y;
-                for (var index = 0; index <= pages.Length; index++)
+                var settingsCount = pages.Length + 1;
+                for (var index = 0; index <= settingsCount; index++)
                 {
-                    var (action, name, glyph, on) = pages[index % pages.Length];
-                    Require(Mathf.Abs(Sheet(f).Size.y - sheetHeight) < .0005f, "Settings changes height on page " + (index % pages.Length + 1) + ".");
-                    Count(f, "Settings " + name, "Comfort options", (index % pages.Length + 1) + " of " + pages.Length);
+                    var shown = index % settingsCount;
+                    Require(Mathf.Abs(Sheet(f).Size.y - sheetHeight) < .0005f, "Settings changes height on page " + (shown + 1) + ".");
+                    if (shown == 0)
+                    {
+                        Count(f, "Settings status", "Comfort options", "1 of " + settingsCount);
+                        Require(Sheet(f).BodyText.StartsWith("Your AI is not connected.\n", StringComparison.Ordinal),
+                            "Settings does not open with what is connected: " + Sheet(f).BodyText);
+                        Row(f, index < settingsCount ? camera : null, "settings-1", ConsoleAction.None, ConsoleAction.ShelfBack);
+                        SheetPage(f);
+                        continue;
+                    }
+                    var (action, name, glyph, on) = pages[shown - 1];
+                    Count(f, "Settings " + name, "Comfort options", (shown + 1) + " of " + settingsCount);
                     Require(Sheet(f).BodyText.Contains(name + " is " + (on ? "on." : "off.")), "Settings does not say " + name + " is " + (on ? "on" : "off") + ": " + Sheet(f).BodyText);
-                    Row(f, index < pages.Length ? camera : null, "settings-" + (index % pages.Length + 1), action, ConsoleAction.ShelfBack);
+                    Row(f, index < settingsCount ? camera : null, "settings-" + (shown + 1), action, ConsoleAction.ShelfBack);
                     Labeled(f, action, on ? "Turn off" : "Turn on", glyph);
                     SheetPage(f);
                 }
+                // On from Large text to Sound.
+                SheetPage(f);
                 // Turning a setting off says so and offers to turn it back on.
                 f.Console.Activate(ConsoleAction.Sound);
                 Require(Sheet(f).BodyText.Contains("Sound is off.") && Control(f, ConsoleAction.Sound).AccessibleLabel == "Turn on", "Turning Sound off does not show.");
@@ -285,7 +299,7 @@ namespace Boopy.Quest.Editor
                 var silent = View(); silent.Dialogue!.Actions.Clear(); silent.SpeechOutputAvailable = false;
                 Apply(f, silent);
                 f.Console.Activate(ConsoleAction.More); f.Console.Activate(ConsoleAction.More); f.Console.Activate(ConsoleAction.Settings);
-                for (var index = 0; index < 3; index++) SheetPage(f);
+                for (var index = 0; index < 4; index++) SheetPage(f);
                 Require(Sheet(f).BodyText.Contains("Voice is unavailable."), "Settings does not say Voice is unavailable: " + Sheet(f).BodyText);
                 Row(f, camera, "settings-voice-unavailable", ConsoleAction.None, ConsoleAction.ShelfBack);
                 f.Console.Activate(ConsoleAction.ShelfBack);

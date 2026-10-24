@@ -82,7 +82,7 @@ namespace Boopy.Quest.Editor
                     }
                     console.Activate(ConsoleAction.Settings);
                     Require(console.GetComponentsInChildren<SpatialSurface>().Any(surface=>surface.BodyText.Contains(
-                        available ? "Scene outlines are available." : capability=="absent" ? "Scene outlines are unavailable." : "Scene outline status is unknown.")),
+                        available ? "Outlines are available." : capability=="absent" ? "Outlines are unavailable." : "Outline status is unknown.")),
                         "Settings concealed or overstated live capability.");
                     console.Activate(ConsoleAction.Settings);
                 }
@@ -148,13 +148,17 @@ namespace Boopy.Quest.Editor
                     console.SetConnectionStatus(connection,voiceState!="unavailable");console.SetLiveSceneCapability(null);
                     if(voiceState!="unavailable" && console.VoiceEnabled!=(voiceState=="on"))console.Activate(ConsoleAction.Speech);
                     console.RefreshVisuals(1f);
-                    var connectionWords=connection=="connected" ? "Boopy is connected to your Mac." : "Boopy can’t reach your Mac. Check the USB cable.";
+                    var connectionWords=connection=="connected" ? "Boopy answers through your Mac." : "Boopy can’t reach your Mac. Check the USB cable.";
                     var voiceWords=voiceState=="unavailable" ? "Voice is unavailable." : voiceState=="on" ? "Voice reads replies aloud." : "Voice is off.";
-                    // The first page keeps the connection, scene and voice lines above its own setting.
-                    var expected=connectionWords+"\nScene outline status is unknown.\n"+voiceWords+"\nLarge text is "+(large?"on.":"off.");
+                    // The first page says what is connected (the assistant, the Mac, outlines, voice) and sets nothing.
+                    var expected="Your AI is not connected.\n"+connectionWords+"\nOutline status is unknown.\n"+voiceWords;
                     Require(console.GetComponentsInChildren<SpatialSurface>().Any(surface=>surface.BodyText==expected),
                         "Settings truncated capability/recovery guidance at "+connection+" large="+large);
                     Fits(state);
+                    // Large text has the next page to itself.
+                    console.NextPage();console.RefreshVisuals(1f);
+                    Require(console.GetComponentsInChildren<SpatialSurface>().Any(surface=>surface.BodyText=="Large text is "+(large?"on.":"off.")),
+                        "Settings lost the Large text page at "+connection+" large="+large);
                     // Voice's own page says the same, and its tile turns it off or on; unavailable, it shows no tile.
                     for(var page=0;page<3;page++)console.NextPage();
                     console.RefreshVisuals(1f);

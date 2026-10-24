@@ -28,7 +28,7 @@ namespace Boopy.Quest.Editor
                 Companion(console);
                 Geometry(console);
                 console.Activate(ConsoleAction.Settings); Ready(console);
-                for (var page = 0; page < 3; page++) console.NextPage();
+                for (var page = 0; page < 4; page++) console.NextPage();
                 Ready(console);
                 Require(!Active(console, ConsoleAction.Speech) && console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Comfort options").BodyText.Contains("Voice is unavailable."),
                     "Settings conceal unavailable voice before any session.");

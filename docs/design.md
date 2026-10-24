@@ -47,7 +47,7 @@ conversation already uses. A task adds no panel, tray, or card.
 | VoiceReply | The first tile of the row, labeled Answer, only while Boopy's line asks the person something: the prompt the Mac sends, with Talk's mic glyph, in Talk's place. The prompt is one short word on one line. It records a spoken answer on the task. Once the line shows the person's answer, or when the line asks nothing, Talk is the first tile again. |
 | TaskStep | Not built. A task's step draws no control. |
 | Detail | The evidence reader on the console. |
-| Status | Console notices. A task's status is the line's speaker: "Boopy · Not sent", or over an answer "You, as heard · Not sent" when recognition is uncertain and "You · Not sent" otherwise. |
+| Status | Console notices. A task's status is the line's speaker: "Boopy · Not sent to your AI", or over an answer "You, as heard · Not sent to your AI" when recognition is uncertain and "You · Not sent to your AI" otherwise. |
 | AgentPresence | The orb. When a turn that works on the recorded view starts on an outlined subject, it flies beside the subject, never over it or the center of the view, faces it, and lights it with a soft amber cone for as long as the sweep runs. While it thinks, its eyes narrow and its body glows toward Ember, breathing. It returns beside the console 650 ms after the answer lands, once the line has changed. With reduced motion it stays home, turns to the subject, and only the glow changes. A turn without a photo, a choice, or a follow-up that names no observation leaves it home; its eyes and glow still show that it thinks. Not yet split into quiet, near, and present. |
 
 ## Placement
@@ -107,8 +107,9 @@ Context sheet keeps its words, and its actions page with More, the recommended f
 ending in Back: Check for an earlier preparation, Prepare for this context, Review for the
 conversation's items. The handoff's action is one word, Check, Prepare, Retry or Status, and the
 sheet's words say the rest. Settings shows one setting per page, its state as a sentence ("Sound
-is on."), with Turn on or Turn off, Pause and Back; the first page keeps the connection, scene and
-voice lines, and while Voice is unavailable its page says so and shows no left tile. The save
+is on."), with Turn on or Turn off, Pause and Back. Its first page sets nothing: it says what is connected
+(your AI, the Mac, outlines, voice) over Pause and Back. While Voice is unavailable its page says so and
+shows no left tile. The save
 preview reads Use, Pause and Back; a prepared handoff Dismiss, Pause and Back, or Back alone with
 nothing to do. The reader reads Exclude or Include, Pause and More, then Source, Pause and Back,
 and in Source, Confirm, Pause and Back when the item can be confirmed. Back goes up one level:

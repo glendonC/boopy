@@ -162,7 +162,7 @@ namespace Boopy.Quest.Editor
                     "Active conversation repeated the character’s first-turn greeting.");
                 console.Activate(ConsoleAction.Options);
                 var context = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface=>surface.name=="Comfort options");
-                Require(context.BodyText.Contains("Keep it on your Mac. Continue online when ready."),
+                Require(context.BodyText.Contains("Keep it on your Mac. Your AI is not connected, so nothing is sent to it."),
                     "Opened Context lacks the concrete manual next step.");
             }
             finally { UnityEngine.Object.DestroyImmediate(console.gameObject); UnityEngine.Object.DestroyImmediate(camera); }

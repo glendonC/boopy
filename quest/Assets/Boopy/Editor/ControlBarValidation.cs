@@ -57,7 +57,7 @@ namespace Boopy.Quest.Editor
                 Require(!Active(console).Any(action => action == ConsoleAction.Review || action == ConsoleAction.PrepareSave || action == ConsoleAction.Handoff), "Protected-source fallback exposes context actions.");
                 console.Activate(ConsoleAction.Options); console.Activate(ConsoleAction.Options); Ready(console);
                 Require(!sheet.gameObject.activeInHierarchy, "Context reopened during protected-source fallback.");
-                console.Activate(ConsoleAction.Settings); Ready(console);
+                console.Activate(ConsoleAction.Settings); console.NextPage(); Ready(console);
                 Require(sheet.gameObject.activeInHierarchy && Active(console).Contains(ConsoleAction.Size), "Explicit protected settings are inaccessible.");
                 console.Activate(ConsoleAction.Settings); Ready(console);
                 Require(!sheet.gameObject.activeInHierarchy, "Protected settings cannot close.");
@@ -123,13 +123,13 @@ namespace Boopy.Quest.Editor
                     Require(!bar.GetComponentsInChildren<TextMeshPro>(true).Any(text=>text.text.Contains("Mac") || text.text.Contains("Muse")),"Control bar exposes connection implementation details.");
                     console.Activate(ConsoleAction.Settings);Ready(console);
                     var sheet=console.GetComponentsInChildren<SpatialSurface>(true).Single(surface=>surface.name=="Comfort options");
-                    Require(sheet.BodyText.Contains(state=="connected"?"connected to your Mac":state=="unavailable"?"can’t reach your Mac":"Checking the connection"),"Settings lose actual connection state.");
+                    Require(sheet.BodyText.Contains(state=="connected"?"answers through your Mac":state=="unavailable"?"can’t reach your Mac":"Checking the connection"),"Settings lose actual connection state.");
                     Require(!sheet.BodyText.Contains("Muse"),"Settings imply a Muse connection.");
                     CheckBar(console,eyes,bar);console.Activate(ConsoleAction.Settings);Ready(console);
                 }
                 console.SetConnectionStatus("connected",true);console.Activate(ConsoleAction.Settings);Ready(console);
-                // Voice is the fourth setting, one per page.
-                for(var page=0;page<3;page++)console.NextPage();Ready(console);
+                // Voice is the fourth setting, one per page after the status page.
+                for(var page=0;page<4;page++)console.NextPage();Ready(console);
                 Require(Control(console,ConsoleAction.Speech).gameObject.activeInHierarchy,"Voice unavailable before the first conversation turn despite health capability.");
                 if(!console.VoiceEnabled)console.Activate(ConsoleAction.Speech);
                 console.Activate(ConsoleAction.Speech);Require(!console.VoiceEnabled,"Synthetic mute was not applied.");

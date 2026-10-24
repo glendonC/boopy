@@ -22,8 +22,8 @@ namespace Boopy.Quest.Editor
                 var eyes = new GameObject("Synthetic eyes").transform; eyes.SetParent(root.transform, false);
                 var console = ContextConsole.Create(root.transform, eyes);
                 console.Activate(ConsoleAction.Settings);
-                // Photo is the fifth setting, one per page, its state in a sentence and its tile turning it off or on.
-                for (var page = 0; page < 4; page++) console.NextPage();
+                // Photo is the fifth setting, one per page after the status page, its state in a sentence and its tile turning it off or on.
+                for (var page = 0; page < 5; page++) console.NextPage();
                 var sheet = console.GetComponentsInChildren<SpatialSurface>(true).Single(surface => surface.name == "Comfort options");
                 var action = console.GetComponentsInChildren<SpatialAction>(true).Single(value => value.Action == ConsoleAction.EvidenceSource);
                 Require(action.gameObject.activeSelf && action.AccessibleLabel == "Turn off" && sheet.BodyText.Contains("Photo is on."), "Physical default or input action missing.");

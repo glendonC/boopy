@@ -28,7 +28,7 @@ namespace Boopy.Quest
         private int morePage;
         // The page each sheet's row shows: the Context sheet's actions paged with More, the reader's two rows, one setting.
         private int contextPage, readerPage, settingsPage;
-        private const int SettingsPages = 5;
+        private const int SettingsPages = 6;
         // The dark panel of the line, drawn on the header while Boopy's words show on it with no line docked over them.
         private MeshRenderer? dialogBacking;
         private Mesh? dialogMesh;
@@ -368,31 +368,32 @@ namespace Boopy.Quest
                     options.Configure("Context", "", earlier
                         ? handoffStorageFailed ? "Preparation recovery is unavailable. Dismiss only the headset record; context stays on your Mac."
                             : "An earlier preparation needs checking. Checking restores only that selected context; nothing is sent."
-                        : view == null ? "Tell me what you see.\nKeep it on your Mac. Continue online when ready."
+                        : view == null ? "Tell me what you see.\nKeep it on your Mac. Your AI is not connected, so nothing is sent to it."
                         : view.Committed != null ? ContextReview.ConversationSummary(view) + "\n" + HandoffStatusWords
-                        : ContextReview.ConversationSummary(view) + "\nKeep it on your Mac. Continue online when ready.", maxBodyHeight: .220f);
+                        : ContextReview.ConversationSummary(view) + "\nKeep it on your Mac. Your AI is not connected, so nothing is sent to it.", maxBodyHeight: .220f);
                 }
                 else
                 {
-                    var connectionWords = connectionState == "connected" ? "Boopy is connected to your Mac."
+                    var connectionWords = connectionState == "connected" ? "Boopy answers through your Mac."
                         : connectionState == "unavailable" ? "Boopy can’t reach your Mac. Check the USB cable."
                         : "Checking the connection to your Mac…";
-                    var sceneWords = liveSceneAvailable == true ? "Scene outlines are available."
-                        : liveSceneAvailable == false ? "Scene outlines are unavailable." : "Scene outline status is unknown.";
+                    var sceneWords = liveSceneAvailable == true ? "Outlines are available."
+                        : liveSceneAvailable == false ? "Outlines are unavailable." : "Outline status is unknown.";
                     var voiceWords = !speechAvailable ? "Voice is unavailable."
                         : VoiceEnabled ? "Voice reads replies aloud." : "Voice is off.";
-                    // One setting per page, its state as a sentence; the first page keeps the connection, scene and voice lines.
+                    // The first page says what is connected and sets nothing: no assistant yet, so Boopy answers through the Mac.
+                    // Then one setting per page, its state as a sentence.
+                    var status = "Your AI is not connected.\n" + connectionWords + "\n" + sceneWords + "\n" + voiceWords;
                     var (name, on) = settingsPage switch
                     {
-                        0 => ("Large text", ComfortScale > 1f), 1 => ("Sound", SoundEnabled), 2 => ("Reduced motion", reduced),
-                        3 => ("Voice", VoiceEnabled), _ => ("Photo", !InputPolicy.SpokenOnly),
+                        1 => ("Large text", ComfortScale > 1f), 2 => ("Sound", SoundEnabled), 3 => ("Reduced motion", reduced),
+                        4 => ("Voice", VoiceEnabled), _ => ("Photo", !InputPolicy.SpokenOnly),
                     };
-                    var sentence = settingsPage == 3 && !speechAvailable ? "Voice is unavailable." : name + " is " + (on ? "on." : "off.");
-                    var status = connectionWords + "\n" + sceneWords + "\n" + voiceWords + "\n";
+                    var sentence = settingsPage == 0 ? status : settingsPage == 4 && !speechAvailable ? "Voice is unavailable." : name + " is " + (on ? "on." : "off.");
                     // Every page keeps the first page's height, so the sheet stays under the pinch that pages it.
-                    options.Configure("Settings", "", status + sentence, maxBodyHeight: .180f, bottomSpace: .015f);
+                    options.Configure("Settings", "", status, maxBodyHeight: .180f, bottomSpace: .015f);
                     var tallest = options.Size.y;
-                    options.Configure("Settings" + Count(settingsPage, SettingsPages), "", (settingsPage == 0 ? status : "") + sentence, maxBodyHeight: .180f, bottomSpace: .015f);
+                    options.Configure("Settings" + Count(settingsPage, SettingsPages), "", sentence, maxBodyHeight: .180f, bottomSpace: .015f);
                     options.ReserveHeight(tallest);
                 }
             }
@@ -497,11 +498,12 @@ namespace Boopy.Quest
             if (navigator.Selected != null) list.Add(ConsoleAction.Review);
             return list;
         }
-        // The setting the Settings page shows, or none while Voice is unavailable.
+        // The setting the Settings page shows: none on the first page, which only says what is connected, or while Voice is
+        // unavailable.
         private ConsoleAction Setting() => settingsPage switch
         {
-            0 => ConsoleAction.Size, 1 => ConsoleAction.Sound, 2 => ConsoleAction.Motion,
-            3 => speechAvailable ? ConsoleAction.Speech : ConsoleAction.None, _ => ConsoleAction.EvidenceSource,
+            0 => ConsoleAction.None, 1 => ConsoleAction.Size, 2 => ConsoleAction.Sound, 3 => ConsoleAction.Motion,
+            4 => speechAvailable ? ConsoleAction.Speech : ConsoleAction.None, _ => ConsoleAction.EvidenceSource,
         };
         // The words a tile reads in this state; a tile whose words never change keeps its own.
         private string? Words(ConsoleAction action, bool recovery) => action switch

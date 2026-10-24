@@ -10,12 +10,12 @@ namespace Boopy.Client
     /// <summary>
     /// One task view as the existing scene slots. The target id is the source id. The chip's subject
     /// is the grounded item the annotation names. Continuity stays local-only and delivery stays
-    /// not-sent, so every line the headset shows for a task says "Not sent".
+    /// not-sent, so every line the headset shows for a task says "Not sent to your AI".
     /// </summary>
     public sealed class InteractionPresentation
     {
         private const int MaxRevision = 1_000_000;
-        private const string NotSent = " · Not sent";
+        private const string NotSent = " · Not sent to your AI";
         private static readonly HashSet<string> ComponentTypes = new HashSet<string>
         {
             "subject", "annotation", "dialogue", "choice", "voice_reply", "task_step", "detail", "status", "agent_presence",
@@ -47,8 +47,8 @@ namespace Boopy.Client
         public TaskAttempt? LastAttempt { get; private set; }
 
         /// <summary>
-        /// The strip's speaker line: "Boopy · Not sent"; over a recorded answer "You · Not sent", or
-        /// "You, as heard · Not sent" when recognition was uncertain.
+        /// The strip's speaker line: "Boopy · Not sent to your AI"; over a recorded answer "You · Not sent to your AI",
+        /// or "You, as heard · Not sent to your AI" when recognition was uncertain.
         /// </summary>
         public string SpeakerLine { get; private set; } = "";
 

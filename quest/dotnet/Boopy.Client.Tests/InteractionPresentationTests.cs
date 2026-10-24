@@ -311,11 +311,11 @@ namespace Boopy.Client.Tests
         public void ATaskViewReadsBoopyNotSentWithItsDialogueAndOneAnswerControl()
         {
             var view = InteractionPresentation.Read(Lesson());
-            Assert.That(view.SpeakerLine, Is.EqualTo("Boopy · Not sent"));
+            Assert.That(view.SpeakerLine, Is.EqualTo("Boopy · Not sent to your AI"));
             Assert.That(view.Caption, Is.EqualTo("이 사진에 뭐가 있어요?"));
             Assert.That(view.AnswerLabel, Is.EqualTo("Answer aloud about this picture"));
             var save = InteractionPresentation.Read(OpenSave());
-            Assert.That(save.SpeakerLine, Is.EqualTo("Boopy · Not sent"), "An open save still says it was not sent.");
+            Assert.That(save.SpeakerLine, Is.EqualTo("Boopy · Not sent to your AI"), "An open save still says it was not sent.");
             Assert.That(save.Caption, Is.EqualTo(""));
             Assert.That(save.AnswerLabel, Is.Null);
         }
@@ -324,7 +324,7 @@ namespace Boopy.Client.Tests
         public void AnUncertainAnswerReadsYouAsHeardNotSentWithTheWordsExactly()
         {
             var view = InteractionPresentation.Read(Answered("[" + FirstAttempt + "," + SecondAttempt + "]", 3));
-            Assert.That(view.SpeakerLine, Is.EqualTo("You, as heard · Not sent"), "Uncertain recognition stays visible.");
+            Assert.That(view.SpeakerLine, Is.EqualTo("You, as heard · Not sent to your AI"), "Uncertain recognition stays visible.");
             Assert.That(view.Caption, Is.EqualTo("1970-01-01T00:00:00.000Z"));
             Assert.That(view.AnswerLabel, Is.Null, "The line shows the person's answer, so the answer control goes away.");
             Assert.That(view.Dialogue, Is.EqualTo("이 사진에 뭐가 있어요?"), "Boopy's line stays on the task.");
@@ -335,7 +335,7 @@ namespace Boopy.Client.Tests
         public void ACertainAnswerReadsYouNotSent()
         {
             var view = InteractionPresentation.Read(Answered("[" + SecondAttempt + "," + FirstAttempt + "]", 3));
-            Assert.That(view.SpeakerLine, Is.EqualTo("You · Not sent"));
+            Assert.That(view.SpeakerLine, Is.EqualTo("You · Not sent to your AI"));
             Assert.That(view.Caption, Is.EqualTo("낙타예요"));
         }
 
@@ -366,7 +366,7 @@ namespace Boopy.Client.Tests
             body["attempts"] = JArray.Parse("[" + FirstAttempt + "]");
             var view = InteractionPresentation.Read(body.ToString());
             Assert.That(view.Caption, Is.EqualTo("Wrong item."));
-            Assert.That(view.SpeakerLine, Is.EqualTo("Boopy · Not sent"));
+            Assert.That(view.SpeakerLine, Is.EqualTo("Boopy · Not sent to your AI"));
             Assert.That(view.AnswerLabel, Is.Null);
             Assert.That(view.ChipItem(), Is.Null);
             Assert.That(view.LastAttempt!.Text, Is.EqualTo("낙타예요"), "The recorded answer stays on the task.");

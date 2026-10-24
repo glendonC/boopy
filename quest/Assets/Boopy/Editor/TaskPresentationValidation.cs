@@ -61,9 +61,9 @@ namespace Boopy.Quest.Editor
                 NotOffered();
                 ThinkingWithoutPictureOrMotion();
                 Debug.Log("Boopy task presentation validation passed: one chip on the outlined subject at its session placement, " +
-                    "the dialogue line with \"Boopy · Not sent\", one \"Answer\" control with Talk's mic under it and no follow-ups, no overlap, " +
+                    "the dialogue line with \"Boopy · Not sent to your AI\", one \"Answer\" control with Talk's mic under it and no follow-ups, no overlap, " +
                     "no control under the line and Talk as the primary when the task offers no reply or the line shows the person's answer, " +
-                    "answers as \"You, as heard · Not sent\" and \"You · Not sent\" after \"Saving on your Mac…\", the stale notice and its unread case, " +
+                    "answers as \"You, as heard · Not sent to your AI\" and \"You · Not sent to your AI\" after \"Saving on your Mac…\", the stale notice and its unread case, " +
                     "no task for a partial view or any choice turn, the item's kind, gloss and confidence, wrong item with and without an answer, " +
                     "one primary control (Answer while it shows, otherwise Talk, Finish while recording), retry with the same ids, " +
                     "standard and large text (synthetic).");
@@ -110,7 +110,7 @@ namespace Boopy.Quest.Editor
             {
                 lineOnly.Transport.Open.Enqueue(() => Reply(HttpStatusCode.OK, TaskView(components: Parts(action: null))));
                 lineOnly.Start();
-                Presented(lineOnly, Line, "Boopy · Not sent", false, sessionHome);
+                Presented(lineOnly, Line, "Boopy · Not sent to your AI", false, sessionHome);
                 Require(lineOnly.Root.GetComponentsInChildren<SpatialAction>(true)
                     .All(control => control.Action != ConsoleAction.AnswerTask || !control.gameObject.activeInHierarchy),
                     "A task that asks nothing shows a reply control.");
@@ -151,7 +151,7 @@ namespace Boopy.Quest.Editor
             Require(open.Properties().Select(property => property.Name).SequenceEqual(new[] { "eventId", "taskId" })
                 && Regex.IsMatch((string?)open["eventId"] ?? "", "^evt_[0-9a-f]{32}$") && Regex.IsMatch((string?)open["taskId"] ?? "", "^tsk_[0-9a-f]{32}$"),
                 "The open request does not carry headset-made ids only.");
-            Presented(f, Asked, "Boopy · Not sent", true, sessionHome);
+            Presented(f, Asked, "Boopy · Not sent to your AI", true, sessionHome);
 
             // The eyes step back: each frame the outline keeps its angle, and the leader follows the rule
             // from the new eyes: hidden once the chip's bottom is seen on the outline, otherwise drawn and stopping outside it.
@@ -177,7 +177,7 @@ namespace Boopy.Quest.Editor
 
             // Focus lost and regained keeps the same task on the same session view.
             Invoke(f.App, "OnFocusLost"); Invoke(f.App, "OnFocusAcquired");
-            Presented(f, Asked, "Boopy · Not sent", true, sessionHome);
+            Presented(f, Asked, "Boopy · Not sent to your AI", true, sessionHome);
 
             // A Talk recording cancelled with the bar's Cancel gives back the task's line. No microphone opens.
             var buttonTalk = (ButtonTalk)Get(f.App, "buttonTalk")!;
@@ -192,7 +192,7 @@ namespace Boopy.Quest.Editor
             Set(f.App, "pendingControl", ConsoleAction.Cancel); Set(f.App, "pendingUsesHandRay", true);
             Invoke(f.App, "ReleaseControl", hand);
             Require(!buttonTalk.Recording, "Cancel kept the recording.");
-            Presented(f, Asked, "Boopy · Not sent", true, sessionHome);
+            Presented(f, Asked, "Boopy · Not sent to your AI", true, sessionHome);
 
             // Finish with no audio: the answer's own words, nothing sent, the control stays.
             buttonTalk.Begin(0f); Set(f.App, "answeringTask", true); f.Console.ShowListening(false); f.Console.SetButtonRecording(true);
@@ -310,13 +310,13 @@ namespace Boopy.Quest.Editor
             Require(f.Transport.Count("/v1/sessions") == 1, "An answer sent the frame or the capture again.");
             // The Mac's recognizer gives no confidence, so its words are uncertain and say so. The line now shows the
             // person's answer, not Boopy asking, so the answer control is gone and Talk is the one primary.
-            Presented(f, FirstAnswer, "You, as heard · Not sent", false, sessionHome);
+            Presented(f, FirstAnswer, "You, as heard · Not sent to your AI", false, sessionHome);
 
             // Boopy asks again (a later revision whose line asks, with no answer yet): the control is back. The Mac's
             // task moved on meanwhile, so the answer is stale: its current task is read and presented, with a short
             // notice that this answer was not recorded, and with its answer on the line there is no control.
             f.App.PresentTask(TaskView(3));
-            Presented(f, Asked, "Boopy · Not sent", true, sessionHome);
+            Presented(f, Asked, "Boopy · Not sent to your AI", true, sessionHome);
             var reads = f.Transport.Count("/v1/tasks/" + TaskId);
             f.Transport.Answers.Enqueue(() => Reply(HttpStatusCode.Conflict, Refusal("stale_revision")));
             f.Transport.Read.Enqueue(() => Reply(HttpStatusCode.OK, TaskView(4, Attempts((FirstAnswer, true), (SecondAnswer, false)))));
@@ -325,7 +325,7 @@ namespace Boopy.Quest.Editor
             Require(((InteractionPresentation)Get(f.App, "task")!).Revision == 4, "A stale answer did not present the Mac's task.");
             Require(f.Strip.FullText == "That answer was not recorded.", "A stale answer did not say it was not recorded.");
             f.Strip.ClearNotice();
-            Presented(f, SecondAnswer, "You · Not sent", false, sessionHome);
+            Presented(f, SecondAnswer, "You · Not sent to your AI", false, sessionHome);
 
             // Choice and task step have no person action in protocol v1; a cancelled task takes no answer.
             foreach (var view in new[] { TaskView(4, components: Parts(action: Choice)), TaskView(4, components: Parts(action: Step)), TaskView(4, phase: "cancelled") })
@@ -333,7 +333,7 @@ namespace Boopy.Quest.Editor
                 f.App.PresentTask(view);
                 Settle(f);
                 Only(f.Console);
-                Require(f.Strip.SpeakerText == "Boopy · Not sent" && SingleChip(f).ItemId == SubjectId, "A task without an answer lost its line or chip.");
+                Require(f.Strip.SpeakerText == "Boopy · Not sent to your AI" && SingleChip(f).ItemId == SubjectId, "A task without an answer lost its line or chip.");
             }
 
             // A view with neither its chip and line nor an answer: the session's own presentation returns.
@@ -345,7 +345,7 @@ namespace Boopy.Quest.Editor
             Settle(f);
             Require(Get(f.App, "task") != null && f.Console.TaskShown, "A wrong item without an answer was not presented.");
             Require(ActiveChips(f).Length == 0 && Overlays(f) == 0, "A wrong item without an answer kept a chip or outline.");
-            Require(f.Strip.FullText == "Wrong item." && f.Strip.SpeakerText == "Boopy · Not sent", "A wrong item without an answer lacks its line.");
+            Require(f.Strip.FullText == "Wrong item." && f.Strip.SpeakerText == "Boopy · Not sent to your AI", "A wrong item without an answer lacks its line.");
             Only(f.Console);
             FirstTile(f, ConsoleAction.Talk, "A wrong item");
 
@@ -353,7 +353,7 @@ namespace Boopy.Quest.Editor
             f.App.PresentTask(TaskView(5, Attempts((FirstAnswer, true)), "[{\"type\":\"status\",\"code\":\"wrong-item\"}]"));
             Settle(f);
             Require(ActiveChips(f).Length == 0 && Overlays(f) == 0, "A wrong item kept its chip or outline.");
-            Require(f.Strip.FullText == "Wrong item." && f.Strip.SpeakerText == "Boopy · Not sent", "A wrong item lacks its line.");
+            Require(f.Strip.FullText == "Wrong item." && f.Strip.SpeakerText == "Boopy · Not sent to your AI", "A wrong item lacks its line.");
             Only(f.Console);
 
             // An annotation that is not the item's label keeps the item's kind and drops the item's gloss and confidence.
