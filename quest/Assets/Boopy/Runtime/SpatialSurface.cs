@@ -15,6 +15,8 @@ namespace Boopy.Quest
         private TextMeshPro? eyebrow, title, body;
         private MaterialPropertyBlock? block;
         private float started, delay, amount = 1f;
+        // A fade, unlike the reveal, moves toward its own opacity over its own time and never settles the panel downward.
+        private float target = 1f, fadeSeconds;
         private bool reduced;
         private bool chrome = true;
         private bool textVisible = true;
@@ -124,7 +126,13 @@ namespace Boopy.Quest
         }
 
         public void Assemble(float secondsDelay, bool reducedMotion)
-        { started = 0f; delay = secondsDelay; reduced = reducedMotion; amount = 0f; Refresh(0f); }
+        { started = 0f; delay = secondsDelay; reduced = reducedMotion; amount = 0f; target = 1f; fadeSeconds = 0f; Refresh(0f); }
+
+        /// <summary>Toward <paramref name="opacity"/> over <paramref name="seconds"/>: alpha only, the panel stays where it is.</summary>
+        public void FadeTo(float opacity, float seconds) { started = delay; target = Mathf.Clamp01(opacity); fadeSeconds = Mathf.Max(.001f, seconds); }
+
+        /// <summary>From clear to full over <paramref name="seconds"/>, alpha only.</summary>
+        public void FadeIn(float seconds) { amount = 0f; FadeTo(1f, seconds); }
 
         public void SetState(string words) { if (eyebrow != null) eyebrow.text = words; }
 
@@ -144,7 +152,7 @@ namespace Boopy.Quest
         {
             if (visual == null || plate == null || block == null || rim == null) return;
             started += Mathf.Max(0f, delta);
-            if (started >= delay) amount = Mathf.MoveTowards(amount, 1f, delta / (reduced ? .12f : SpatialTheme.RevealSeconds));
+            if (started >= delay) amount = Mathf.MoveTowards(amount, target, delta / (fadeSeconds > 0f ? fadeSeconds : reduced ? .12f : SpatialTheme.RevealSeconds));
             if (face != null && faceSize != Size)
             {
                 var old=face.sharedMesh; face.sharedMesh=RoundedPlate.Create(Size.x,Size.y,.022f);faceSize=Size;
@@ -152,7 +160,7 @@ namespace Boopy.Quest
             }
             var eased = amount * amount * (3f - 2f * amount);
             visual.localScale = Vector3.one;
-            visual.localPosition = reduced ? Vector3.zero : Vector3.down * (.006f * (1f - eased));
+            visual.localPosition = reduced || fadeSeconds > 0f ? Vector3.zero : Vector3.down * (.006f * (1f - eased));
             plate.enabled = chrome;
             rim.enabled = chrome && identityAccent.HasValue;
 
