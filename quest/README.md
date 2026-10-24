@@ -67,6 +67,8 @@ and never retries app requests or opens a network listener. Stop it with Ctrl-C 
 ends. With multiple headsets, select one using `BOOPY_QUEST_SERIAL`; `BOOPY_ADB` overrides the
 verified Unity adb path. `--once` performs a single check. Tests: `node --test quest/scripts/tether.test.mjs`.
 Without the guard, restore the reverse mapping manually after every Unity build.
+Before any install, check a built APK carries none of the Interaction SDK's telemetry:
+`node quest/scripts/apk-privacy.mjs quest/Builds/Boopy.apk` (tests: `node --test quest/scripts/apk-privacy.test.mjs`).
 
 On the Mac, start Ollama (`OLLAMA_NO_CLOUD=1 OLLAMA_HOST=127.0.0.1:11434 ollama serve`) and the
 service (`cd ../service && pnpm start`). Reuse an existing local-only Ollama server when available;
