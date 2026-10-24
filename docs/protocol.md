@@ -174,6 +174,46 @@ A second task also shows what this version cannot do yet:
   signs), such as Ω or µ, gets no annotation. It is left out like an over-long label, never
   rewritten.
 
+## A reply from a named connection
+
+Code: `service/src/interaction/connection-files.ts` and the task store. The person carries a
+task to a connection they name on the Mac, such as a chat with their own assistant, and brings
+its reply back as a file. Boopy sends nothing, so delivery stays `not-sent` and continuity stays
+`local-only`. Nothing here runs from the headset.
+
+- A connection has a `con_` id, the channel `person-file`, and a label of at most 40 characters
+  that the person types. The label is shown as typed and never checked. Boopy records no
+  provider, assistant or model, because it cannot know who answers through a connection.
+- A request file, `boopy.task-request` version 1, is written for the task's current revision on
+  the person's command. It holds the person's words, the subject's label and the model's
+  confidence (null when unknown) as the model's proposal, Boopy's line as its local proposal,
+  the spoken answers with `recognitionUncertain`, and a `respondWith` template. The source is
+  its id, revision and digest only: no picture, path or secret. The file says Boopy did not send
+  it. A task revision gets one request; a second gets `request_exists`. The journal keeps the
+  file's SHA-256 and its nonce's SHA-256, never the nonce. The same request again, with the same
+  ids and nonce, gets the same file and journals nothing; any other difference gets
+  `duplicate_conflict`, and a task that has moved to another revision gets
+  `request_unavailable`.
+- A reply file, `boopy.task-reply` version 1, is at most 16 KiB: one JSON object or one fenced
+  json block. It echoes the request id, task id, base revision, source and nonce, has a
+  `previousReplyId` of null, and holds one dialogue and at most one voice reply. Any other field
+  is refused. The subject and its chip stay Boopy's, because the connection never saw the
+  picture.
+- A reply counts only for the request it answers, checked in this order: a prepared request, a
+  valid envelope (`reply_invalid`), the nonce (`nonce_mismatch`), the task and source
+  (`source_mismatch`), no earlier reply to that request (`duplicate_conflict`), an open task
+  (`cancelled`) still at the request's revision (`stale_revision`), and parts the contract
+  allows (`reply_invalid`). A request stays open until its task moves to another revision or is
+  cancelled.
+- A refusal is journaled with the file's SHA-256 and its code, and changes no part or revision.
+  A file that cannot be read (`reply_unreadable`) or names no prepared request
+  (`unknown_request`) journals nothing. The same file again returns the recorded outcome.
+- A match is the next revision, journaled as `task.reply-matched` with the person as its actor
+  and the authorship `claimed-by-file`. The reply's line takes the place of Boopy's, and the
+  view adds `reply: { "connection": "<label>" }`. The reply stays a proposal. It says which
+  connection it came through, never who wrote it. `task.provider-accepted` still marks only the
+  local stand-in.
+
 ## Where tasks go
 
 The task routes are on the loopback headset API, behind the same Host check as the other
