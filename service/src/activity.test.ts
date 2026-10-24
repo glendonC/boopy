@@ -849,14 +849,21 @@ describe('listing, replay and isolation', () => {
     );
     const reborn = new Boopy(test.deps);
     const controlled = new Boopy(control.deps);
-    const strip = (boopy: Boopy, sessionId: string) => ({
-      packages: boopy.packages().map((pkg) => ({
-        ...pkg,
-        evidence: pkg.version === 2 ? evidenceRecords(pkg).length : 0,
-      })),
-      view: boopy.view(sessionId),
-      disclosures: boopy.disclosures,
-    });
+    // A measured model latency differs between two runs; everything else must match exactly.
+    const strip = (boopy: Boopy, sessionId: string) =>
+      JSON.parse(
+        JSON.stringify(
+          {
+            packages: boopy.packages().map((pkg) => ({
+              ...pkg,
+              evidence: pkg.version === 2 ? evidenceRecords(pkg).length : 0,
+            })),
+            view: boopy.view(sessionId),
+            disclosures: boopy.disclosures,
+          },
+          (key, value) => (key === 'latencyMs' ? 'measured' : value),
+        ),
+      );
     assert.deepEqual(strip(reborn, test.sessionId), strip(controlled, control.sessionId));
     const text = JSON.stringify(strip(reborn, test.sessionId));
     for (const word of ['낙타가', 'Synthetic example reply', 'act_k1', 'sub_k1', 'Camel and tent'])
