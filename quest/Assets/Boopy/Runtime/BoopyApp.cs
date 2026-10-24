@@ -570,17 +570,18 @@ namespace Boopy.Quest
             _ = Send(wav);
         }
 
-        // The retry words name the control the person sees, labeled with the Mac's prompt.
-        private static string TryAnswerAgain(string what, InteractionPresentation? answered) =>
-            what + " Tap " + (answered?.AnswerLabel ?? "Answer") + " to try again.";
-
         /// <summary>
         /// The task's one action: the same button recording Talk uses, with its listening caption
         /// and Finish. It records an answer to this task only: no frame, no capture, no Talk turn.
         /// </summary>
+        // The retry words name the control the person sees, labeled with the Mac's prompt.
+        private static string TryAnswerAgain(string what, InteractionPresentation? answered) =>
+            what + " Tap " + (answered?.AnswerLabel ?? "Answer") + " to try again.";
+
         private void BeginAnswer()
         {
-            if (PresentedTask?.AnswerLabel == null || !inputAllowed || busy || buttonTalk.Recording || voice.Recording || !MicrophoneAllowed()) return;
+            var label = PresentedTask?.AnswerLabel;
+            if (label == null || !inputAllowed || busy || buttonTalk.Recording || voice.Recording || !MicrophoneAllowed(label)) return;
             StopSpeech();
             cancelledWaitNotice = null;
             captureScan?.Hide();
@@ -709,13 +710,14 @@ namespace Boopy.Quest
             }
         }
 
-        private bool MicrophoneAllowed()
+        // The words name the control the person tapped.
+        private bool MicrophoneAllowed(string control = "Talk")
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (!Permission.HasUserAuthorizedPermission(Permission.Microphone))
             {
                 Permission.RequestUserPermission(Permission.Microphone);
-                dialogue?.Show(DialogueStage.Error, "Allow microphone access, then tap Talk.");
+                dialogue?.Show(DialogueStage.Error, "Allow microphone access, then tap " + control + ".");
                 return false;
             }
 #endif
