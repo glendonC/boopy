@@ -1154,3 +1154,294 @@ describe('a reply from a named connection', () => {
     assert.equal(journal.all().length, count);
   });
 });
+
+describe('practice under a goal', () => {
+  const PRACTICE_SOURCE = { sourceId: 'src_obs_synthetic', sourceRevision: 1, sha256: SHA };
+  const opening = {
+    eventId: 'evt_open_practice',
+    sessionId: SESSION,
+    taskId: 'tsk_practice',
+    source: PRACTICE_SOURCE,
+    intent: 'consult_source',
+    utterance: 'What is this?',
+  } as const;
+  const term = {
+    type: 'term',
+    text: '합성어',
+    language: 'ko',
+    gloss: 'synthetic animal',
+    sourceId: 'wikidata:Q7375',
+    revision: '101',
+    retrievedAt: AT,
+    license: 'CC0-1.0',
+    via: 'zetaris-local',
+    reviewed: false,
+    notHeardLastTime: false,
+  } as const;
+  const first = {
+    resultId: 'res_practice_first',
+    sessionId: SESSION,
+    taskId: 'tsk_practice',
+    baseRevision: 0,
+    source: PRACTICE_SOURCE,
+    evidenceIds: ['itm_animal', 'wikidata:Q7375.ko'],
+    components: [
+      { type: 'subject', sourceId: 'src_obs_synthetic', maskId: null },
+      { type: 'annotation', text: 'synthetic animal', evidenceIds: ['itm_animal'] },
+      term,
+      {
+        type: 'dialogue',
+        text: 'My guess: synthetic animal. Can you say it?',
+        evidenceIds: ['itm_animal', 'wikidata:Q7375.ko'],
+      },
+      { type: 'voice_reply', prompt: 'Answer.' },
+    ],
+  };
+  const retrieval = {
+    retrievalId: 'ret_practice',
+    taskId: 'tsk_practice',
+    sessionId: SESSION,
+    queryId: 'term-pick-v1',
+    engine: 'zetaris-local',
+    status: 'external-unreviewed',
+    goalEventId: 'evt_goal',
+    targetLanguage: 'ko',
+    personLanguage: 'en',
+    guess: 'synthetic animal',
+    matchKey: 'synthetic animal',
+    sourceId: 'src_obs_synthetic',
+    outcome: 'passed',
+    reason: 'term',
+    phase: null,
+    elapsedMs: 5,
+    practice: { tableRows: 0, journalRows: 0, restaged: false },
+    stageMs: 1,
+    pickMs: 2,
+    rows: [
+      {
+        referenceId: 'Q7375',
+        matched: 'subject',
+        matchedText: 'synthetic animal',
+        term: '합성어',
+        gloss: null,
+        description: null,
+        referenceSourceId: 'wikidata:Q7375',
+        revisionId: '101',
+        modifiedAt: AT,
+        retrievedAt: AT,
+        referenceUrl: 'https://www.wikidata.org/wiki/Q7375',
+        license: 'CC0-1.0',
+        status: 'external-unreviewed',
+        attempts: 0,
+        notHeard: 0,
+        onSource: 0,
+        lastAt: null,
+        lastResult: null,
+        why: 'new',
+      },
+    ],
+    memory: { hits: [], recalled: [], excluded: 0 },
+    decision: { referenceId: 'Q7375', why: 'new', recalledReferenceId: null },
+  } as const;
+  const answer = (eventId: string, revision: number) => ({
+    eventId,
+    sessionId: SESSION,
+    taskId: 'tsk_practice',
+    expectedRevision: revision,
+    action: {
+      type: 'voice_reply',
+      text: '합성어가 있어요',
+      recognitionUncertain: true,
+      audioSha256: 'b'.repeat(64),
+      recognizer: 'synthetic-recognizer',
+    },
+  });
+  const follow =
+    (result: 'heard' | 'not-heard' | 'unclear') =>
+    (task: { revision: number; source: typeof PRACTICE_SOURCE }, eventId: string) => ({
+      assessment: {
+        assessmentId: `asm_${eventId.slice(4)}`,
+        attemptEventId: eventId,
+        taskId: 'tsk_practice',
+        sessionId: SESSION,
+        retrievalId: 'ret_practice',
+        referenceId: 'Q7375',
+        language: 'ko',
+        term: '합성어',
+        result,
+        recognitionUncertain: true as const,
+        method: 'term-in-recognized-text-v1' as const,
+      },
+      correction: {
+        resultId: `res_${eventId.slice(4)}`,
+        sessionId: SESSION,
+        taskId: 'tsk_practice',
+        baseRevision: task.revision,
+        source: task.source,
+        evidenceIds: ['itm_animal', 'wikidata:Q7375.ko', eventId],
+        components: [
+          { type: 'subject', sourceId: 'src_obs_synthetic', maskId: null },
+          { type: 'annotation', text: 'synthetic animal', evidenceIds: ['itm_animal'] },
+          term,
+          { type: 'dialogue', text: 'I heard 합성어.', evidenceIds: [eventId] },
+        ],
+      },
+    });
+
+  function practising() {
+    const journal = Journal.open(':memory:');
+    const tasks = new TaskStore(journal);
+    assert.deepEqual(
+      tasks.setGoal({ eventId: 'evt_goal', language: 'ko', personLanguage: 'en' }, AT),
+      { status: 'accepted' },
+    );
+    const opened = tasks.openWithResult(opening, first, AT, retrieval);
+    assert.equal(opened.status, 'accepted');
+    return { journal, tasks };
+  }
+
+  it('reads the latest goal the person set, and a null language turns practice off', () => {
+    const tasks = store();
+    assert.equal(tasks.goal(), null);
+    assert.equal(
+      tasks.setGoal({ eventId: 'evt_goal_1', language: 'ko', personLanguage: 'en' }, AT).status,
+      'accepted',
+    );
+    assert.deepEqual(tasks.goal(), {
+      eventId: 'evt_goal_1',
+      language: 'ko',
+      personLanguage: 'en',
+    });
+    assert.deepEqual(
+      tasks.setGoal({ eventId: 'evt_goal_1', language: 'ko', personLanguage: 'en' }, AT),
+      { status: 'accepted' },
+    );
+    assert.deepEqual(
+      tasks.setGoal({ eventId: 'evt_goal_1', language: 'fr', personLanguage: 'en' }, AT),
+      { status: 'rejected', code: 'duplicate_conflict' },
+    );
+    tasks.setGoal({ eventId: 'evt_goal_2', language: null, personLanguage: 'en' }, AT);
+    assert.equal(tasks.goal(), null);
+    assert.throws(() =>
+      tasks.setGoal({ eventId: 'evt_goal_3', language: 'Korean', personLanguage: 'en' }, AT),
+    );
+  });
+
+  it('keeps the retrieval with the opening and the first result, all or none', () => {
+    const { journal, tasks } = practising();
+    const types = journal.withTypePrefix('task.').map((event) => event.type);
+    assert.deepEqual(types, ['task.opened', 'task.reference-retrieved', 'task.provider-accepted']);
+    const view = tasks.get('tsk_practice');
+    assert.deepEqual(
+      view?.components.find((part) => part.type === 'term'),
+      term,
+    );
+    // A retrieval id the journal already holds refuses the whole opening: no task, no result.
+    const refused = store();
+    const other = { ...opening, eventId: 'evt_open_other', taskId: 'tsk_other' };
+    const otherFirst = { ...first, resultId: 'res_other_first', taskId: 'tsk_other' };
+    assert.equal(
+      refused.openWithResult(other, otherFirst, AT, { ...retrieval, taskId: 'tsk_other' }).status,
+      'accepted',
+    );
+    const conflict = refused.openWithResult(opening, first, AT, retrieval);
+    assert.deepEqual(conflict, { status: 'rejected', code: 'duplicate_conflict', task: null });
+    assert.equal(refused.get('tsk_practice'), undefined);
+  });
+
+  it('records the attempt, what Boopy heard and its correction in one transaction', () => {
+    const { journal, tasks } = practising();
+    const before = journal.withTypePrefix('task.').length;
+    const outcome = tasks.answer(answer('evt_answer_1', 1), AT, follow('not-heard'));
+    assert.equal(outcome.status, 'accepted');
+    if (outcome.status !== 'accepted') return;
+    assert.equal(outcome.task.revision, 3);
+    assert.equal(outcome.task.delivery, 'not-sent');
+    assert.deepEqual(outcome.task.attempts, [
+      {
+        eventId: 'evt_answer_1',
+        text: '합성어가 있어요',
+        recognitionUncertain: true,
+        kind: 'practice-attempt',
+        heard: 'not-heard',
+      },
+    ]);
+    const line = outcome.task.components.find((part) => part.type === 'dialogue');
+    assert.deepEqual(line?.type === 'dialogue' && line.evidenceIds, ['evt_answer_1']);
+    const added = journal.withTypePrefix('task.').slice(before);
+    assert.deepEqual(
+      added.map((event) => event.type),
+      ['task.action-accepted', 'task.answer-assessed', 'task.provider-accepted'],
+    );
+    assert.doesNotMatch(JSON.stringify(added[1]?.data), /있어요/);
+    const again = tasks.answer(answer('evt_answer_1', 1), AT, () => {
+      throw new Error('A retry never assesses again.');
+    });
+    assert.deepEqual(again, outcome);
+    assert.equal(journal.withTypePrefix('task.').length, before + 3);
+  });
+
+  it('keeps nothing of an answer whose assessment or correction cannot be recorded', () => {
+    const { journal, tasks } = practising();
+    const before = journal.withTypePrefix('task.').length;
+    assert.throws(() =>
+      tasks.answer(answer('evt_answer_2', 1), AT, () => {
+        throw new Error('synthetic failure between the writes');
+      }),
+    );
+    const broken = tasks.answer(answer('evt_answer_3', 1), AT, (task, eventId) => {
+      const planned = follow('heard')(task, eventId);
+      return { ...planned, correction: { ...planned.correction, baseRevision: 0 } };
+    });
+    assert.equal(broken.status, 'rejected');
+    assert.equal(journal.withTypePrefix('task.').length, before);
+    assert.equal(tasks.get('tsk_practice')?.revision, 1);
+    assert.deepEqual(tasks.get('tsk_practice')?.attempts, []);
+  });
+
+  it('lists practice records from the journal, leaving out a task the person marked wrong', () => {
+    const { tasks } = practising();
+    tasks.answer(answer('evt_answer_4', 1), '1970-01-01T00:00:04.000Z', follow('heard'));
+    assert.deepEqual(tasks.practiceRecords(), [
+      {
+        attemptEventId: 'evt_answer_4',
+        taskId: 'tsk_practice',
+        sessionId: SESSION,
+        sourceId: 'src_obs_synthetic',
+        referenceId: 'Q7375',
+        language: 'ko',
+        term: '합성어',
+        guess: 'synthetic animal',
+        result: 'heard',
+        at: '1970-01-01T00:00:04.000Z',
+        excluded: false,
+      },
+    ]);
+    tasks.act(
+      {
+        eventId: 'evt_wrong',
+        sessionId: SESSION,
+        taskId: 'tsk_practice',
+        expectedRevision: 3,
+        action: { type: 'wrong_subject' },
+      },
+      AT,
+    );
+    assert.equal(tasks.practiceRecords()[0]?.excluded, true);
+    tasks.recordStage(
+      {
+        stageId: 'stg_1',
+        taskId: 'tsk_practice',
+        sessionId: SESSION,
+        table: 'practice_check',
+        outcome: 'failed',
+        phase: 'connect',
+        practice: null,
+        stageMs: null,
+        elapsedMs: 3,
+      },
+      AT,
+    );
+    assert.equal(tasks.get('tsk_practice')?.revision, 4);
+  });
+});
