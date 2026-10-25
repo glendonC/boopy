@@ -85,3 +85,92 @@ test('full-record binding survives object key order but changes with authored co
     evidenceRecordHash({ sourceId: 'a:b', statement: 'Synthetic B' }),
   );
 });
+
+const passed = (result) => JSON.stringify({ syntheticContext: true, outcome: 'passed', result });
+const pickedRow = {
+  referenceId: 'Q7375',
+  matched: 'subject',
+  matchedText: 'synthetic animal',
+  term: '합성어',
+  gloss: null,
+  description: null,
+  referenceSourceId: 'wikidata:Q7375',
+  revisionId: '101',
+  modifiedAt: '1970-01-01T00:00:00Z',
+  retrievedAt: '1970-01-01T00:00:01.000Z',
+  referenceUrl: 'https://www.wikidata.org/wiki/Q7375',
+  license: 'CC0-1.0',
+  status: 'external-unreviewed',
+  attempts: 1,
+  notHeard: 1,
+  onSource: 0,
+  lastAt: '1970-01-01T00:00:01.000Z',
+  lastResult: 'not-heard',
+  why: 'not-heard-before',
+};
+const practice = { tableRows: 1, journalRows: 1, restaged: false };
+
+test('practice receipts keep fixed fields and drop anything else', () => {
+  const pick = federationReceipt(
+    passed({
+      mode: 'term-pick',
+      practice,
+      stageMs: 1,
+      pickMs: 2,
+      rows: [{ ...pickedRow, secret: 'x' }],
+    }),
+    0,
+    'term-pick',
+  );
+  assert.deepEqual(pick.rows[0], pickedRow);
+  assert.deepEqual(pick.practice, practice);
+  const verify = federationReceipt(
+    passed({
+      mode: 'verify-practice',
+      termRows: 268,
+      practiceReadPassed: true,
+      checkRewritePassed: true,
+      selectedContextReadDenied: true,
+      oldReferenceReadDenied: true,
+      scratchReadDenied: true,
+      termWriteDenied: false,
+    }),
+    0,
+    'verify-practice',
+  );
+  assert.equal('termWriteDenied' in verify, false);
+  assert.equal(verify.selectedContextReadDenied, true);
+  assert.throws(() =>
+    federationReceipt(
+      passed({ mode: 'verify-practice', termRows: 268, practiceReadPassed: true }),
+      0,
+      'verify-practice',
+    ),
+  );
+});
+
+test('a practice receipt with a graded result, a broken source or a bad count fails', () => {
+  for (const bad of [
+    { ...pickedRow, lastResult: 'right' },
+    { ...pickedRow, why: 'correct' },
+    { ...pickedRow, license: 'guessed' },
+    { ...pickedRow, referenceUrl: 'https://example.invalid/Q7375' },
+    { ...pickedRow, notHeard: 2 },
+    { ...pickedRow, matched: 'recalled' },
+    { ...pickedRow, term: 'line\nbreak' },
+  ])
+    assert.throws(() =>
+      federationReceipt(
+        passed({ mode: 'term-pick', practice, stageMs: 1, pickMs: 2, rows: [bad] }),
+        0,
+        'term-pick',
+      ),
+    );
+  assert.throws(() =>
+    federationReceipt(
+      passed({ mode: 'practice-stage', practice, stageMs: -1 }),
+      0,
+      'practice-stage',
+    ),
+  );
+});

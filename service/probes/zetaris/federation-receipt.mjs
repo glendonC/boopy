@@ -17,6 +17,13 @@ export function federationReceipt(stdout, exitCode, mode) {
         'provision-reader',
         'verify-reader',
         'reference',
+        'register-terms',
+        'provision-practice',
+        'verify-practice',
+        'term-pick',
+        'practice-stage',
+        'term-pick-check',
+        'practice-stage-check',
       ].includes(value.stage) ||
       typeof value.errorClass !== 'string' ||
       !/^[A-Za-z0-9_]{1,64}$/.test(value.errorClass) ||
@@ -78,6 +85,7 @@ export function federationReceipt(stdout, exitCode, mode) {
     value?.result?.mode !== mode
   )
     throw new Error('Federation probe failed.');
+  if (PRACTICE_MODES.includes(mode)) return practiceReceipt(value.result, mode);
   if (mode === 'provision-reader' || mode === 'verify-reader') {
     const fields =
       mode === 'provision-reader'
@@ -239,4 +247,132 @@ function referenceRow(row) {
   )
     throw new Error('Invalid reference attribution.');
   return result;
+}
+
+const PRACTICE_MODES = [
+  'register-terms',
+  'provision-practice',
+  'verify-practice',
+  'term-pick',
+  'practice-stage',
+  'term-pick-check',
+  'practice-stage-check',
+];
+const VERIFIED = [
+  'practiceReadPassed',
+  'checkRewritePassed',
+  'selectedContextReadDenied',
+  'oldReferenceReadDenied',
+  'scratchReadDenied',
+];
+const PICKED = [
+  'referenceId',
+  'matched',
+  'matchedText',
+  'term',
+  'gloss',
+  'description',
+  'referenceSourceId',
+  'revisionId',
+  'modifiedAt',
+  'retrievedAt',
+  'referenceUrl',
+  'license',
+  'status',
+  'attempts',
+  'notHeard',
+  'onSource',
+  'lastAt',
+  'lastResult',
+  'why',
+];
+const NULLABLE = ['matchedText', 'term', 'gloss', 'description', 'lastAt', 'lastResult'];
+const COUNTS = ['attempts', 'notHeard', 'onSource'];
+
+/** The operations: fixed shapes, counts and public reference fields only. */
+function practiceReceipt(result, mode) {
+  const count = (value) => Number.isInteger(value) && value >= 0 && value <= 100000;
+  if (mode === 'register-terms') {
+    if (result.tables !== 3) throw new Error('Invalid registration.');
+    return { mode: 'zetaris-runtime', operation: mode, tables: 3 };
+  }
+  if (mode === 'provision-practice') {
+    if (result.practiceGrants !== true) throw new Error('Invalid practice grants.');
+    return { mode: 'zetaris-runtime', operation: mode, practiceGrants: true };
+  }
+  if (mode === 'verify-practice') {
+    if (
+      !count(result.termRows) ||
+      result.termRows < 1 ||
+      VERIFIED.some((field) => result[field] !== true)
+    )
+      throw new Error('Practice permission check failed.');
+    return {
+      mode: 'zetaris-runtime',
+      operation: mode,
+      termRows: result.termRows,
+      ...Object.fromEntries(VERIFIED.map((field) => [field, true])),
+    };
+  }
+  const practice = result.practice;
+  if (
+    !count(practice?.tableRows) ||
+    !count(practice?.journalRows) ||
+    typeof practice?.restaged !== 'boolean'
+  )
+    throw new Error('Invalid practice stage.');
+  const staged = {
+    tableRows: practice.tableRows,
+    journalRows: practice.journalRows,
+    restaged: practice.restaged,
+  };
+  const ms = (value) => Number.isInteger(value) && value >= 0 && value <= 120000;
+  const picking = mode.startsWith('term-pick');
+  if (!ms(result.stageMs) || (picking && !ms(result.pickMs))) throw new Error('Invalid timing.');
+  if (!picking)
+    return { mode: 'zetaris-runtime', operation: mode, practice: staged, stageMs: result.stageMs };
+  if (!Array.isArray(result.rows) || result.rows.length > 9)
+    throw new Error('Invalid picked rows.');
+  const rows = result.rows.map((row) => {
+    const picked = {};
+    for (const field of PICKED) {
+      const entry = row[field];
+      if (COUNTS.includes(field)) {
+        if (!count(entry)) throw new Error('Invalid practice count.');
+      } else if (entry === null && NULLABLE.includes(field)) {
+        // Missing labels and an empty practice record stay null.
+      } else if (
+        typeof entry !== 'string' ||
+        !entry ||
+        entry.length > 2048 ||
+        Array.from(entry).some((character) => character.codePointAt(0) < 32)
+      )
+        throw new Error('Invalid picked field.');
+      picked[field] = entry;
+    }
+    if (
+      !/^Q[1-9][0-9]{0,11}$/.test(picked.referenceId) ||
+      picked.referenceSourceId !== `wikidata:${picked.referenceId}` ||
+      picked.referenceUrl !== `https://www.wikidata.org/wiki/${picked.referenceId}` ||
+      !/^[0-9]{1,20}$/.test(picked.revisionId) ||
+      picked.license !== 'CC0-1.0' ||
+      picked.status !== 'external-unreviewed' ||
+      !['subject', 'recalled'].includes(picked.matched) ||
+      (picked.matched === 'recalled' && picked.matchedText !== null) ||
+      ![null, 'heard', 'not-heard', 'unclear'].includes(picked.lastResult) ||
+      !['new', 'heard-before', 'not-heard-before', 'unclear-before'].includes(picked.why) ||
+      picked.notHeard > picked.attempts ||
+      picked.onSource > picked.attempts
+    )
+      throw new Error('Invalid picked attribution.');
+    return picked;
+  });
+  return {
+    mode: 'zetaris-runtime',
+    operation: mode,
+    practice: staged,
+    stageMs: result.stageMs,
+    pickMs: result.pickMs,
+    rows,
+  };
 }

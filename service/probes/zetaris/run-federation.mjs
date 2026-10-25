@@ -21,20 +21,35 @@ process.once('SIGTERM', cancel);
 process.once('SIGINT', cancel);
 try {
   const [credentialsPath, mode, referenceId] = process.argv.slice(2);
+  // Each practice mode writes one fixed table; none takes a table name.
+  const requests = ['term-pick', 'practice-stage', 'term-pick-check', 'practice-stage-check'];
   if (
     (mode === 'reference'
       ? process.argv.length !== 5 || !['Q25391', 'Q8514', 'Q71516'].includes(referenceId)
       : process.argv.length !== 4) ||
-    !['discover', 'register', 'join', 'provision-reader', 'verify-reader', 'reference'].includes(
-      mode,
-    )
+    ![
+      'discover',
+      'register',
+      'join',
+      'provision-reader',
+      'verify-reader',
+      'reference',
+      'register-terms',
+      'provision-practice',
+      'verify-practice',
+      ...requests,
+    ].includes(mode)
   )
     throw new Error();
   const lines = await credentials(credentialsPath);
   const reader =
     mode === 'provision-reader'
       ? await credentials(process.env.BOOPY_PROBE_READER_CREDENTIAL_FILE)
-      : [];
+      : mode === 'provision-practice'
+        ? await credentials(process.env.BOOPY_PROBE_PRACTICE_CREDENTIAL_FILE)
+        : [];
+  // A pick or a stage reads its fixed request lines from stdin; the runner checks them again.
+  const request = requests.includes(mode) ? await requestLines() : [];
   classes = await mkdtemp(join(tmpdir(), 'boopy-federation-'));
   await chmod(classes, 0o700);
   await run(join(jdk, 'bin/javac'), ['--release', '8', '-d', classes, source], undefined, 15000);
@@ -48,7 +63,7 @@ try {
       mode,
       ...(referenceId ? [referenceId] : []),
     ],
-    `${[...lines, ...reader].join('\n')}\n`,
+    `${[...lines, ...reader, ...request].join('\n')}\n`,
     63000,
   );
   console.log(JSON.stringify(federationReceipt(result.stdout, result.code, mode)));
@@ -88,6 +103,22 @@ function run(binary, args, input, timeout) {
     });
     child.stdin.end(input);
   });
+}
+
+async function requestLines() {
+  let text = '';
+  for await (const chunk of process.stdin) {
+    text += chunk;
+    if (text.length > 262144) throw new Error();
+  }
+  const request = text.split('\n');
+  if (request.pop() !== '' || request.at(-1) !== 'end') throw new Error();
+  const control = (character) => {
+    const code = character.codePointAt(0);
+    return (code < 32 && code !== 9) || code === 127;
+  };
+  if (request.some((line) => Array.from(line).some(control))) throw new Error();
+  return request;
 }
 
 async function credentials(path) {
