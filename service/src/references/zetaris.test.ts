@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import type { TermRow, TermSnapshot } from './wikidata.ts';
 import {
   lookupZetarisReference,
+  pickTerm,
+  stagePractice,
+  ZetarisPracticeError,
   ZetarisReferenceAssociation,
   ZetarisReferenceError,
 } from './zetaris.ts';
@@ -311,4 +316,288 @@ test('fixed failure phases preserve generic text and never vendor diagnostics', 
       else process.env.BOOPY_PROBE_JDK = prior;
     }
   });
+});
+
+const PRACTICE_USER = 'boopy-practice-1970-01-01@example.invalid';
+async function practiceFixture(work: (path: string, directory: string) => Promise<void>) {
+  const directory = await mkdtemp(join(tmpdir(), 'boopy-practice-test-'));
+  const path = join(directory, 'credentials');
+  try {
+    await writeFile(path, `${PRACTICE_USER}\nsynthetic-only-password\n`, { mode: 0o600 });
+    await work(path, directory);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+const practiceRow = {
+  attemptId: 'evt_synthetic_1',
+  taskId: 'tsk_synthetic_1',
+  sourceId: 'src_synthetic_1',
+  referenceId: 'Q7375',
+  language: 'ko',
+  result: 'not-heard',
+  recognitionUncertain: true,
+  attemptedAt: '1970-01-01T00:00:01.000Z',
+} as const;
+const pickRequest = {
+  table: 'practice_check',
+  targetLanguage: 'ko',
+  personLanguage: 'en',
+  matchKey: 'synthetic animal',
+  sourceId: 'src_synthetic_1',
+  recalled: ['Q25391'],
+  excluded: ['tsk_synthetic_0'],
+  rows: [practiceRow],
+} as const;
+const picked = {
+  referenceId: 'Q7375',
+  matched: 'subject',
+  matchedText: 'Synthetic Animal',
+  term: '합성어',
+  gloss: null,
+  description: 'synthetic description',
+  referenceSourceId: 'wikidata:Q7375',
+  revisionId: '101',
+  modifiedAt: '1970-01-01T00:00:00Z',
+  retrievedAt: '1970-01-01T00:00:02.000Z',
+  referenceUrl: 'https://www.wikidata.org/wiki/Q7375',
+  license: 'CC0-1.0',
+  status: 'external-unreviewed',
+  attempts: 1,
+  notHeard: 1,
+  onSource: 1,
+  lastAt: '1970-01-01T00:00:01.000Z',
+  lastResult: 'not-heard',
+  why: 'not-heard-before',
+};
+const recalledRow = {
+  ...picked,
+  referenceId: 'Q25391',
+  matched: 'recalled',
+  matchedText: null,
+  referenceSourceId: 'wikidata:Q25391',
+  referenceUrl: 'https://www.wikidata.org/wiki/Q25391',
+  attempts: 0,
+  notHeard: 0,
+  onSource: 0,
+  lastAt: null,
+  lastResult: null,
+  why: 'new',
+};
+const pickResult = {
+  mode: 'zetaris-runtime',
+  operation: 'term-pick-check',
+  practice: { tableRows: 1, journalRows: 1, restaged: false },
+  stageMs: 1,
+  pickMs: 2,
+  rows: [picked, recalledRow],
+};
+/** The synthetic import the rows above come from, as Boopy keeps it outside Zetaris. */
+const termRow = (
+  referenceId: string,
+  language: string,
+  kind: string,
+  text: string,
+  key = '',
+): TermRow => ({
+  source_id: `wikidata:${referenceId}`,
+  reference_id: referenceId,
+  language,
+  kind,
+  text,
+  match_key: key,
+  revision_id: '101',
+  modified_at: '1970-01-01T00:00:00Z',
+  retrieved_at: '1970-01-01T00:00:02.000Z',
+  reference_url: `https://www.wikidata.org/wiki/${referenceId}`,
+  license: 'CC0-1.0',
+  status: 'external-unreviewed',
+});
+const snapshot: TermSnapshot = {
+  rows: [
+    termRow('Q7375', 'en', 'alias', 'Synthetic Animal', 'synthetic animal'),
+    termRow('Q7375', 'en', 'description', 'synthetic description'),
+    termRow('Q7375', 'ko', 'label', '합성어'),
+    termRow('Q25391', 'en', 'description', 'synthetic description'),
+    termRow('Q25391', 'ko', 'label', '합성어'),
+  ],
+  fileSha256: 'a'.repeat(64),
+};
+const pickOptions = (credentialFile: string) => ({
+  request: pickRequest,
+  credentialFile,
+  snapshot,
+});
+
+test('a term pick sends fixed request lines and the credential path, nothing else', async () => {
+  await practiceFixture(async (path) => {
+    const returned = await pickTerm(pickOptions(path), async (call) => {
+      assert.deepEqual(Object.keys(call).sort(), ['credentialFile', 'input', 'mode', 'signal']);
+      assert.equal(call.mode, 'term-pick-check');
+      assert.equal(
+        call.input,
+        [
+          'pick\tko\ten\tsynthetic animal\tsrc_synthetic_1',
+          'recall\tQ25391',
+          'exclude\ttsk_synthetic_0',
+          'row\tevt_synthetic_1\ttsk_synthetic_1\tsrc_synthetic_1\tQ7375\tko\tnot-heard\ttrue\t1970-01-01T00:00:01.000Z',
+          'end',
+          '',
+        ].join('\n'),
+      );
+      return pickResult;
+    });
+    assert.deepEqual(returned, pickResult);
+    const staged = await stagePractice(
+      { table: 'practice_attempt', rows: [practiceRow], credentialFile: path },
+      async (call) => {
+        assert.equal(call.mode, 'practice-stage');
+        assert.equal(call.input.split('\n')[0]?.startsWith('row\t'), true);
+        return {
+          mode: 'zetaris-runtime',
+          operation: 'practice-stage',
+          practice: { tableRows: 0, journalRows: 1, restaged: true },
+          stageMs: 3,
+        };
+      },
+    );
+    assert.deepEqual(staged.practice, { tableRows: 0, journalRows: 1, restaged: true });
+  });
+});
+
+test('a value that could change the fixed query, or a wrong credential, fails before any call', async () => {
+  await practiceFixture(async (path, directory) => {
+    let calls = 0;
+    const execute = async () => {
+      calls++;
+      return pickResult;
+    };
+    for (const request of [
+      { ...pickRequest, matchKey: "camel' OR '1'='1" },
+      { ...pickRequest, matchKey: 'tab\there' },
+      { ...pickRequest, matchKey: 'x'.repeat(81) },
+      { ...pickRequest, targetLanguage: 'korean' },
+      { ...pickRequest, sourceId: 'src_bad id' },
+      { ...pickRequest, recalled: ['Q0'] },
+      { ...pickRequest, recalled: Array.from({ length: 9 }, (_, n) => `Q${n + 1}`) },
+      { ...pickRequest, excluded: ['task'] },
+      { ...pickRequest, table: 'wikidata_term' },
+      { ...pickRequest, rows: [{ ...practiceRow, attemptedAt: '1970-01-01T00:00:01+01:00' }] },
+      { ...pickRequest, rows: [{ ...practiceRow, result: 'right' }] },
+      { ...pickRequest, rows: [{ ...practiceRow, text: '낙타가 있어요' }] },
+      { ...pickRequest, rows: Array.from({ length: 501 }, () => practiceRow) },
+      { ...pickRequest, sql: 'SELECT 1' },
+    ])
+      await assert.rejects(
+        pickTerm({ ...pickOptions(path), request }, execute),
+        (error: unknown) => error instanceof ZetarisPracticeError && error.phase === 'input',
+      );
+    await writeFile(path, 'boopy-reference-1970-01-01@example.invalid\nsynthetic-only-password\n');
+    await assert.rejects(pickTerm(pickOptions(path), execute));
+    await writeFile(path, `${PRACTICE_USER}\nsynthetic-only-password\n`);
+    await chmod(path, 0o644);
+    await assert.rejects(pickTerm(pickOptions(path), execute));
+    await chmod(path, 0o600);
+    const alias = join(directory, 'alias');
+    await symlink(path, alias);
+    await assert.rejects(pickTerm(pickOptions(alias), execute));
+    assert.equal(calls, 0);
+  });
+});
+
+test('a pick result that breaks identity, order, counts or the request fails with no substitute', async () => {
+  await practiceFixture(async (path) => {
+    const options = pickOptions(path);
+    for (const raw of [
+      { ...pickResult, extra: true },
+      { ...pickResult, operation: 'term-pick' },
+      { ...pickResult, rows: [{ ...picked, license: 'guessed' }] },
+      { ...pickResult, rows: [{ ...picked, status: 'confirmed' }] },
+      { ...pickResult, rows: [{ ...picked, referenceUrl: 'https://example.invalid/Q7375' }] },
+      { ...pickResult, rows: [{ ...picked, notHeard: 2 }] },
+      { ...pickResult, rows: [{ ...picked, why: 'right' }] },
+      { ...pickResult, rows: [{ ...picked, matchedText: 'Another Animal' }] },
+      { ...pickResult, rows: [recalledRow, picked] },
+      { ...pickResult, rows: [picked, picked] },
+      { ...pickResult, rows: [{ ...recalledRow, referenceId: 'Q8514' }] },
+      { ...pickResult, practice: { tableRows: 1, journalRows: 2, restaged: false } },
+      { ...pickResult, rows: Array.from({ length: 10 }, () => recalledRow) },
+    ])
+      await assert.rejects(
+        pickTerm(options, async () => raw),
+        (error: unknown) => {
+          assert.equal(error instanceof ZetarisPracticeError && error.phase, 'result');
+          assert.equal(String(error), 'Error: Zetaris practice unavailable.');
+          return true;
+        },
+      );
+  });
+});
+
+test('every pick row is checked against the import kept outside Zetaris; a mismatch is its own phase', async () => {
+  await practiceFixture(async (path) => {
+    const options = pickOptions(path);
+    for (const rows of [
+      [{ ...picked, term: '바뀐말' }, recalledRow],
+      [{ ...picked, description: 'changed' }, recalledRow],
+      [{ ...picked, gloss: 'invented gloss' }, recalledRow],
+      [{ ...picked, revisionId: '102' }, recalledRow],
+      [{ ...picked, retrievedAt: '1970-01-01T00:00:03.000Z' }, recalledRow],
+      [picked, { ...recalledRow, term: null }],
+      [recalledRow],
+      [picked],
+      [],
+    ])
+      await assert.rejects(
+        pickTerm(options, async () => ({ ...pickResult, rows })),
+        (error: unknown) => {
+          assert.equal(error instanceof ZetarisPracticeError && error.phase, 'integrity');
+          return true;
+        },
+      );
+  });
+});
+
+test('practice failures keep a fixed phase, never vendor text, and a cancelled pick never returns', async () => {
+  await practiceFixture(async (path) => {
+    const options = pickOptions(path);
+    await assert.rejects(
+      pickTerm(options, async () => {
+        throw new ZetarisPracticeError('connect');
+      }),
+      (error: unknown) => error instanceof ZetarisPracticeError && error.phase === 'connect',
+    );
+    await assert.rejects(
+      pickTerm(options, async () => {
+        throw new Error('synthetic-private vendor detail');
+      }),
+      (error: unknown) => {
+        assert.equal(error instanceof ZetarisPracticeError && error.phase, 'subprocess');
+        assert.doesNotMatch(String(error), /synthetic-private/);
+        return true;
+      },
+    );
+    const cancel = new AbortController();
+    await assert.rejects(
+      pickTerm({ ...options, signal: cancel.signal }, async () => {
+        cancel.abort();
+        return pickResult;
+      }),
+      /cancelled/,
+    );
+  });
+});
+
+test('every write statement in the runner names one of the two practice tables as a constant', async () => {
+  const source = await readFile(
+    fileURLToPath(new URL('../../probes/zetaris/JdbcFederation.java', import.meta.url)),
+    'utf8',
+  );
+  const writes = [...source.matchAll(/"INSERT (?:OVERWRITE TABLE|INTO) "\s*\+\s*([A-Za-z_]+)/g)];
+  assert.ok(writes.length >= 4);
+  for (const [, table] of writes) assert.match(table ?? '', /^(ATTEMPTS|CHECKS)$/);
+  assert.equal((source.match(/INSERT (?:OVERWRITE|INTO)/g) ?? []).length, writes.length);
+  assert.match(source, /ATTEMPTS = "BOOPY_PRACTICE\.practice_attempt"/);
+  assert.match(source, /CHECKS = "BOOPY_PRACTICE\.practice_check"/);
+  assert.doesNotMatch(source, /\b(DELETE|DROP|TRUNCATE) /);
 });
