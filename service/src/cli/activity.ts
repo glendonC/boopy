@@ -408,7 +408,12 @@ async function fill(
     throw new Error(`Boopy could not confirm ${own.name} is the file it wrote. ${advice.replaced}`);
 }
 
-async function writeNew(folderPath: string, name: string, content: string, replaced: string) {
+export async function writeNew(
+  folderPath: string,
+  name: string,
+  content: string,
+  replaced: string,
+) {
   const own = await claim(
     join(folderPath, name),
     name,
@@ -422,7 +427,7 @@ async function writeNew(folderPath: string, name: string, content: string, repla
 }
 
 /** A regular file of at most 64 KiB of UTF-8, read at most one byte past the limit. */
-async function readInput(path: string): Promise<string> {
+export async function readInput(path: string): Promise<string> {
   const refusal = () =>
     new Error('Choose a regular UTF-8 file of at most 64 KiB, not a link, folder or device.');
   let file: FileHandle;
@@ -457,7 +462,7 @@ async function readInput(path: string): Promise<string> {
   }
 }
 
-async function call(
+export async function call(
   connection: Connection,
   path: string,
   body?: unknown,

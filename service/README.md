@@ -264,6 +264,25 @@ loopback Host and peer, and no Origin or forwarding headers. They are not in Ope
 headset lists, reads and changes activities on `/v1/activities` (view, arrangement, sequence,
 hints and submissions), which refuse any browser Origin.
 
+## A reply from a named connection
+
+The person can take a task to a chat they name, such as one with their own assistant, and bring
+its reply back by hand. Boopy sends nothing; see [Interaction](../docs/protocol.md). The
+commands need `BOOPY_CONNECTION_REPLIES=1` on the service, which is off by default until the
+headset can say which connection a reply came through.
+
+- `pnpm task connect --label "your name for it"` names the connection and prints its `con_` id.
+- `pnpm task request --task tsk_ID --connection con_ID --out-dir FOLDER` writes
+  `boopy-request-<id>.json` as a new 0600 file in that folder. It checks the folder before it
+  asks for anything and never overwrites a file.
+- `pnpm task reply --file REPLY.json` reads a regular file of at most 16 KiB, never through a
+  link, and says which connection the reply came through. A reply that does not answer that
+  exact request is refused, and the command says why.
+
+The commands use the connector's local-only routes under `/v1/local-tasks/`: bearer token,
+loopback Host and peer, and no Origin or forwarding headers. They are not in OpenAPI or MCP, and
+the headset API has none of them.
+
 ## Check
 
 ```bash

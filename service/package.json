@@ -29,7 +29,8 @@
     "export:prepared": "node src/cli/export-prepared.ts",
     "export:bundle": "node src/cli/export-handoff-bundle.ts",
     "probe:field": "node src/cli/field-readiness.ts",
-    "activity": "node src/cli/activity.ts"
+    "activity": "node src/cli/activity.ts",
+    "task": "node src/cli/task.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "0.1.0",

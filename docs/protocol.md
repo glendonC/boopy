@@ -179,7 +179,8 @@ A second task also shows what this version cannot do yet:
 Code: `service/src/interaction/connection-files.ts` and the task store. The person carries a
 task to a connection they name on the Mac, such as a chat with their own assistant, and brings
 its reply back as a file. Boopy sends nothing, so delivery stays `not-sent` and continuity stays
-`local-only`. Nothing here runs from the headset.
+`local-only`. The person's steps are `pnpm task connect`, `request` and `reply`, on the
+connector's local-only routes under `/v1/local-tasks/`; nothing here runs from the headset.
 
 - A connection has a `con_` id, the channel `person-file`, and a label of at most 40 characters
   that the person types. The label is shown as typed and never checked. Boopy records no
