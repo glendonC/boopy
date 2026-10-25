@@ -7,7 +7,18 @@ import { createHash } from 'node:crypto';
 import type { z } from 'zod';
 import { displayText, Sha256 } from '../activity-contract.ts';
 import type { TaskTurn } from '../boopy.ts';
-import { type Component, EvidenceId, OpenTask, ProviderResult, personLine } from './contract.ts';
+import type { PickedRow } from '../references/zetaris.ts';
+import {
+  type Component,
+  EvidenceId,
+  type Heard,
+  OpenTask,
+  ProviderResult,
+  personLine,
+  type RetrievalReason,
+  type TaskView,
+} from './contract.ts';
+import { earlierPracticeLine, practiceWords, sourceLine } from './practice.ts';
 
 const ANSWER_PROMPT = 'Answer.';
 const LABEL = displayText(80);
@@ -101,4 +112,191 @@ function asks(line: string): boolean {
 function unchanged(schema: z.ZodType<string>, value: string): boolean {
   const parsed = schema.safeParse(value);
   return parsed.success && parsed.data === value;
+}
+
+/** What a term pick gave the stand-in: the engine's rows as checked, or a failure's phase. */
+export type PracticePick =
+  | { readonly status: 'passed'; readonly rows: readonly PickedRow[] }
+  | { readonly status: 'failed'; readonly phase: string };
+
+/**
+ * The first result under a practice goal. Boopy's guess stays the annotation. A term shows only
+ * from a subject match: exactly one item whose label or alias is the guess, with a label in the
+ * target language that the display rules take as it is. Earlier practice on another concept goes
+ * only into the detail, never onto the subject. Every other outcome keeps the subject and the guess
+ * and says plainly why there is no word, with no answer offered. Without a guess nothing changes.
+ */
+export function practiceResult(
+  plan: { readonly open: OpenTask; readonly result: ProviderResult },
+  input: { readonly language: string; readonly languageName: string; readonly pick: PracticePick },
+): {
+  readonly result: ProviderResult;
+  readonly reason: RetrievalReason;
+  readonly referenceId: string | null;
+  readonly why: PickedRow['why'] | null;
+  readonly recalledReferenceId: string | null;
+} {
+  const { result } = plan;
+  const subject = result.components.find((part) => part.type === 'subject');
+  const annotation = result.components.find((part) => part.type === 'annotation');
+  const line = result.components.find((part) => part.type === 'dialogue');
+  const unchangedPlan = (reason: RetrievalReason) => ({
+    result,
+    reason,
+    referenceId: null,
+    why: null,
+    recalledReferenceId: null,
+  });
+  if (annotation?.type !== 'annotation' || subject?.type !== 'subject' || line?.type !== 'dialogue')
+    return unchangedPlan('no-guess');
+  const guess = annotation.text;
+  const subjects =
+    input.pick.status === 'passed'
+      ? input.pick.rows.filter((row) => row.matched === 'subject')
+      : [];
+  const match = subjects.length === 1 ? subjects[0] : undefined;
+  const reason: RetrievalReason =
+    input.pick.status === 'failed'
+      ? input.pick.phase === 'integrity'
+        ? 'integrity'
+        : 'unavailable'
+      : subjects.length > 1
+        ? 'ambiguous'
+        : match?.term == null
+          ? 'no-match'
+          : unchanged(LABEL, match.term)
+            ? 'term'
+            : 'not-displayable';
+  const words = practiceWords({
+    language: input.languageName,
+    guess,
+    term: match?.term ?? '',
+  });
+  if (reason !== 'term' || match === undefined || match.term === null) {
+    const said = {
+      'no-match': words.noMatch,
+      ambiguous: words.ambiguous,
+      'not-displayable': words.notDisplayable,
+      unavailable: words.unavailable,
+      integrity: words.integrity,
+    }[reason as 'no-match' | 'ambiguous' | 'not-displayable' | 'unavailable' | 'integrity'];
+    const plain = ProviderResult.safeParse({
+      ...result,
+      components: [
+        subject,
+        annotation,
+        { type: 'dialogue', text: said, evidenceIds: line.evidenceIds },
+      ],
+    });
+    return plain.success
+      ? { result: plain.data, reason, referenceId: null, why: null, recalledReferenceId: null }
+      : unchangedPlan(reason);
+  }
+  const cited = `wikidata:${match.referenceId}.${input.language}`;
+  const earlier =
+    input.pick.status === 'passed'
+      ? input.pick.rows.find(
+          (row) =>
+            row.matched === 'recalled' &&
+            row.lastResult === 'not-heard' &&
+            row.term !== null &&
+            unchanged(LABEL, row.term) &&
+            row.gloss !== null,
+        )
+      : undefined;
+  const detail = [
+    sourceLine(match.revisionId),
+    ...(earlier?.term != null && earlier.gloss !== null
+      ? [earlierPracticeLine(earlier.term, earlier.gloss)]
+      : []),
+  ].join('\n');
+  const practised = ProviderResult.safeParse({
+    ...result,
+    evidenceIds: [...new Set([...result.evidenceIds, cited])],
+    components: [
+      subject,
+      annotation,
+      {
+        type: 'term',
+        text: match.term,
+        language: input.language,
+        gloss: match.gloss ?? match.matchedText,
+        sourceId: match.referenceSourceId,
+        revision: match.revisionId,
+        retrievedAt: match.retrievedAt,
+        license: match.license,
+        via: 'zetaris-local',
+        reviewed: false,
+        notHeardLastTime: match.why === 'not-heard-before',
+      },
+      {
+        type: 'dialogue',
+        text: match.why === 'not-heard-before' ? words.again : words.first,
+        evidenceIds: [...new Set([...line.evidenceIds, cited])],
+      },
+      { type: 'voice_reply', prompt: ANSWER_PROMPT },
+      { type: 'detail', text: detail },
+    ],
+  });
+  if (!practised.success) return unchangedPlan('not-displayable');
+  return {
+    result: practised.data,
+    reason,
+    referenceId: match.referenceId,
+    why: match.why,
+    recalledReferenceId: earlier?.referenceId ?? null,
+  };
+}
+
+/**
+ * Boopy's own reply to one spoken answer on a practice task, as the next stand-in result: the
+ * subject, the guess, the term and its detail stay; the line says what Boopy heard and cites the
+ * attempt; an answer is offered again only when the line asks. The recognized text is never quoted.
+ */
+export function correctionResult(
+  task: TaskView,
+  input: {
+    readonly attemptEventId: string;
+    readonly heard: Heard;
+    readonly term: string;
+    readonly languageName: string;
+  },
+): ProviderResult {
+  const words = practiceWords({ language: input.languageName, guess: '', term: input.term });
+  const text = { heard: words.heard, 'not-heard': words.notHeard, unclear: words.unclear }[
+    input.heard
+  ];
+  const kept = task.components.filter(
+    (part): part is Component =>
+      part.type === 'subject' ||
+      part.type === 'annotation' ||
+      part.type === 'term' ||
+      part.type === 'detail',
+  );
+  const evidence = kept.flatMap((part) => ('evidenceIds' in part ? part.evidenceIds : []));
+  const term = kept.find((part) => part.type === 'term');
+  const cited = term?.type === 'term' ? [`${term.sourceId}.${term.language}`] : [];
+  const digest = createHash('sha256')
+    .update(`${task.taskId}:${input.attemptEventId}`)
+    .digest('hex');
+  // The answer just given is now the most recent attempt at this term.
+  const ordered = [
+    ...kept
+      .filter((part) => part.type !== 'detail')
+      .map((part) =>
+        part.type === 'term' ? { ...part, notHeardLastTime: input.heard === 'not-heard' } : part,
+      ),
+    { type: 'dialogue' as const, text, evidenceIds: [input.attemptEventId] },
+    ...(asks(text) ? [{ type: 'voice_reply' as const, prompt: ANSWER_PROMPT }] : []),
+    ...kept.filter((part) => part.type === 'detail'),
+  ];
+  return ProviderResult.parse({
+    resultId: `res_${digest.slice(0, 32)}`,
+    sessionId: task.sessionId,
+    taskId: task.taskId,
+    baseRevision: task.revision,
+    source: task.source,
+    evidenceIds: [...new Set([...evidence, ...cited, input.attemptEventId])],
+    components: ordered,
+  });
 }

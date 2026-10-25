@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import type { TaskTurn } from '../boopy.ts';
 import type { Item } from '../contracts.ts';
-import { standIn } from './stand-in.ts';
+import type { PickedRow } from '../references/zetaris.ts';
+import { ProviderResult, type TaskView } from './contract.ts';
+import { correctionResult, type PracticePick, practiceResult, standIn } from './stand-in.ts';
 
 const SHA = 'c'.repeat(64);
 const SESSION = 'ses_capture';
@@ -193,5 +195,234 @@ describe('local stand-in for a first completed turn', () => {
       })?.open.source.sourceId;
     assert.equal(at('obs/1:2.3'), 'src_obs_1_2_3');
     assert.equal(at('o'.repeat(100)), `src_${'o'.repeat(64)}`);
+  });
+});
+
+describe('the stand-in under a practice goal', () => {
+  const animal: Item = { ...referent, label: 'synthetic animal' };
+  const plan = standIn(SESSION, IDS, { ...facts, referent: animal });
+  const row = (overrides: Partial<PickedRow> = {}): PickedRow => ({
+    referenceId: 'Q7375',
+    matched: 'subject',
+    matchedText: 'synthetic animal',
+    term: '합성어',
+    gloss: null,
+    description: null,
+    referenceSourceId: 'wikidata:Q7375',
+    revisionId: '101',
+    modifiedAt: '1970-01-01T00:00:00Z',
+    retrievedAt: '1970-01-01T00:00:02.000Z',
+    referenceUrl: 'https://www.wikidata.org/wiki/Q7375',
+    license: 'CC0-1.0',
+    status: 'external-unreviewed',
+    attempts: 0,
+    notHeard: 0,
+    onSource: 0,
+    lastAt: null,
+    lastResult: null,
+    why: 'new',
+    ...overrides,
+  });
+  const practise = (pick: PracticePick) => {
+    assert.ok(plan);
+    return practiceResult(plan, { language: 'ko', languageName: 'Korean', pick });
+  };
+  const line = (result: { components: readonly { type: string; text?: string }[] }) =>
+    result.components.find((part) => part.type === 'dialogue')?.text;
+
+  it("names the source's word beside Boopy's guess, with its source in the detail", () => {
+    const practised = practise({ status: 'passed', rows: [row()] });
+    assert.equal(practised.reason, 'term');
+    assert.equal(practised.referenceId, 'Q7375');
+    assert.deepEqual(practised.result.components, [
+      { type: 'subject', sourceId: 'src_obs_2', maskId: null },
+      { type: 'annotation', text: 'synthetic animal', evidenceIds: ['int_4.photo'] },
+      {
+        type: 'term',
+        text: '합성어',
+        language: 'ko',
+        gloss: 'synthetic animal',
+        sourceId: 'wikidata:Q7375',
+        revision: '101',
+        retrievedAt: '1970-01-01T00:00:02.000Z',
+        license: 'CC0-1.0',
+        via: 'zetaris-local',
+        reviewed: false,
+        notHeardLastTime: false,
+      },
+      {
+        type: 'dialogue',
+        text: 'My guess: synthetic animal. The Korean word for synthetic animal is 합성어. Can you say it?',
+        evidenceIds: ['int_4.photo', 'wikidata:Q7375.ko'],
+      },
+      { type: 'voice_reply', prompt: 'Answer.' },
+      {
+        type: 'detail',
+        text: 'Wikidata label, revision 101, via Zetaris on your Mac, not reviewed',
+      },
+    ]);
+    assert.deepEqual(practised.result.evidenceIds, ['int_4.photo', 'wikidata:Q7375.ko']);
+    assert.equal(ProviderResult.safeParse(practised.result).success, true);
+    assert.equal(practised.result.resultId, plan?.result.resultId);
+  });
+
+  it('asks again when this subject was not heard last time, and keeps other practice off the subject', () => {
+    const again = practise({
+      status: 'passed',
+      rows: [row({ attempts: 1, notHeard: 1, lastResult: 'not-heard', why: 'not-heard-before' })],
+    });
+    assert.equal(line(again.result), "Last time I didn't hear 합성어 from you. Try it again?");
+    const marked = again.result.components.find((part) => part.type === 'term');
+    assert.equal(marked?.type === 'term' && marked.notHeardLastTime, true);
+    const vehicle = practise({
+      status: 'passed',
+      rows: [
+        row({
+          referenceId: 'Q210988',
+          referenceSourceId: 'wikidata:Q210988',
+          referenceUrl: 'https://www.wikidata.org/wiki/Q210988',
+          term: '합성차',
+        }),
+        row({
+          matched: 'recalled',
+          matchedText: null,
+          gloss: 'synthetic hill',
+          term: '합성언덕',
+          referenceId: 'Q25391',
+          referenceSourceId: 'wikidata:Q25391',
+          referenceUrl: 'https://www.wikidata.org/wiki/Q25391',
+          attempts: 1,
+          notHeard: 1,
+          lastResult: 'not-heard',
+          why: 'not-heard-before',
+        }),
+      ],
+    });
+    assert.equal(vehicle.referenceId, 'Q210988');
+    assert.equal(vehicle.recalledReferenceId, 'Q25391');
+    assert.match(line(vehicle.result) ?? '', /합성차/);
+    assert.doesNotMatch(line(vehicle.result) ?? '', /합성언덕/);
+    const term = vehicle.result.components.find((part) => part.type === 'term');
+    assert.equal(term?.type === 'term' && term.text, '합성차');
+    const detail = vehicle.result.components.find((part) => part.type === 'detail');
+    assert.equal(
+      detail?.type === 'detail' && detail.text,
+      'Wikidata label, revision 101, via Zetaris on your Mac, not reviewed\nEarlier practice: 합성언덕 (synthetic hill), not heard last time.',
+    );
+  });
+
+  it('says plainly when there is no word, more than one, a script it cannot show, or no answer', () => {
+    const cases: [PracticePick, string, string][] = [
+      [
+        { status: 'passed', rows: [] },
+        'no-match',
+        "There's no Korean word for synthetic animal in the word list on your Mac.",
+      ],
+      [
+        { status: 'passed', rows: [row({ term: null })] },
+        'no-match',
+        "There's no Korean word for synthetic animal in the word list on your Mac.",
+      ],
+      [
+        {
+          status: 'passed',
+          rows: [
+            row(),
+            row({
+              referenceId: 'Q71516',
+              referenceSourceId: 'wikidata:Q71516',
+              referenceUrl: 'https://www.wikidata.org/wiki/Q71516',
+            }),
+          ],
+        },
+        'ambiguous',
+        "I'm not sure which Korean word fits synthetic animal.",
+      ],
+      [
+        { status: 'passed', rows: [row({ term: 'جمل' })] },
+        'not-displayable',
+        "I found a Korean word for synthetic animal, but I can't show its script yet.",
+      ],
+      [
+        { status: 'failed', phase: 'timeout' },
+        'unavailable',
+        "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
+      ],
+      [
+        { status: 'failed', phase: 'connect' },
+        'unavailable',
+        "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
+      ],
+      [
+        { status: 'failed', phase: 'integrity' },
+        'integrity',
+        "The word list on your Mac doesn't match what was imported, so there's no Korean word this time.",
+      ],
+    ];
+    for (const [pick, reason, words] of cases) {
+      const said = practise(pick);
+      assert.equal(said.reason, reason);
+      assert.equal(said.referenceId, null);
+      assert.equal(line(said.result), words);
+      assert.deepEqual(
+        said.result.components.map((part) => part.type),
+        ['subject', 'annotation', 'dialogue'],
+      );
+      assert.equal(ProviderResult.safeParse(said.result).success, true);
+    }
+  });
+
+  it('changes nothing when there is no guess to look up', () => {
+    const unlabelled = standIn(SESSION, IDS, {
+      ...facts,
+      referent: { ...referent, label: 'Ω meter' },
+    });
+    assert.ok(unlabelled);
+    const said = practiceResult(unlabelled, {
+      language: 'ko',
+      languageName: 'Korean',
+      pick: { status: 'passed', rows: [row()] },
+    });
+    assert.equal(said.reason, 'no-guess');
+    assert.deepEqual(said.result, unlabelled.result);
+  });
+
+  it('answers an attempt with what Boopy heard, citing the attempt and never quoting it', () => {
+    const practised = practise({ status: 'passed', rows: [row()] });
+    const task = {
+      revision: 2,
+      source: practised.result.source,
+      sessionId: SESSION,
+      taskId: IDS.taskId,
+      components: [...practised.result.components, { type: 'status', code: 'not-sent' }],
+    } as unknown as TaskView;
+    for (const [heard, words, asks] of [
+      ['heard', 'I heard 합성어.', false],
+      ['not-heard', "I didn't hear 합성어 in that. Once more?", true],
+      ['unclear', "I couldn't hear any Korean in that. Once more?", true],
+    ] as const) {
+      const correction = correctionResult(task, {
+        attemptEventId: 'evt_attempt',
+        heard,
+        term: '합성어',
+        languageName: 'Korean',
+      });
+      assert.equal(ProviderResult.safeParse(correction).success, true);
+      assert.equal(correction.baseRevision, 2);
+      assert.equal(line(correction), words);
+      const dialogue = correction.components.find((part) => part.type === 'dialogue');
+      assert.deepEqual(dialogue?.type === 'dialogue' && dialogue.evidenceIds, ['evt_attempt']);
+      assert.equal(
+        correction.components.some((part) => part.type === 'voice_reply'),
+        asks,
+      );
+      assert.deepEqual(
+        correction.components.filter((part) => ['annotation', 'detail'].includes(part.type)),
+        practised.result.components.filter((part) => ['annotation', 'detail'].includes(part.type)),
+      );
+      const term = correction.components.find((part) => part.type === 'term');
+      assert.equal(term?.type === 'term' && term.notHeardLastTime, heard === 'not-heard');
+      assert.doesNotMatch(JSON.stringify(correction), /있어요/);
+    }
   });
 });
