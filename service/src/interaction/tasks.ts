@@ -6,6 +6,7 @@
  * is claimed by the file, never known.
  */
 import { timingSafeEqual } from 'node:crypto';
+import type { z } from 'zod';
 import { sha256 } from '../activity-contract.ts';
 import type { Journal, Recorded } from '../journal.ts';
 import { MAX_CONNECTION_FILE_BYTES, readTaskReply, renderTaskRequest } from './connection-files.ts';
@@ -16,15 +17,21 @@ import {
   type ActionRejectedData,
   ActionRejectedData as ActionRejectedSchema,
   ActInput as ActSchema,
+  type AnswerAssessedData,
+  AnswerAssessedData as AnswerAssessedSchema,
+  type AnswerAssessment,
   At,
   type Component,
   ConnectionCreatedData as ConnectionCreatedSchema,
   Connect as ConnectSchema,
   componentProblem,
+  GoalSetData as GoalSetSchema,
+  type Heard,
   type OpenedData,
   OpenedData as OpenedSchema,
   OpenTask as OpenSchema,
   type OpenTask,
+  PracticeStagedData as PracticeStagedSchema,
   PrepareRequest as PrepareSchema,
   type ProviderAcceptedData,
   ProviderAcceptedData as ProviderAcceptedSchema,
@@ -33,6 +40,7 @@ import {
   type ProviderResult,
   ProviderResult as ProviderSchema,
   payloadHash,
+  ReferenceRetrievedData as ReferenceRetrievedSchema,
   type ReplyMatchedData,
   ReplyMatchedData as ReplyMatchedSchema,
   type ReplyOutcome,
@@ -40,6 +48,7 @@ import {
   ReplyRejectedData as ReplyRejectedSchema,
   type RequestOutcome,
   RequestPreparedData as RequestPreparedSchema,
+  SetGoal as SetGoalSchema,
   type StatusCode,
   type TaskEvent,
   type TaskOutcome,
@@ -78,7 +87,43 @@ type State = {
   lastRejection: TaskView['lastRejection'];
   /** The person's name for the connection the current parts came back through. */
   reply: string | null;
+  /** The outside term this task practises, from its retrieval; null without one. */
+  practice: TaskPractice | null;
+  /** What Boopy heard in each assessed answer, with the time it was recorded. */
+  assessments: { readonly data: AnswerAssessedData; readonly at: string }[];
 };
+
+/** The term a task practises: the retrieval it came from and Boopy's guess it names. */
+export type TaskPractice = {
+  readonly retrievalId: string;
+  readonly referenceId: string;
+  readonly language: string;
+  readonly personLanguage: string;
+  readonly term: string;
+  readonly guess: string;
+};
+
+/** One assessed answer as the practice record keeps it: ids, the term, the result, the time. */
+export type PracticeRecord = {
+  readonly attemptEventId: string;
+  readonly taskId: string;
+  readonly sessionId: string;
+  readonly sourceId: string;
+  readonly referenceId: string;
+  readonly language: string;
+  readonly term: string;
+  readonly guess: string;
+  readonly result: Heard;
+  readonly at: string;
+  /** The person marked the task's subject wrong, so its practice no longer counts. */
+  readonly excluded: boolean;
+};
+
+/** What a practice task records after a spoken answer, computed from the view with the attempt. */
+export type AnswerFollow = (
+  task: TaskView,
+  attemptEventId: string,
+) => { readonly assessment: AnswerAssessment; readonly correction: unknown } | null;
 
 /** A request file prepared for one task revision; the nonce itself is never kept. */
 type Request = {
@@ -138,10 +183,16 @@ export class TaskStore {
    * utterance stays the person's words. A task with the same opening that is still at revision 0
    * gets the same result.
    */
-  openWithResult(open: unknown, result: unknown, at: string): TaskOutcome {
+  openWithResult(open: unknown, result: unknown, at: string, retrieval?: unknown): TaskOutcome {
     const opening = OpenSchema.parse(open);
     const first = ProviderSchema.parse(result);
     At.parse(at);
+    const retrieved = retrieval === undefined ? undefined : withHash(RetrievalFacts, retrieval);
+    if (
+      retrieved !== undefined &&
+      (retrieved.taskId !== opening.taskId || retrieved.sessionId !== opening.sessionId)
+    )
+      throw new Error('A retrieval names the task it opens with.');
     if (
       first.taskId !== opening.taskId ||
       first.sessionId !== opening.sessionId ||
@@ -171,6 +222,20 @@ export class TaskStore {
       return this.#journal.transaction(() => {
         const opened = this.#open(opening, at, 'system', current);
         if (opened.status === 'rejected') throw new Refusal(opened);
+        if (retrieved !== undefined) {
+          if (this.#journal.has(retrieved.retrievalId)) throw new Refusal(CONFLICT);
+          this.#append(
+            {
+              type: 'task.reference-retrieved',
+              session: retrieved.sessionId,
+              actor: 'system',
+              data: retrieved,
+            },
+            retrieved.retrievalId,
+            at,
+            current,
+          );
+        }
         const received = this.#receive(first, at, current);
         if (received.status === 'rejected') throw new Refusal(received);
         return received;
@@ -232,8 +297,156 @@ export class TaskStore {
   act(input: unknown, at: string): TaskOutcome {
     const parsed = ActSchema.parse(input);
     At.parse(at);
-    const hash = payloadHash(actMaterial(parsed));
+    return this.#act(parsed, at, this.#fold());
+  }
+
+  /**
+   * A spoken answer on a task that practises a term: the attempt, what Boopy heard and Boopy's own
+   * correction as the next stand-in result, in one journal transaction. All three are kept, or none
+   * is. A retry with the same event id returns the recorded outcome and never assesses again. A task
+   * without a term takes the answer as act() does.
+   */
+  answer(input: unknown, at: string, follow: AnswerFollow): TaskOutcome {
+    const parsed = ActSchema.parse(input);
+    At.parse(at);
+    if (parsed.action.type !== 'voice_reply') throw new Error('An answer is a voice reply.');
     const current = this.#fold();
+    if (current.seen.has(parsed.eventId) || current.tasks.get(parsed.taskId)?.practice == null)
+      return this.#act(parsed, at, current);
+    try {
+      return this.#journal.transaction(() => {
+        const acted = this.#act(parsed, at, current);
+        if (acted.status !== 'accepted') return acted;
+        const planned = follow(acted.task, parsed.eventId);
+        if (planned === null) return acted;
+        const state = current.tasks.get(parsed.taskId);
+        const practice = state?.practice;
+        const assessment = withHash(AssessmentFacts, planned.assessment);
+        if (
+          practice == null ||
+          assessment.attemptEventId !== parsed.eventId ||
+          assessment.taskId !== parsed.taskId ||
+          assessment.sessionId !== parsed.sessionId ||
+          assessment.retrievalId !== practice.retrievalId ||
+          assessment.referenceId !== practice.referenceId ||
+          assessment.language !== practice.language ||
+          assessment.term !== practice.term ||
+          this.#journal.has(assessment.assessmentId)
+        )
+          throw new Refusal(CONFLICT);
+        this.#append(
+          {
+            type: 'task.answer-assessed',
+            session: parsed.sessionId,
+            actor: 'system',
+            data: assessment,
+          },
+          assessment.assessmentId,
+          at,
+          current,
+        );
+        const corrected = this.#receive(ProviderSchema.parse(planned.correction), at, current);
+        if (corrected.status !== 'accepted') throw new Refusal(corrected);
+        return corrected;
+      });
+    } catch (failure) {
+      if (failure instanceof Refusal) return { ...failure.outcome, task: null };
+      throw failure;
+    }
+  }
+
+  /** The person sets their practice goal on the Mac. The same goal again changes nothing. */
+  setGoal(
+    input: unknown,
+    at: string,
+  ):
+    | { readonly status: 'accepted' }
+    | { readonly status: 'rejected'; readonly code: 'duplicate_conflict' } {
+    const parsed = SetGoalSchema.parse(input);
+    At.parse(at);
+    const hash = payloadHash(parsed);
+    const prior = this.#journal
+      .withTypePrefix('goal.')
+      .find((event) => event.id === parsed.eventId);
+    if (prior !== undefined)
+      return GoalSetSchema.parse(prior.data).payloadSha256 === hash
+        ? { status: 'accepted' }
+        : { status: 'rejected', code: 'duplicate_conflict' };
+    if (this.#journal.has(parsed.eventId))
+      return { status: 'rejected', code: 'duplicate_conflict' };
+    this.#journal.append(
+      {
+        type: 'goal.set',
+        session: 'goal',
+        actor: 'person',
+        data: GoalSetSchema.parse({ ...parsed, payloadSha256: hash, kind: 'practice-language' }),
+      },
+      parsed.eventId,
+      at,
+    );
+    return { status: 'accepted' };
+  }
+
+  /** The person's latest goal, read from the journal; null when none is set or practice is off. */
+  goal(): {
+    readonly eventId: string;
+    readonly language: string;
+    readonly personLanguage: string;
+  } | null {
+    const latest = this.#journal.withTypePrefix('goal.').at(-1);
+    if (latest === undefined || latest.type !== 'goal.set' || latest.actor !== 'person')
+      return null;
+    const data = GoalSetSchema.parse(latest.data);
+    const { payloadSha256, kind, ...facts } = data;
+    if (payloadSha256 !== payloadHash(facts)) throw new Error('Goal does not match its payload.');
+    return data.language === null
+      ? null
+      : { eventId: data.eventId, language: data.language, personLanguage: data.personLanguage };
+  }
+
+  /** The term a task practises, or null. */
+  practice(taskId: string): TaskPractice | null {
+    return this.#fold().tasks.get(taskId)?.practice ?? null;
+  }
+
+  /** Every assessed answer, from the journal, oldest first. */
+  practiceRecords(): PracticeRecord[] {
+    const records: PracticeRecord[] = [];
+    for (const state of this.#fold().tasks.values())
+      for (const { data, at } of state.assessments)
+        records.push({
+          attemptEventId: data.attemptEventId,
+          taskId: data.taskId,
+          sessionId: data.sessionId,
+          sourceId: state.source.sourceId,
+          referenceId: data.referenceId,
+          language: data.language,
+          term: data.term,
+          guess: state.practice?.guess ?? '',
+          result: data.result,
+          at,
+          excluded: state.subjectCorrected,
+        });
+    return records.sort((a, b) => a.at.localeCompare(b.at));
+  }
+
+  /** Records one rewrite of the practice table in Zetaris. It changes no task. */
+  recordStage(stage: unknown, at: string): void {
+    At.parse(at);
+    const data = withHash(StageFacts, stage);
+    if (this.#journal.has(data.stageId)) return;
+    const current = this.#fold();
+    requireState(current.tasks, data.taskId, data.sessionId);
+    this.#append(
+      { type: 'task.practice-staged', session: data.sessionId, actor: 'system', data },
+      data.stageId,
+      at,
+      current,
+    );
+  }
+
+  #act(parsed: ActInput, at: string, current: Fold): TaskOutcome {
+    const hash = payloadHash(actMaterial(parsed));
     const prior = current.seen.get(parsed.eventId);
     if (prior) return replay(prior, hash, current.tasks);
     if (this.#journal.has(parsed.eventId)) return CONFLICT;
@@ -669,6 +882,19 @@ export class TaskStore {
   }
 }
 
+const RetrievalFacts = ReferenceRetrievedSchema.omit({ payloadSha256: true });
+const AssessmentFacts = AnswerAssessedSchema.omit({ payloadSha256: true });
+const StageFacts = PracticeStagedSchema.omit({ payloadSha256: true });
+
+/** A system event's data: its facts as checked, with their payload hash. */
+function withHash<Facts extends Record<string, unknown>>(
+  schema: z.ZodType<Facts>,
+  input: unknown,
+): Facts & { readonly payloadSha256: string } {
+  const facts = schema.parse(input);
+  return { ...facts, payloadSha256: payloadHash(facts) };
+}
+
 function replay(prior: Seen, hash: string, tasks: Map<string, State>): TaskOutcome {
   if (prior.hash !== hash) return CONFLICT;
   const task = mustView({ tasks, seen: new Map(), requests: new Map() }, prior.taskId);
@@ -706,7 +932,11 @@ function present(state: State): TaskView {
     delivery: 'not-sent',
     subjectCorrected: state.subjectCorrected,
     components: [...state.providerComponents, { type: 'status', code: state.status }],
-    attempts: state.attempts.map((attempt) => ({ ...attempt })),
+    attempts: state.attempts.map((attempt) => {
+      const heard = state.assessments.find(({ data }) => data.attemptEventId === attempt.eventId)
+        ?.data.result;
+      return heard === undefined ? { ...attempt } : { ...attempt, heard };
+    }),
     lastRejection: state.lastRejection,
     ...(state.reply === null ? {} : { reply: { connection: state.reply } }),
   };
@@ -740,6 +970,8 @@ function apply(event: Recorded, { tasks, seen, requests }: Fold): void {
       attempts: [],
       lastRejection: null,
       reply: null,
+      practice: null,
+      assessments: [],
     });
     seen.set(event.id, {
       hash: data.payloadSha256,
@@ -892,6 +1124,46 @@ function apply(event: Recorded, { tasks, seen, requests }: Fold): void {
       taskId: data.taskId,
       action: null,
     });
+    return;
+  }
+  if (event.type === 'task.reference-retrieved') {
+    const data = ReferenceRetrievedSchema.parse(event.data);
+    const state = requireState(tasks, data.taskId, data.sessionId);
+    const { payloadSha256, ...facts } = data;
+    check(event, data, ['system'], payloadHash(facts));
+    if (state.revision !== 0) throw new Error('A retrieval follows only the opening.');
+    const row = data.rows.find((entry) => entry.referenceId === data.decision.referenceId);
+    state.practice =
+      data.reason === 'term' && row?.term != null && data.guess !== null
+        ? {
+            retrievalId: data.retrievalId,
+            referenceId: row.referenceId,
+            language: data.targetLanguage,
+            personLanguage: data.personLanguage,
+            term: row.term,
+            guess: data.guess,
+          }
+        : null;
+    return;
+  }
+  if (event.type === 'task.answer-assessed') {
+    const data = AnswerAssessedSchema.parse(event.data);
+    const state = requireState(tasks, data.taskId, data.sessionId);
+    const { payloadSha256, ...facts } = data;
+    check(event, data, ['system'], payloadHash(facts));
+    if (
+      state.practice?.retrievalId !== data.retrievalId ||
+      state.attempts.at(-1)?.eventId !== data.attemptEventId
+    )
+      throw new Error('An assessment follows its attempt.');
+    state.assessments.push({ data, at: event.at });
+    return;
+  }
+  if (event.type === 'task.practice-staged') {
+    const data = PracticeStagedSchema.parse(event.data);
+    const { payloadSha256, ...facts } = data;
+    requireState(tasks, data.taskId, data.sessionId);
+    check(event, data, ['system'], payloadHash(facts));
     return;
   }
   throw new Error(`Unhandled task event ${event.type}.`);
