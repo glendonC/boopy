@@ -465,12 +465,16 @@ namespace Boopy.Quest
                 if (!request.IsCancellationRequested && AmbientCaptureAllowed && isActiveAndEnabled) {
                     liveHud?.Unavailable();
                     if(inputAllowed && !busy && !voice.Recording) SayStatus("Scene recognition unavailable. Retrying…",3f);
-                    Debug.LogWarning("Boopy: live scene unavailable: "+failure.GetType().Name);
+                    Debug.LogWarning("Boopy: live scene unavailable: "+LiveFailure(failure));
                 }
                 nextSceneAt=Time.unscaledTime+3f;
             }
             finally { liveHud?.SetProcessing(false); if(ReferenceEquals(liveRequest,request))liveRequest=null; }
         }
+
+        // What a live frame's failure was, for the log: a service refusal's code and status, never its words; otherwise the type.
+        private static string LiveFailure(Exception failure) => failure is ServiceException refused
+            ? refused.Code + " status=" + refused.Status : failure.GetType().Name;
 
         /// <summary>A chip unfolds after a ray rests on it briefly, so sweeping past does not open everything.</summary>
         private void UpdateFocus(Chip? chip, float now)

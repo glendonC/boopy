@@ -86,6 +86,10 @@ namespace Boopy.Quest.Editor
                         "Settings concealed or overstated live capability.");
                     console.Activate(ConsoleAction.Settings);
                 }
+                // A failed live frame is logged by the service's code and status, not only the exception's type.
+                var logged=(string)typeof(BoopyApp).GetMethod("LiveFailure",BindingFlags.Static|BindingFlags.NonPublic)!
+                    .Invoke(null,new object[]{new ServiceException(502,"scene_invalid","Scene update did not match this view.")})!;
+                Require(logged=="scene_invalid status=502","A failed live frame is logged as "+logged+", without its code and status.");
                 Set(app,"connectionLiveSceneAvailable",true);
                 Set(app,"liveScenePaused",false);
                 foreach(var blocked in new[] { "busy", "reading", "focus", "paused" })
