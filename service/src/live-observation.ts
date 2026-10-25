@@ -28,12 +28,14 @@ export const SceneObject = z.object({
 });
 export const ScenePerception = z.object({
   objects: z.array(SceneObject).max(4),
+  /** Outlines left out of this frame because their edges cross or touch: a count, nothing more. */
+  leftOut: z.number().int().nonnegative().default(0),
   latencyMs: z.number().finite().nonnegative(),
 });
 export interface ScenePerceiver {
   readonly provider: string;
   readonly model: string;
-  observe(jpeg: Buffer, signal?: AbortSignal): Promise<z.infer<typeof ScenePerception>>;
+  observe(jpeg: Buffer, signal?: AbortSignal): Promise<z.input<typeof ScenePerception>>;
 }
 
 /** Live frames remain in memory. Only their hashes, camera provenance and proposed geometry
@@ -92,12 +94,14 @@ export class LiveObservation {
         latencyMs: Date.now() - started,
         objects: result.objects,
       };
+      // The journal keeps how many outlines were left out, so a dropped one stays visible; the
+      // headset's answer stays as it was.
       const event = this.journal.append(
         {
           type: 'scene.observed',
           session: input.streamId,
           actor: `model:${this.provider.model}`,
-          data,
+          data: { ...data, outlinesLeftOut: result.leftOut },
         },
         randomUUID(),
         new Date().toISOString(),

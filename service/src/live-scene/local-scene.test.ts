@@ -31,6 +31,7 @@ async function fixture(
   mode = 'normal',
   deadlines: { startup?: number; inference?: number } = {},
   objects: readonly unknown[] = [object],
+  leftOut?: number,
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'boopy-local-scene-'));
   const workerPath = join(directory, 'worker.mjs');
@@ -43,7 +44,7 @@ let count=0;for await(const line of createInterface({input:process.stdin})){
  const request=JSON.parse(line);count++;if(mode==='slow')await new Promise(r=>setTimeout(r,150));
  if(mode==='late')await new Promise(r=>setTimeout(r,60000));
  if(mode==='malformed'){console.log('not json');continue;}
- console.log(JSON.stringify({type:'result',id:mode==='wrong-id'?request.id+1:request.id,objects:${JSON.stringify(objects)},latencyMs:count}));
+ console.log(JSON.stringify({type:'result',id:mode==='wrong-id'?request.id+1:request.id,objects:${JSON.stringify(objects)},${leftOut === undefined ? '' : `leftOut:${leftOut},`}latencyMs:count}));
 }`,
   );
   const provider = new LocalScenePerceiver({
@@ -95,11 +96,23 @@ test('an outline whose edges cross or touch is left out with its object, and the
   try {
     const first = await f.provider.observe(jpeg);
     assert.deepEqual(first.objects, [object]);
+    assert.equal(first.leftOut, 2);
     // Leaving an outline out is not a worker failure: the same worker serves the next frame.
     const second = await f.provider.observe(jpeg);
     assert.deepEqual(second.objects, [object]);
     assert.equal(second.latencyMs, 2);
     assert.equal(f.provider.device, 'cpu');
+  } finally {
+    await f.close();
+  }
+});
+test('the count of left-out outlines adds the worker’s own to those left out here', async () => {
+  const crossing = { ...object, maskSha256: 'b'.repeat(64), contour: bowTie };
+  const f = await fixture('normal', {}, [crossing, object], 3);
+  try {
+    const frame = await f.provider.observe(jpeg);
+    assert.deepEqual(frame.objects, [object]);
+    assert.equal(frame.leftOut, 4);
   } finally {
     await f.close();
   }

@@ -131,6 +131,10 @@ def simple_outline(points):
     return True
 
 
+# Returned for an outline left out because its edges cross or touch, so the frame can count it.
+NOT_SIMPLE = object()
+
+
 def mask_geometry(mask):
     """Return a simple mask boundary, never a bounding box substituted for a mask."""
     binary = np.asarray(mask, dtype=np.uint8)
@@ -160,7 +164,7 @@ def mask_geometry(mask):
         return None
     outline = [(float(point[0][0]) / w, float(point[0][1]) / h) for point in simplified]
     if not simple_outline(outline):
-        return None  # Simplifying can cross edges; the headset refuses such a frame, so leave it out.
+        return NOT_SIMPLE  # Simplifying can cross edges; the headset refuses such a frame, so leave it out.
     x, y, bw, bh = cv2.boundingRect(contour)
     return {
         "box": {"x0": x / w, "y0": y / h, "x1": min(1, (x + bw) / w), "y1": min(1, (y + bh) / h)},
@@ -219,6 +223,7 @@ class Perceiver:
                 break
         objects = []
         accepted_masks = []
+        left_out = 0
         if choices:
             inputs = self.segmenter_processor(images=image, input_boxes=[[choice[0] for choice in choices]], return_tensors="pt").to(self.device)
             with torch.inference_mode():
@@ -232,12 +237,15 @@ class Perceiver:
                 if any(np.logical_and(binary, previous).sum() / max(1, np.logical_or(binary, previous).sum()) > .75 for previous in accepted_masks):
                     continue
                 geometry = mask_geometry(binary)
+                if geometry is NOT_SIMPLE:
+                    left_out += 1
+                    continue
                 if geometry is None:
                     continue
                 accepted_masks.append(binary)
                 objects.append({"label": label, "confidence": confidence,
                                 "maskConfidence": float(scores[index]), **geometry})
-        return {"objects": objects, "latencyMs": (time.perf_counter() - started) * 1000}
+        return {"objects": objects, "leftOut": left_out, "latencyMs": (time.perf_counter() - started) * 1000}
 
 
 def emit(value):

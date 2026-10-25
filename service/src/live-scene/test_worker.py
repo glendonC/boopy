@@ -4,7 +4,7 @@ from unittest import mock
 import cv2
 import numpy as np
 import worker
-from worker import NOUNS, best_noun, mask_geometry, noun_spans, simple_outline
+from worker import NOT_SIMPLE, NOUNS, best_noun, mask_geometry, noun_spans, simple_outline
 
 BOW_TIE = [(.1, .1), (.4, .4), (.4, .1), (.1, .4)]
 # The fourth point lies on the first edge, so two edges touch without crossing.
@@ -104,7 +104,8 @@ class MaskGeometryTests(unittest.TestCase):
         # Within the area tolerance of the square, but its last edges cross.
         crossing = np.array([[100, 50], [199, 50], [199, 149], [100, 145], [105, 149]], np.int32).reshape(-1, 1, 2)
         with mock.patch.object(worker.cv2, 'approxPolyDP', return_value=crossing):
-            self.assertIsNone(mask_geometry(mask))
+            # Marked apart from other refusals, so the frame can count it as left out.
+            self.assertIs(mask_geometry(mask), NOT_SIMPLE)
         self.assertIsNotNone(mask_geometry(mask))
 
 

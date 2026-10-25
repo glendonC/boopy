@@ -65,6 +65,31 @@ test('live proposals retain frame identity and provenance without pixels or huma
     journal.close();
   }
 });
+test('the scene journal counts outlines left out of a frame, a number only, and the headset sees none', async () => {
+  const journal = Journal.open(':memory:');
+  const provider: ScenePerceiver = {
+    provider: 'synthetic',
+    model: 'synthetic-mask',
+    observe: async () => ({ ...result, leftOut: 2 }),
+  };
+  try {
+    const output = await new LiveObservation(provider, journal).observe(await request());
+    assert.equal('outlinesLeftOut' in output, false);
+    const event = journal.all()[0];
+    assert.ok(event?.type === 'scene.observed');
+    assert.equal(event.data.outlinesLeftOut, 2);
+    const plain = await new LiveObservation(
+      { ...provider, observe: async () => result },
+      journal,
+    ).observe(await request());
+    assert.equal(plain.objects.length, 1);
+    const second = journal.all()[1];
+    assert.ok(second?.type === 'scene.observed');
+    assert.equal(second.data.outlinesLeftOut, 0);
+  } finally {
+    journal.close();
+  }
+});
 test('concurrent frames are rejected instead of queued and invalid geometry is not journaled', async () => {
   const journal = Journal.open(':memory:');
   let release: (value: typeof result) => void = () => {};

@@ -106,6 +106,8 @@ export type BoopyEvent =
         readonly verification: 'proposed';
         readonly frameRetained: false;
         readonly latencyMs: number;
+        /** Outlines left out because their edges cross or touch; older events have none. */
+        readonly outlinesLeftOut?: number;
         readonly objects: readonly {
           label: string;
           confidence: number;

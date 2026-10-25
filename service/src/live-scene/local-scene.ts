@@ -26,6 +26,8 @@ const Result = z.object({
       }),
     )
     .max(4),
+  /** Outlines the worker left out because their edges cross or touch. */
+  leftOut: z.number().int().min(0).max(4).default(0),
   latencyMs: z.number().finite().nonnegative(),
 });
 export type LocalSceneResult = z.infer<typeof Result>;
@@ -269,7 +271,8 @@ export class LocalScenePerceiver {
         // The headset refuses a whole frame when one outline is not simple, so such an object is
         // left out here, never reshaped, and the frame keeps its other objects.
         const objects = result.data.objects.filter((object) => simpleOutline(object.contour));
-        pending.resolve({ ...result.data, objects });
+        const leftOut = result.data.leftOut + result.data.objects.length - objects.length;
+        pending.resolve({ ...result.data, objects, leftOut });
         return;
       }
     }
