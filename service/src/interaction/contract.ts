@@ -7,6 +7,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { displayText, Sha256 } from '../activity-contract.ts';
+import { PickedRow } from '../references/zetaris.ts';
 
 export const TaskId = z.string().regex(/^tsk_[A-Za-z0-9_-]{1,64}$/);
 export const EventId = z.string().regex(/^evt_[A-Za-z0-9_-]{1,64}$/);
@@ -82,6 +83,26 @@ const Detail = z.strictObject({
   type: z.literal('detail'),
   text: displayText(500, { multiline: true }),
 });
+export const Language = z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/);
+export const ReferenceSourceId = z.string().regex(/^wikidata:Q[1-9][0-9]{0,11}$/);
+/**
+ * The outside term for Boopy's guess: one dated Wikidata label read through Zetaris on this Mac,
+ * never reviewed. The annotation keeps Boopy's guess; this part holds the source's word for it.
+ */
+const Term = z.strictObject({
+  type: z.literal('term'),
+  text: displayText(80),
+  language: Language,
+  gloss: displayText(80).nullable(),
+  sourceId: ReferenceSourceId,
+  revision: z.string().regex(/^[0-9]{1,20}$/),
+  retrievedAt: At,
+  license: z.literal('CC0-1.0'),
+  via: z.literal('zetaris-local'),
+  reviewed: z.literal(false),
+  /** This subject's term was not heard on the person's most recent attempt at it. */
+  notHeardLastTime: z.boolean(),
+});
 const AgentPresence = z.strictObject({
   type: z.literal('agent_presence'),
   mode: z.enum(['ambient', 'engaged', 'present']),
@@ -96,6 +117,7 @@ export const Component = z.discriminatedUnion('type', [
   TaskStep,
   Detail,
   AgentPresence,
+  Term,
 ]);
 export type Component = z.infer<typeof Component>;
 
@@ -394,6 +416,147 @@ export const ReplyRejectedData = z.strictObject({
 });
 export type ReplyRejectedData = z.infer<typeof ReplyRejectedData>;
 
+/** What Boopy heard in a spoken answer against the task's term. Never a grade. */
+export const Heard = z.enum(['heard', 'not-heard', 'unclear']);
+export type Heard = z.infer<typeof Heard>;
+
+/**
+ * The person's goal, set on the Mac: practise words in one language, shown around words of their
+ * own language. A null language turns practice off. The latest goal holds.
+ */
+export const SetGoal = z.strictObject({
+  eventId: EventId,
+  language: Language.nullable(),
+  personLanguage: Language,
+});
+export type SetGoal = z.infer<typeof SetGoal>;
+export const GoalSetData = SetGoal.extend({
+  payloadSha256: Sha256,
+  kind: z.literal('practice-language'),
+});
+export type GoalSetData = z.infer<typeof GoalSetData>;
+
+export const RetrievalId = z.string().regex(/^ret_[A-Za-z0-9_-]{1,64}$/);
+export const RetrievalReason = z.enum([
+  'term',
+  'no-guess',
+  'no-match',
+  'ambiguous',
+  'not-displayable',
+  'unavailable',
+  'integrity',
+  'not-configured',
+]);
+export type RetrievalReason = z.infer<typeof RetrievalReason>;
+const Ms = z.number().int().min(0).max(600000);
+const Staged = z.strictObject({
+  tableRows: z.number().int().min(0),
+  journalRows: z.number().int().min(0),
+  restaged: z.boolean(),
+});
+
+/**
+ * One term-pick-v1 retrieval when a task opens under a practice goal: what was asked (Boopy's guess
+ * as the model proposed it, its match key, the source, the Q-ids memory recalled and how many tasks
+ * were left out), what came back (the engine's rows as returned, checked against the import), and
+ * what Boopy decided. Rows are a dated snapshot through Zetaris on this Mac, never reviewed.
+ */
+export const ReferenceRetrievedData = z.strictObject({
+  payloadSha256: Sha256,
+  retrievalId: RetrievalId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  queryId: z.literal('term-pick-v1'),
+  engine: z.literal('zetaris-local'),
+  status: z.literal('external-unreviewed'),
+  goalEventId: EventId,
+  targetLanguage: Language,
+  personLanguage: Language,
+  guess: displayText(80).nullable(),
+  matchKey: z.string().max(80),
+  sourceId: SourceId,
+  outcome: z.enum(['passed', 'failed', 'skipped']),
+  reason: RetrievalReason,
+  phase: z
+    .enum([
+      'input',
+      'credentials',
+      'subprocess',
+      'connect',
+      'query',
+      'result',
+      'integrity',
+      'timeout',
+    ])
+    .nullable(),
+  elapsedMs: Ms,
+  practice: Staged.nullable(),
+  stageMs: Ms.nullable(),
+  pickMs: Ms.nullable(),
+  rows: z.array(PickedRow).max(9),
+  memory: z.strictObject({
+    hits: z
+      .array(
+        z.strictObject({
+          sourceId: z.string().min(1).max(200),
+          relevance: z.number().min(-2).max(2),
+        }),
+      )
+      .max(8),
+    recalled: z.array(z.string().regex(/^Q[1-9][0-9]{0,11}$/)).max(8),
+    excluded: z.number().int().min(0),
+  }),
+  decision: z.strictObject({
+    referenceId: z
+      .string()
+      .regex(/^Q[1-9][0-9]{0,11}$/)
+      .nullable(),
+    why: z.enum(['new', 'heard-before', 'not-heard-before', 'unclear-before']).nullable(),
+    recalledReferenceId: z
+      .string()
+      .regex(/^Q[1-9][0-9]{0,11}$/)
+      .nullable(),
+  }),
+});
+export type ReferenceRetrievedData = z.infer<typeof ReferenceRetrievedData>;
+export type ReferenceRetrieved = Omit<ReferenceRetrievedData, 'payloadSha256'>;
+
+/** Boopy's check of one spoken answer against the task's term; the recognizer stays uncertain. */
+export const AnswerAssessedData = z.strictObject({
+  payloadSha256: Sha256,
+  assessmentId: z.string().regex(/^asm_[A-Za-z0-9_-]{1,64}$/),
+  attemptEventId: EventId,
+  taskId: TaskId,
+  sessionId: SessionId,
+  retrievalId: RetrievalId,
+  referenceId: z.string().regex(/^Q[1-9][0-9]{0,11}$/),
+  language: Language,
+  term: displayText(80),
+  result: Heard,
+  recognitionUncertain: z.literal(true),
+  method: z.literal('term-in-recognized-text-v1'),
+});
+export type AnswerAssessedData = z.infer<typeof AnswerAssessedData>;
+export type AnswerAssessment = Omit<AnswerAssessedData, 'payloadSha256'>;
+
+/** One rewrite of the practice table in Zetaris from the journal, after an assessed answer. */
+export const PracticeStagedData = z.strictObject({
+  payloadSha256: Sha256,
+  stageId: z.string().regex(/^stg_[A-Za-z0-9_-]{1,64}$/),
+  taskId: TaskId,
+  sessionId: SessionId,
+  table: z.enum(['practice_attempt', 'practice_check']),
+  outcome: z.enum(['passed', 'failed']),
+  phase: z
+    .enum(['input', 'credentials', 'subprocess', 'connect', 'query', 'result', 'timeout'])
+    .nullable(),
+  practice: Staged.nullable(),
+  stageMs: Ms.nullable(),
+  elapsedMs: Ms,
+});
+export type PracticeStagedData = z.infer<typeof PracticeStagedData>;
+export type PracticeStaged = Omit<PracticeStagedData, 'payloadSha256'>;
+
 type Envelope<Type extends string, Actor extends 'person' | 'system', Data> = {
   readonly type: Type;
   readonly session: string;
@@ -411,13 +574,19 @@ export type TaskEvent =
   | Envelope<'connection.created', 'person', ConnectionCreatedData>
   | Envelope<'task.request-prepared', 'person', RequestPreparedData>
   | Envelope<'task.reply-matched', 'person', ReplyMatchedData>
-  | Envelope<'task.reply-rejected', 'person', ReplyRejectedData>;
+  | Envelope<'task.reply-rejected', 'person', ReplyRejectedData>
+  | Envelope<'goal.set', 'person', GoalSetData>
+  | Envelope<'task.reference-retrieved', 'system', ReferenceRetrievedData>
+  | Envelope<'task.answer-assessed', 'system', AnswerAssessedData>
+  | Envelope<'task.practice-staged', 'system', PracticeStagedData>;
 
 export type Attempt = {
   readonly eventId: string;
   readonly text: string;
   readonly recognitionUncertain: boolean;
   readonly kind: 'practice-attempt';
+  /** What Boopy heard against the task's term; absent when the task has no term. */
+  readonly heard?: Heard;
 };
 
 export type TaskView = {
