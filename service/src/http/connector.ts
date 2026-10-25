@@ -12,6 +12,7 @@ import { BoopyError, summarize } from '../boopy.ts';
 import type { ContextPackage } from '../contracts.ts';
 import { evidenceRecords, evidenceSourceId } from '../evidence-contract.ts';
 import type { HandoffPreparation } from '../handoff-preparation.ts';
+import { SetGoal } from '../interaction/contract.ts';
 import type { TaskStore } from '../interaction/tasks.ts';
 import type { NvidiaEmbeddingWorker } from '../memory/nvidia.ts';
 import { MemoryRecall } from '../memory/recall.ts';
@@ -38,6 +39,8 @@ export interface ConnectorOptions {
   readonly tasks?: TaskStore;
   /** The operator's recorded-scene routes; only with BOOPY_RECORDED_SCENE=1. */
   readonly recorded?: RecordedScenes;
+  /** The person's practice goal on the Mac; only with Zetaris practice set up. */
+  readonly goal?: TaskStore;
   readonly semanticRanker?: Pick<NvidiaEmbeddingWorker, 'rank'>;
   /** How long close() lets requests in progress run; tests shorten it. */
   readonly closeGraceMs?: number;
@@ -175,6 +178,20 @@ export function connectorApp(boopy: Boopy, options: ConnectorOptions): FastifyIn
       registerLocalActivityRoutes(app, options.activities, localOnly, options.activityCalls);
     if (options.tasks) registerLocalTaskRoutes(app, boopy, options.tasks, localOnly);
     if (options.recorded) registerLocalRecordedRoutes(app, options.recorded, localOnly);
+    const goal = options.goal;
+    // The person sets the language they practise; the journal records them as its author.
+    if (goal)
+      app.post(
+        '/v1/local-tasks/goal',
+        { onRequest: localOnly, bodyLimit: 4096 },
+        async (request, reply) => {
+          reply.header('Cache-Control', 'no-store');
+          const outcome = goal.setGoal(SetGoal.parse(request.body), new Date().toISOString());
+          if (outcome.status === 'rejected')
+            throw new BoopyError(409, outcome.code, 'This event id names another goal.');
+          return { goal: goal.goal() };
+        },
+      );
   }
 
   const mcp = toNodeHandler(

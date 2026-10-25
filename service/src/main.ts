@@ -9,6 +9,7 @@ import { HandoffPreparation } from './handoff-preparation.ts';
 import { connectorApp } from './http/connector.ts';
 import { headsetApp } from './http/headset.ts';
 import { CLOSE_GRACE_MS } from './http/shutdown.ts';
+import type { PracticeLink } from './http/tasks.ts';
 import { TaskStore } from './interaction/tasks.ts';
 import { FixtureInterpreter } from './interpret/fixture.ts';
 import type { Interpreter } from './interpret/interpreter.ts';
@@ -18,8 +19,11 @@ import { Journal, MediaStore } from './journal.ts';
 import { LiveObservation } from './live-observation.ts';
 import { LocalScenePerceiver } from './live-scene/local-scene.ts';
 import { NvidiaEmbeddingWorker } from './memory/nvidia.ts';
+import { practiceRows } from './memory/practice.ts';
 import { VisionTextReader } from './ocr.ts';
 import { assertNoLiveCaptures, RecordedScenes } from './recorded-source.ts';
+import { readTermSnapshot } from './references/wikidata.ts';
+import { pickTerm, stagePractice } from './references/zetaris.ts';
 import { SamSegmenter } from './segmentation.ts';
 import { WhisperEngine } from './speech.ts';
 import { QwenSpeechOutput } from './speech-output/qwen.ts';
@@ -124,6 +128,37 @@ const activityCalls = config.activityAssistant
     })
   : undefined;
 const tasks = new TaskStore(journal);
+// Zetaris on this Mac for practice under the person's goal, checked against the import's receipt.
+const practiceSettings = config.practice;
+const practice: PracticeLink | undefined = practiceSettings
+  ? await (async () => {
+      const snapshot = await readTermSnapshot(
+        join(practiceSettings.termsDirectory, 'wikidata_term.csv'),
+        join(practiceSettings.termsDirectory, 'wikidata_term.receipt.json'),
+      );
+      return {
+        table: practiceSettings.table,
+        timeoutMs: 10_000,
+        pick: (request, signal) =>
+          pickTerm({
+            request,
+            credentialFile: practiceSettings.credentialFile,
+            snapshot,
+            signal,
+            // The caller's signal bounds each call; this is only a backstop.
+            timeoutMs: 60_000,
+          }),
+        stage: (rows, signal) =>
+          stagePractice({
+            table: practiceSettings.table,
+            rows,
+            credentialFile: practiceSettings.credentialFile,
+            signal,
+            timeoutMs: 60_000,
+          }),
+      } satisfies PracticeLink;
+    })()
+  : undefined;
 const headset = headsetApp(boopy, {
   logger: config.logger,
   liveScene,
@@ -131,6 +166,7 @@ const headset = headsetApp(boopy, {
   activities,
   activityCalls,
   tasks,
+  ...(practice ? { practice } : {}),
   ...(recorded ? { recorded } : {}),
 });
 const connector = connectorApp(boopy, {
@@ -142,6 +178,7 @@ const connector = connectorApp(boopy, {
   activities,
   activityCalls,
   ...(config.connectionReplies ? { tasks } : {}),
+  ...(practice ? { goal: tasks } : {}),
   ...(recorded ? { recorded } : {}),
   logger: config.logger,
 });
@@ -159,8 +196,30 @@ console.log(
     `  speech        ${config.whisper === null ? 'off (whisper.cpp not found)' : 'whisper.cpp'}`,
     `  text          ${config.ocrBinary === null ? 'off (run pnpm ocr:build)' : 'Apple Vision'}`,
     `  recorded      ${recorded ? 'on: recorded scenes from the local operator' : 'off'}`,
+    `  practice      ${practiceSettings ? `Zetaris on this Mac, ${practiceSettings.table}` : 'off'}`,
   ].join('\n'),
 );
+// One pick at start, so the first boop does not wait for the engine's cold start. It also brings
+// the practice table in line with the journal.
+if (practice)
+  practice
+    .pick(
+      {
+        table: practice.table,
+        targetLanguage: 'en',
+        personLanguage: 'en',
+        matchKey: 'start',
+        sourceId: 'src_start',
+        recalled: [],
+        excluded: [],
+        rows: practiceRows(tasks.practiceRecords()),
+      },
+      AbortSignal.timeout(60_000),
+    )
+    .then(
+      () => console.log('Zetaris practice ready.'),
+      () => console.warn('Zetaris practice did not answer at start; a task will say so.'),
+    );
 
 let stopping = false;
 const stop = async () => {

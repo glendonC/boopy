@@ -601,3 +601,55 @@ test('every write statement in the runner names one of the two practice tables a
   assert.match(source, /CHECKS = "BOOPY_PRACTICE\.practice_check"/);
   assert.doesNotMatch(source, /\b(DELETE|DROP|TRUNCATE) /);
 });
+
+test('a later call reuses the classes compiled from the same source and JDK', async () => {
+  await fixture(async (credentialFile, directory) => {
+    const { createHash } = await import('node:crypto');
+    const jdk = join(directory, 'jdk');
+    const bin = join(jdk, 'bin');
+    await mkdir(bin, { recursive: true });
+    const count = join(directory, 'compiles');
+    const receipt = JSON.stringify({
+      syntheticContext: true,
+      outcome: 'passed',
+      result: {
+        mode: 'reference',
+        rows: [{ ...result.rows[0], updatedAt: '1970-01-01T00:00:00Z' }],
+      },
+    });
+    await writeFile(
+      join(bin, 'javac'),
+      `#!${process.execPath}\nconst fs=require('node:fs');const d=process.argv[process.argv.indexOf('-d')+1];fs.writeFileSync(d+'/JdbcFederation.class','');fs.appendFileSync(${JSON.stringify(count)},'x');\n`,
+      { mode: 0o700 },
+    );
+    await writeFile(
+      join(bin, 'java'),
+      `#!${process.execPath}\nconsole.log(${JSON.stringify(receipt)});\n`,
+      {
+        mode: 0o700,
+      },
+    );
+    const source = fileURLToPath(
+      new URL('../../probes/zetaris/JdbcFederation.java', import.meta.url),
+    );
+    const key = createHash('sha256')
+      .update(await readFile(source))
+      .update('\0')
+      .update(jdk)
+      .digest('hex')
+      .slice(0, 32);
+    const prior = process.env.BOOPY_PROBE_JDK;
+    process.env.BOOPY_PROBE_JDK = jdk;
+    try {
+      for (let call = 0; call < 2; call++)
+        await lookupZetarisReference({ referenceId: 'Q25391', credentialFile });
+      assert.equal(await readFile(count, 'utf8'), 'x');
+    } finally {
+      if (prior === undefined) delete process.env.BOOPY_PROBE_JDK;
+      else process.env.BOOPY_PROBE_JDK = prior;
+      // The runner gets no TMPDIR, so its temporary folder may be /tmp rather than this one.
+      for (const root of new Set([tmpdir(), '/tmp']))
+        await rm(join(root, `boopy-federation-cache-${key}`), { recursive: true, force: true });
+    }
+  });
+});

@@ -16,8 +16,24 @@ import {
   type TaskOutcome,
   type TaskView,
 } from '../interaction/contract.ts';
-import { standIn } from '../interaction/stand-in.ts';
+import { assessAnswer, languageName } from '../interaction/practice.ts';
+import {
+  correctionResult,
+  type PracticePick,
+  practiceResult,
+  standIn,
+} from '../interaction/stand-in.ts';
 import type { TaskStore } from '../interaction/tasks.ts';
+import { practiceRows, recallPractice } from '../memory/practice.ts';
+import { matchKey } from '../references/wikidata.ts';
+import {
+  type PracticeRow,
+  type PracticeStageResult,
+  type PracticeTable,
+  TermPickRequest,
+  type TermPickResult,
+  ZetarisPracticeError,
+} from '../references/zetaris.ts';
 
 /**
  * A GET body larger than this is refused unread, and so is a larger open or action body. Task
@@ -72,11 +88,34 @@ type Answer = {
 };
 
 /**
+ * Zetaris on this Mac as the task routes use it: one fixed term pick at a task's opening and one
+ * rewrite of the practice table after an assessed answer. Off unless the service builds it.
+ */
+export type PracticeLink = {
+  readonly table: PracticeTable;
+  readonly timeoutMs: number;
+  readonly pick: (request: TermPickRequest, signal: AbortSignal) => Promise<TermPickResult>;
+  readonly stage: (
+    rows: readonly PracticeRow[],
+    signal: AbortSignal,
+  ) => Promise<PracticeStageResult>;
+};
+
+type Planned = NonNullable<ReturnType<typeof standIn>> & { readonly retrieval?: unknown };
+
+/**
  * The headset's task routes. Every view says local-only and not-sent: nothing here reaches the
  * person's own assistant. The one result a capture gets is a labeled local stand-in projected from
- * Boopy's own turn. Reading a task only reads the journal.
+ * Boopy's own turn. Under the person's practice goal, with a practice link, that result carries the
+ * outside term for Boopy's guess from one Zetaris pick, and an answer is assessed against it.
+ * Reading a task only reads the journal.
  */
-export function registerTaskRoutes(app: FastifyInstance, tasks: TaskStore, boopy: Boopy) {
+export function registerTaskRoutes(
+  app: FastifyInstance,
+  tasks: TaskStore,
+  boopy: Boopy,
+  practice?: PracticeLink,
+) {
   const native = {
     onRequest: async (request: FastifyRequest, reply: FastifyReply) => {
       reply.header('Cache-Control', 'no-store');
@@ -106,10 +145,16 @@ export function registerTaskRoutes(app: FastifyInstance, tasks: TaskStore, boopy
     if (existing !== undefined && existing.revision > 0) return existing;
     const ids = { eventId: body.eventId, taskId: existing?.taskId ?? body.taskId };
     const plan = standIn(sessionId, ids, facts);
+    const planned = plan === null ? null : await practised(sessionId, plan);
     const outcome =
-      plan === null
+      planned === null
         ? undefined
-        : tasks.openWithResult(plan.open, plan.result, new Date().toISOString());
+        : tasks.openWithResult(
+            planned.open,
+            planned.result,
+            new Date().toISOString(),
+            planned.retrieval,
+          );
     if (outcome?.status === 'accepted') return outcome.task;
     if (outcome === undefined || existing !== undefined)
       throw new BoopyError(
@@ -119,6 +164,159 @@ export function registerTaskRoutes(app: FastifyInstance, tasks: TaskStore, boopy
       );
     return settle(outcome);
   });
+
+  // Zetaris calls run one at a time: a pick and a rewrite both touch the practice table.
+  let zetaris: Promise<unknown> = Promise.resolve();
+  const inTurn = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = zetaris.then(work, work);
+    zetaris = next.catch(() => {});
+    return next;
+  };
+
+  // Opens for one session in flight share one pick, so two cannot decide differently.
+  const picking = new Map<string, Promise<Planned>>();
+  const practised = (sessionId: string, plan: NonNullable<ReturnType<typeof standIn>>) => {
+    const running = picking.get(sessionId);
+    if (running !== undefined) return running;
+    const planned = pickFor(plan).finally(() => picking.delete(sessionId));
+    picking.set(sessionId, planned);
+    return planned;
+  };
+
+  /**
+   * The opening's first result under the person's goal: earlier practice recalled from the
+   * journal through H-MEM, then one Zetaris pick, bounded; a result past the bound is never used.
+   * Without a goal nothing changes and nothing is journaled.
+   */
+  const pickFor = async (plan: NonNullable<ReturnType<typeof standIn>>): Promise<Planned> => {
+    const goal = tasks.goal();
+    if (goal === null) return plan;
+    const annotation = plan.result.components.find((part) => part.type === 'annotation');
+    const guess = annotation?.type === 'annotation' ? annotation.text : null;
+    const sourceId = plan.open.source.sourceId;
+    const records = tasks.practiceRecords();
+    const memory =
+      guess === null ? { hits: [], recalled: [] } : recallPractice(records, { guess, sourceId });
+    const excluded = [
+      ...new Set(records.filter((record) => record.excluded).map((record) => record.taskId)),
+    ];
+    const key = guess === null ? '' : matchKey(guess);
+    const request = TermPickRequest.safeParse({
+      table: practice?.table ?? 'practice_check',
+      targetLanguage: goal.language,
+      personLanguage: goal.personLanguage,
+      matchKey: key,
+      sourceId,
+      recalled: memory.recalled.slice(0, 8),
+      excluded: excluded.slice(-64),
+      rows: practiceRows(records).slice(-500),
+    });
+    const started = performance.now();
+    let pick: PracticePick = { status: 'passed', rows: [] };
+    let picked: TermPickResult | null = null;
+    let phase: string | null = null;
+    let outcome: 'passed' | 'failed' | 'skipped' = 'skipped';
+    if (practice !== undefined && guess !== null && request.success && key !== '') {
+      let signal: AbortSignal | null = null;
+      try {
+        // The bound starts when this pick's turn comes, after a rewrite in progress.
+        picked = await inTurn(() => {
+          signal = AbortSignal.timeout(practice.timeoutMs);
+          return practice.pick(request.data, signal);
+        });
+        pick = { status: 'passed', rows: picked.rows };
+        outcome = 'passed';
+      } catch (failure) {
+        phase = (signal as AbortSignal | null)?.aborted
+          ? 'timeout'
+          : failure instanceof ZetarisPracticeError
+            ? failure.phase
+            : 'subprocess';
+        pick = { status: 'failed', phase };
+        outcome = 'failed';
+      }
+    }
+    const decided = practiceResult(plan, {
+      language: goal.language,
+      languageName: languageName(goal.language, goal.personLanguage),
+      pick,
+    });
+    const retrieval = {
+      retrievalId: `ret_${plan.open.taskId.slice(4)}`,
+      taskId: plan.open.taskId,
+      sessionId: plan.open.sessionId,
+      queryId: 'term-pick-v1',
+      engine: 'zetaris-local',
+      status: 'external-unreviewed',
+      goalEventId: goal.eventId,
+      targetLanguage: goal.language,
+      personLanguage: goal.personLanguage,
+      guess,
+      matchKey: request.success ? key : '',
+      sourceId,
+      outcome,
+      reason: practice === undefined && guess !== null ? 'not-configured' : decided.reason,
+      phase,
+      elapsedMs: Math.round(performance.now() - started),
+      practice: picked?.practice ?? null,
+      stageMs: picked?.stageMs ?? null,
+      pickMs: picked?.pickMs ?? null,
+      rows: picked?.rows ?? [],
+      memory: {
+        hits: memory.hits.map((hit) => ({ sourceId: hit.sourceId, relevance: hit.relevance })),
+        recalled: memory.recalled.slice(0, 8),
+        excluded: excluded.length,
+      },
+      decision: {
+        referenceId: decided.referenceId,
+        why: decided.why,
+        recalledReferenceId: decided.recalledReferenceId,
+      },
+    };
+    // Without a link the goal cannot be served: the task stays Boopy's plain stand-in.
+    if (practice === undefined) return { ...plan, retrieval };
+    return { open: plan.open, result: decided.result, retrieval };
+  };
+
+  const stageSoon = (taskId: string, sessionId: string, stageId: string) => {
+    if (practice === undefined) return;
+    // Each rewrite reads the journal as it is when its turn comes.
+    void inTurn(async () => {
+      const started = performance.now();
+      const signal = AbortSignal.timeout(15000);
+      const base = { stageId, taskId, sessionId, table: practice.table };
+      try {
+        const staged = await practice.stage(practiceRows(tasks.practiceRecords()), signal);
+        tasks.recordStage(
+          {
+            ...base,
+            outcome: 'passed',
+            phase: null,
+            practice: staged.practice,
+            stageMs: staged.stageMs,
+            elapsedMs: Math.round(performance.now() - started),
+          },
+          new Date().toISOString(),
+        );
+      } catch (failure) {
+        tasks.recordStage(
+          {
+            ...base,
+            outcome: 'failed',
+            phase: signal.aborted
+              ? 'timeout'
+              : failure instanceof ZetarisPracticeError && failure.phase !== 'integrity'
+                ? failure.phase
+                : 'subprocess',
+            practice: null,
+            stageMs: null,
+            elapsedMs: Math.round(performance.now() - started),
+          },
+          new Date().toISOString(),
+        );
+      }
+    }).catch(() => {});
+  };
 
   // A retry names the same event id. It must never transcribe or record a second time, so a
   // recorded answer replays and one still being transcribed is awaited, not repeated.
@@ -144,20 +342,47 @@ export function registerTaskRoutes(app: FastifyInstance, tasks: TaskStore, boopy
         'That answer does not fit one line of 400 characters. Answer again, more briefly.',
       );
     const { audioSha256, ...change } = input;
-    return tasks.act(
-      {
-        ...change,
-        action: {
-          type: 'voice_reply',
-          text: text.data,
-          // The recognizer gives no confidence for its words, and unknown is not certain.
-          recognitionUncertain: true,
-          audioSha256,
-          recognizer: recognizer.name,
-        },
+    const act = {
+      ...change,
+      action: {
+        type: 'voice_reply',
+        text: text.data,
+        // The recognizer gives no confidence for its words, and unknown is not certain.
+        recognitionUncertain: true,
+        audioSha256,
+        recognizer: recognizer.name,
       },
-      new Date().toISOString(),
-    );
+    };
+    const term = tasks.practice(input.taskId);
+    if (term === null) return tasks.act(act, new Date().toISOString());
+    // What Boopy heard and its correction are recorded with the attempt, all or none.
+    const outcome = tasks.answer(act, new Date().toISOString(), (task, attemptEventId) => {
+      const heard = assessAnswer(term.term, text.data);
+      return {
+        assessment: {
+          assessmentId: `asm_${attemptEventId.slice(4)}`,
+          attemptEventId,
+          taskId: task.taskId,
+          sessionId: task.sessionId,
+          retrievalId: term.retrievalId,
+          referenceId: term.referenceId,
+          language: term.language,
+          term: term.term,
+          result: heard,
+          recognitionUncertain: true,
+          method: 'term-in-recognized-text-v1',
+        },
+        correction: correctionResult(task, {
+          attemptEventId,
+          heard,
+          term: term.term,
+          languageName: languageName(term.language, term.personLanguage),
+        }),
+      };
+    });
+    if (outcome.status === 'accepted')
+      stageSoon(input.taskId, input.sessionId, `stg_${input.eventId.slice(4)}`);
+    return outcome;
   };
 
   app.post('/v1/tasks/:taskId/answers', native, async (request) => {
@@ -197,7 +422,15 @@ export function registerTaskRoutes(app: FastifyInstance, tasks: TaskStore, boopy
     const taskId = literalTaskId(request);
     if (taskId === undefined) return settle(UNKNOWN);
     if (answering.has(body.eventId)) return settle(CONFLICT);
-    return settle(tasks.act({ ...body, taskId }, new Date().toISOString()));
+    const outcome = tasks.act({ ...body, taskId }, new Date().toISOString());
+    // A subject the person marked wrong leaves the practice record, so the table is rewritten.
+    if (
+      outcome.status === 'accepted' &&
+      body.action.type === 'wrong_subject' &&
+      tasks.practiceRecords().some((record) => record.taskId === taskId)
+    )
+      stageSoon(taskId, body.sessionId, `stg_${body.eventId.slice(4)}`);
+    return settle(outcome);
   });
 }
 

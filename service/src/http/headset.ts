@@ -22,7 +22,7 @@ import { registerActivityRoutes } from './activities.ts';
 import { registerHandoffRoutes } from './handoff.ts';
 import { registerRecordedSceneRoutes } from './recorded.ts';
 import { CLOSE_GRACE_MS, drainOnClose } from './shutdown.ts';
-import { registerTaskRoutes } from './tasks.ts';
+import { type PracticeLink, registerTaskRoutes } from './tasks.ts';
 
 /** Frames are about 200 KB and clips up to 30 s of 16 kHz audio; base64 adds a third. */
 const BODY_LIMIT = 8 * 1024 * 1024;
@@ -43,6 +43,8 @@ export function headsetApp(
     readonly activities?: ActivityStore;
     readonly activityCalls?: ActivityCalls;
     readonly tasks?: TaskStore;
+    /** Zetaris on this Mac for practice under the person's goal; only with it set up. */
+    readonly practice?: PracticeLink;
     /** A recorded scene for the headset to show and boop; only with BOOPY_RECORDED_SCENE=1. */
     readonly recorded?: RecordedScenes;
     /** How long close() lets requests in progress run; tests shorten it. */
@@ -160,7 +162,7 @@ export function headsetApp(
 
   if (options.handoff) registerHandoffRoutes(app, options.handoff);
   if (options.activities) registerActivityRoutes(app, options.activities, options.activityCalls);
-  if (options.tasks) registerTaskRoutes(app, options.tasks, boopy);
+  if (options.tasks) registerTaskRoutes(app, options.tasks, boopy, options.practice);
   if (options.recorded) registerRecordedSceneRoutes(app, options.recorded);
 
   return app;
