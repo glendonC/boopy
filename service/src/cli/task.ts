@@ -1,7 +1,7 @@
 /**
- * pnpm task connect|request|reply: the person's own steps on the Mac for a reply from a connection
- * they named (docs/protocol.md, "A reply from a named connection"), through the authenticated
- * local connector. A request is a new 0600 file in the folder named; a reply is a regular file of
+ * pnpm task connect|request|reply|goal: the person's own steps on the Mac for a reply from a connection
+ * they named (docs/protocol.md, "A reply from a named connection") and for the language they
+ * practise ("Practice under a goal"), through the authenticated local connector. A request is a new 0600 file in the folder named; a reply is a regular file of
  * at most 16 KiB, never read through a link. Nothing here sends anything to an assistant, and
  * nothing printed carries the token, the nonce or a file's contents.
  */
@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { sha256 } from '../activity-contract.ts';
 import { MAX_CONNECTION_FILE_BYTES } from '../interaction/connection-files.ts';
 import { ConnectionId, TaskId } from '../interaction/contract.ts';
+import { languageName } from '../interaction/practice.ts';
 import { call, readInput, writeNew } from './activity.ts';
 
 type Connection = { dataDir: string; port?: number };
@@ -33,6 +34,35 @@ const Answered = z.object({
   revision: z.number(),
   reply: z.object({ connection: z.string() }),
 });
+
+const Goal = z.object({
+  goal: z
+    .object({ eventId: z.string(), language: z.string(), personLanguage: z.string() })
+    .nullable(),
+});
+
+/**
+ * The person sets the language they practise, or turns practice off. Boopy then looks words up
+ * only in the word list on this Mac, through Zetaris, and sends nothing.
+ */
+export async function goalTask(
+  options: Connection & { language: string | null; personLanguage: string },
+) {
+  const answer = Goal.parse(
+    await call(options, '/v1/local-tasks/goal', {
+      eventId: id('evt'),
+      language: options.language,
+      personLanguage: options.personLanguage,
+    }),
+  );
+  return {
+    ...answer,
+    message:
+      answer.goal === null
+        ? 'Practice is off. Boopy looks up no outside words.'
+        : `Practice is on: ${languageName(answer.goal.language, answer.goal.personLanguage)} words, around ${languageName(answer.goal.personLanguage, answer.goal.personLanguage)}. Boopy looks them up only in the word list on this Mac, through Zetaris, and sends nothing.`,
+  };
+}
 
 const FOLDER_REFUSAL =
   'Choose an existing folder where Boopy can create a new private file. Nothing was requested.';
@@ -173,6 +203,7 @@ const USAGE = `Usage:
   pnpm task connect --label "your name for it"
   pnpm task request --task tsk_ID --connection con_ID --out-dir FOLDER
   pnpm task reply --file REPLY.json
+  pnpm task goal --language ko [--person-language en]   or   pnpm task goal --off
 Common options: --data-dir (default $BOOPY_DATA_DIR or ~/.boopy) and --port (default $BOOPY_CONNECTOR_PORT or 47901).`;
 
 async function main(args: string[]) {
@@ -186,6 +217,9 @@ async function main(args: string[]) {
       connection: { type: 'string' },
       'out-dir': { type: 'string' },
       file: { type: 'string' },
+      language: { type: 'string' },
+      'person-language': { type: 'string' },
+      off: { type: 'boolean' },
       'data-dir': { type: 'string' },
       port: { type: 'string' },
     },
@@ -211,8 +245,14 @@ async function main(args: string[]) {
       });
     case 'reply':
       return replyTask({ ...connection, file: required(values.file, 'file') });
+    case 'goal':
+      return goalTask({
+        ...connection,
+        language: values.off ? null : required(values.language, 'language'),
+        personLanguage: values['person-language'] ?? 'en',
+      });
     default:
-      throw new Error('Choose connect, request or reply.');
+      throw new Error('Choose connect, request, reply or goal.');
   }
 }
 

@@ -64,6 +64,16 @@ export interface Config {
    * its own data folder and keeps every frame on this Mac.
    */
   readonly recordedScene: { readonly helper: string } | null;
+  /**
+   * Zetaris on this Mac for practice under the person's goal: the practice account's credential
+   * file, the folder with the term import and its receipt, and the practice table to keep. Off
+   * unless BOOPY_ZETARIS_PRACTICE_CREDENTIAL_FILE is set; the table is always named.
+   */
+  readonly practice: {
+    readonly credentialFile: string;
+    readonly termsDirectory: string;
+    readonly table: 'practice_attempt' | 'practice_check';
+  } | null;
 }
 
 const serviceRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -105,6 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         : required(env, 'BOOPY_ZETARIS_REFERENCE_CREDENTIAL_FILE'),
     logger: env.BOOPY_LOG !== '0',
     connectionReplies: env.BOOPY_CONNECTION_REPLIES === '1',
+    practice: practiceConfig(env),
     recordedScene: recordedSceneConfig(env),
   };
 }
@@ -247,6 +258,18 @@ function speechOutputConfig(value: string | undefined): 'none' | 'mac-say' | 'qw
   if (value === 'mac-say') return 'mac-say';
   if (value === 'qwen') return 'qwen';
   throw new Error('BOOPY_SPEECH_OUTPUT must be none, mac-say or qwen.');
+}
+
+function practiceConfig(env: NodeJS.ProcessEnv): Config['practice'] {
+  if (env.BOOPY_ZETARIS_PRACTICE_CREDENTIAL_FILE === undefined) return null;
+  const table = env.BOOPY_ZETARIS_PRACTICE_TABLE;
+  if (table !== 'practice_attempt' && table !== 'practice_check')
+    throw new Error('BOOPY_ZETARIS_PRACTICE_TABLE must be practice_attempt or practice_check.');
+  return {
+    credentialFile: required(env, 'BOOPY_ZETARIS_PRACTICE_CREDENTIAL_FILE'),
+    termsDirectory: required(env, 'BOOPY_ZETARIS_TERMS'),
+    table,
+  };
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {

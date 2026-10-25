@@ -19,7 +19,7 @@ import { connectorApp } from '../http/connector.ts';
 import { headsetApp } from '../http/headset.ts';
 import { TaskStore } from '../interaction/tasks.ts';
 import { startRequest, testBoopy } from '../testing.ts';
-import { connectTask, pendingName, replyTask, requestTask } from './task.ts';
+import { connectTask, goalTask, pendingName, replyTask, requestTask } from './task.ts';
 
 const TOKEN = 'synthetic-task-cli-token';
 
@@ -58,6 +58,7 @@ async function setup() {
       supersessions: () => test.boopy.supersessions,
     }),
     tasks,
+    goal: tasks,
   });
   await connector.listen({ host: '127.0.0.1', port: 0 });
   const port = (connector.server.address() as AddressInfo).port;
@@ -326,6 +327,30 @@ describe('pnpm task', () => {
       const link = join(ctx.directory, 'link.json');
       await symlink(target, link);
       await assert.rejects(replyTask({ ...ctx.connection, file: link }), /regular/);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe('pnpm task goal', () => {
+  it('sets the language the person practises as their own journaled goal, and turns it off', async () => {
+    const ctx = await setup();
+    try {
+      const on = await goalTask({ ...ctx.connection, language: 'ko', personLanguage: 'en' });
+      assert.match(on.message, /Korean words, around English/);
+      assert.deepEqual(
+        { language: ctx.tasks.goal()?.language, personLanguage: ctx.tasks.goal()?.personLanguage },
+        { language: 'ko', personLanguage: 'en' },
+      );
+      const set = ctx.journal.all().find((event) => event.type === 'goal.set');
+      assert.equal(set?.actor, 'person');
+      const off = await goalTask({ ...ctx.connection, language: null, personLanguage: 'en' });
+      assert.equal(off.goal, null);
+      assert.equal(ctx.tasks.goal(), null);
+      await assert.rejects(
+        goalTask({ ...ctx.connection, language: 'Korean', personLanguage: 'en' }),
+      );
     } finally {
       await ctx.close();
     }

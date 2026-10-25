@@ -249,3 +249,26 @@ describe('recorded scene configuration', () => {
     );
   });
 });
+
+describe('Zetaris practice configuration', () => {
+  const env = { BOOPY_INTERPRETER: 'fixture', BOOPY_SEGMENTER: 'none' };
+  it('is off by default, and on it names absolute paths and one of the two practice tables', () => {
+    assert.equal(loadConfig(env).practice, null);
+    const practice = {
+      BOOPY_ZETARIS_PRACTICE_CREDENTIAL_FILE: '/synthetic/practice.credentials',
+      BOOPY_ZETARIS_TERMS: '/synthetic/terms',
+      BOOPY_ZETARIS_PRACTICE_TABLE: 'practice_check',
+    };
+    assert.deepEqual(loadConfig({ ...env, ...practice }).practice, {
+      credentialFile: '/synthetic/practice.credentials',
+      termsDirectory: '/synthetic/terms',
+      table: 'practice_check',
+    });
+    for (const wrong of [
+      { BOOPY_ZETARIS_PRACTICE_TABLE: undefined },
+      { BOOPY_ZETARIS_PRACTICE_TABLE: 'wikidata_term' },
+      { BOOPY_ZETARIS_TERMS: 'relative/terms' },
+    ])
+      assert.throws(() => loadConfig({ ...env, ...practice, ...wrong }));
+  });
+});
