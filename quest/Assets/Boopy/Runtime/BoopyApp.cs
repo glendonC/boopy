@@ -456,6 +456,7 @@ namespace Boopy.Quest
                     StreamId=liveStreamId, FrameId=Guid.NewGuid().ToString(), Sequence=liveSequence++, Frame=snapshot.ToFrame()
                 };
                 var result=await client.ObserveSceneAsync(sourceRequest,request.Token);
+                if(result.LeftOut>0) Debug.Log("Boopy: live scene left out outlines that are not simple: count="+result.LeftOut+".");
                 ApplyLiveSceneResult(result,sourceRequest,snapshot,request,Time.unscaledTime);
                 nextSceneAt=Time.unscaledTime+.4f;
             }

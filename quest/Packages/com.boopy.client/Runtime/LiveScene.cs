@@ -47,6 +47,23 @@ namespace Boopy.Client
         public bool FrameRetained { get; set; }
         public float LatencyMs { get; set; }
         public List<SceneObject> Objects { get; set; } = new List<SceneObject>();
+        /// <summary>How many objects <see cref="LeaveOutUnusableOutlines"/> left out of this frame. Never on the wire.</summary>
+        [Newtonsoft.Json.JsonIgnore] public int LeftOut { get; private set; }
+
+        /// <summary>
+        /// Leaves out each object whose outline is well formed but not a simple polygon (its edges cross or touch), so one
+        /// bad outline never refuses the frame's other objects. Returns how many. Anything else malformed still fails
+        /// <see cref="Matches"/>.
+        /// </summary>
+        public int LeaveOutUnusableOutlines()
+        {
+            var removed = Objects?.RemoveAll(item => item?.Contour != null && item.Contour.Count >= 3 && item.Contour.Count <= 256
+                && item.Contour.All(point => point != null && !float.IsNaN(point.X) && !float.IsInfinity(point.X)
+                    && !float.IsNaN(point.Y) && !float.IsInfinity(point.Y))
+                && !Geometry.TryContour(item.GroundingFor(this), out _)) ?? 0;
+            LeftOut += removed;
+            return removed;
+        }
         public bool Matches(SceneObservationRequest request) => StreamId == request.StreamId && FrameId == request.FrameId
             && Sequence == request.Sequence && CapturedAt == request.Frame.CapturedAt && Verification == "proposed"
             && !FrameRetained && !string.IsNullOrWhiteSpace(EventId) && !string.IsNullOrWhiteSpace(Model)
@@ -80,6 +97,7 @@ namespace Boopy.Client
             if (!response.IsSuccessStatusCode) throw new ServiceException((int)response.StatusCode,"scene_unavailable","Scene recognition is unavailable.");
             var result = Wire.Read<SceneObservation>(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
             deadline.Token.ThrowIfCancellationRequested();
+            result.LeaveOutUnusableOutlines();
             if (!result.Matches(request)) throw new ServiceException(502,"scene_invalid","Scene update did not match this view.");
             return result;
         }

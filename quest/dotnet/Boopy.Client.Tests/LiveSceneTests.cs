@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Boopy.Client;
 using NUnit.Framework;
 
@@ -30,4 +31,21 @@ public sealed class LiveSceneTests
         result=Response(request);result.Objects[0].Confidence=float.NaN;Assert.That(result.Matches(request),Is.False);
         result=Response(request);result.Objects[0].Contour.Clear();Assert.That(result.Matches(request),Is.False);
     }
+    [Test] public void LeavesOutAnOutlineThatIsNotSimpleAndKeepsTheFrame()
+    {
+        // A bow-tie (two edges cross) and an outline whose corner touches another edge leave out only their own objects.
+        var request=Request();var result=Response(request);var kept=result.Objects[0];
+        result.Objects.Add(Shaped(kept,(.1f,.1f),(.9f,.9f),(.9f,.1f),(.1f,.9f)));
+        result.Objects.Add(Shaped(kept,(.1f,.1f),(.9f,.1f),(.9f,.9f),(.5f,.1f),(.1f,.9f)));
+        Assert.That(result.Matches(request),Is.False);
+        Assert.That(result.LeaveOutUnusableOutlines(),Is.EqualTo(2));
+        Assert.That(result.Objects,Is.EqualTo(new[] {kept}));Assert.That(result.LeftOut,Is.EqualTo(2));
+        Assert.That(result.Matches(request),Is.True);
+        // A malformed outline is no shape to leave out: the frame is still refused.
+        result=Response(request);result.Objects[0].Contour[0].X=float.NaN;
+        Assert.That(result.LeaveOutUnusableOutlines(),Is.EqualTo(0));Assert.That(result.Matches(request),Is.False);
+    }
+    private static SceneObject Shaped(SceneObject like, params (float X, float Y)[] points) => new() {
+        Label=like.Label,Confidence=like.Confidence,MaskConfidence=like.MaskConfidence,MaskSha256=like.MaskSha256,MaskPixels=like.MaskPixels,Box=like.Box,
+        Contour=points.Select(point => new Point2 {X=point.X,Y=point.Y}).ToList()};
 }
