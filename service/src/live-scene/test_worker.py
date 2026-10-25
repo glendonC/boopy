@@ -69,6 +69,24 @@ class LabelTests(unittest.TestCase):
         self.assertIsNone(best_noun(scores(tokens, {"sofa": .4, "bed": .4}), spans, .25))
 
 
+class ProposedNounTests(unittest.TestCase):
+    def test_proposed_nouns_join_the_base_list_and_name_a_box_as_a_proposal(self):
+        nouns, proposals = worker.request_nouns(["kite", "hot-air balloon", "person"])
+        self.assertEqual(nouns, NOUNS + ["kite", "hot-air balloon"])
+        self.assertEqual(proposals, {"kite", "hot-air balloon"})
+        tokens = ["[CLS]"]
+        for noun in nouns:
+            tokens += ["a", *[piece for piece in noun.replace("-", " - ").split()], "."]
+        tokens.append("[SEP]")
+        spans = noun_spans(tokens, nouns)
+        self.assertEqual(len(spans[nouns.index("hot-air balloon")]), 4)
+        name, score = best_noun(scores(tokens, {"kite": .5, "person": .3}), spans, .25, nouns)
+        self.assertEqual((name, round(score, 6)), ("kite", .5))
+        for refused in (["kite."], ["k1te"], ["x" * 40], ["a"], ["an apple"], ["Kite"], ["kite"] * 9, "kite"):
+            with self.assertRaises(ValueError):
+                worker.request_nouns(refused)
+
+
 class MaskGeometryTests(unittest.TestCase):
     def test_actual_circle_boundary_is_not_a_box(self):
         mask = np.zeros((200, 300), np.uint8)

@@ -523,6 +523,7 @@ describe('recorded scene', () => {
     assert.deepEqual(scene.capturedAt, { value: null, trust: 'unknown' });
     assert.deepEqual(Object.keys(scene).sort(), [
       'capturedAt',
+      'durationSeconds',
       'frameId',
       'frameSha256',
       'frames',

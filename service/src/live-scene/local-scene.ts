@@ -9,6 +9,8 @@ const Result = z.object({
       z.object({
         label: z.string().trim().min(1).max(100),
         confidence: Unit,
+        /** Whether the noun came from the general list or from the local interpreter's proposals. */
+        origin: z.enum(['base', 'proposed']).optional(),
         box: z
           .object({ x0: Unit, y0: Unit, x1: Unit, y1: Unit })
           .refine((b) => b.x0 < b.x1 && b.y0 < b.y1),
@@ -31,6 +33,30 @@ const Result = z.object({
   latencyMs: z.number().finite().nonnegative(),
 });
 export type LocalSceneResult = z.infer<typeof Result>;
+
+/**
+ * The nouns a local interpreter proposed for a picture, made fit for the detector: lowercase words
+ * joined by single spaces or hyphens, a leading article dropped, at most 32 characters, at most 8.
+ * Anything else (a period, a digit, a long phrase) is left out, never repaired, so the worker's
+ * prompt always splits into its nouns.
+ */
+export function proposedNouns(labels: readonly string[]): string[] {
+  const nouns: string[] = [];
+  for (const label of labels) {
+    const noun = label
+      .trim()
+      .toLowerCase()
+      .replace(/^(a|an|the) /, '');
+    if (
+      noun.length <= 32 &&
+      /^[a-z]+(?:[ -][a-z]+){0,3}$/.test(noun) &&
+      !noun.split(/[ -]/).some((word) => word === 'a' || word === 'an') &&
+      !nouns.includes(noun)
+    )
+      nouns.push(noun);
+  }
+  return nouns.slice(0, 8);
+}
 
 type Vertex = { readonly x: number; readonly y: number };
 const turn = (a: Vertex, b: Vertex, c: Vertex) =>
@@ -208,7 +234,11 @@ export class LocalScenePerceiver {
     return this.#ready;
   }
 
-  async observe(jpeg: Buffer, signal?: AbortSignal): Promise<LocalSceneResult> {
+  async observe(
+    jpeg: Buffer,
+    signal?: AbortSignal,
+    nouns: readonly string[] = [],
+  ): Promise<LocalSceneResult> {
     signal?.throwIfAborted();
     if (this.#busy) throw new Error('Local scene inference is already processing a frame.');
     if (jpeg.length < 4 || jpeg.length > 4 * 1024 * 1024 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8)
@@ -229,7 +259,10 @@ export class LocalScenePerceiver {
         () => this.#stop(new Error('Local scene inference timed out.')),
         this.#options.inferenceTimeoutMs ?? 5_000,
       );
-      this.#child?.stdin.write(`${JSON.stringify({ id, jpeg: jpeg.toString('base64') })}\n`);
+      const proposed = proposedNouns(nouns);
+      this.#child?.stdin.write(
+        `${JSON.stringify({ id, jpeg: jpeg.toString('base64'), ...(proposed.length ? { nouns: proposed } : {}) })}\n`,
+      );
       return await result;
     } finally {
       if (timer !== undefined) clearTimeout(timer);

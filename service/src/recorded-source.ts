@@ -13,8 +13,10 @@ import sharp from 'sharp';
 import { z } from 'zod';
 import { BoopyError } from './boopy.ts';
 import type { Actor } from './events.ts';
+import type { Interpreter } from './interpret/interpreter.ts';
 import type { Journal, MediaStore, Recorded } from './journal.ts';
 import { type CaptureOrigin, captureOrigin, parseCaptureClaims } from './recorded-media.ts';
+import { interpreterNouns, type OutlinedFrame, outlineFrames } from './recorded-outlines.ts';
 
 const MAX_SOURCE_BYTES = 4 * 1024 ** 3;
 const MAX_SOURCE_SECONDS = 30 * 60;
@@ -102,10 +104,35 @@ interface Envelope<Type extends string, Data> {
 }
 
 /** The operator holds the connector token, and the journal records them as the person. */
+/** One outline run over a recording's frames: every outline stays proposed and on its frame. */
+interface OutlinesMade {
+  readonly recordingId: string;
+  /** The scene worker that placed the outlines. */
+  readonly provider: string;
+  readonly model: string;
+  /** Nouns the local interpreter proposed for this recording: its proposals, not facts. */
+  readonly proposedNouns: readonly string[];
+  readonly nounModel: { readonly provider: string; readonly model: string };
+  readonly frames: readonly OutlinedFrame[];
+  readonly failed: readonly string[];
+  readonly wallMs: number;
+}
+
 export type RecordedEvent =
   | Envelope<'recorded.source.imported', Imported>
   | Envelope<'recorded.scene.shown', { readonly recordingId: string; readonly frameId: string }>
-  | Envelope<'recorded.scene.cleared', { readonly recordingId: string }>;
+  | Envelope<'recorded.scene.cleared', { readonly recordingId: string }>
+  | Envelope<'recorded.outlines.made', OutlinesMade>;
+
+/** What makes outlines for a recording: the local scene worker and the local interpreter. */
+export interface Outliner {
+  readonly scene: {
+    readonly provider: string;
+    readonly model: string;
+    observe(jpeg: Buffer, signal?: AbortSignal, nouns?: readonly string[]): Promise<unknown>;
+  };
+  readonly interpreter: Interpreter;
+}
 
 export interface RecordingSummary {
   readonly recordingId: string;
@@ -116,6 +143,8 @@ export interface RecordingSummary {
   readonly durationSeconds: number | null;
   readonly captureTime: CaptureOrigin['status'];
   readonly reused: boolean;
+  /** Frames with outlines from the latest run, null before any; running while one is under way. */
+  readonly outlines: { readonly running: boolean; readonly frames: number | null };
 }
 
 export interface SceneView {
@@ -125,6 +154,8 @@ export interface SceneView {
   readonly width: number;
   readonly height: number;
   readonly sourceTimeSeconds: number | null;
+  /** The clip's length; null for a photo. */
+  readonly durationSeconds: number | null;
   readonly capturedAt: { readonly value: string | null; readonly trust: 'unknown' | 'unverified' };
   readonly frameSha256: string;
   readonly frames: readonly { frameId: string; seconds: number | null; frameSha256: string }[];
@@ -334,6 +365,9 @@ export class RecordedScenes {
   readonly #recordings = new Map<string, Imported>();
   #shown: { recordingId: string; frameId: string } | null = null;
   #busy = false;
+  readonly #outlines = new Map<string, OutlinesMade>();
+  readonly #outlining = new Set<string>();
+  readonly #outliner: Outliner | undefined;
 
   constructor(options: {
     readonly journal: Journal;
@@ -343,12 +377,15 @@ export class RecordedScenes {
     /** The built still helper (service/tools/recorded). */
     readonly helper: string;
     readonly now?: () => Date;
+    /** Off when the local scene worker is not running; the recordings still work without it. */
+    readonly outliner?: Outliner;
   }) {
     this.#journal = options.journal;
     this.#media = options.media;
     this.#directory = options.directory;
     this.#helper = helperAt(options.helper);
     this.#now = options.now ?? (() => new Date());
+    this.#outliner = options.outliner;
     mkdirSync(this.#directory, { recursive: true, mode: 0o700 });
     for (const event of options.journal.withTypePrefix('recorded.')) this.#apply(event);
   }
@@ -358,6 +395,8 @@ export class RecordedScenes {
       this.#recordings.set(event.data.recordingId, event.data);
     else if (event.type === 'recorded.scene.shown') this.#shown = { ...event.data };
     else if (event.type === 'recorded.scene.cleared') this.#shown = null;
+    else if (event.type === 'recorded.outlines.made')
+      this.#outlines.set(event.data.recordingId, event.data);
   }
 
   #record(event: RecordedEvent): void {
@@ -413,7 +452,7 @@ export class RecordedScenes {
         recording.sourceSha256 === request.sha256 &&
         JSON.stringify(recording.sampling) === JSON.stringify(sampling),
     );
-    if (known) return summary(known, true);
+    if (known) return this.#summary(known, true);
     if (this.#busy) refuse(409, 'recorded_busy', 'Another import is still running.');
     this.#busy = true;
     let work: string | null = null;
@@ -504,7 +543,7 @@ export class RecordedScenes {
         actor: 'person',
         data: imported,
       });
-      return summary(imported, false);
+      return this.#summary(imported, false);
     } finally {
       this.#busy = false;
       if (work !== null) await rm(work, { recursive: true, force: true });
@@ -512,7 +551,109 @@ export class RecordedScenes {
   }
 
   recordings(): RecordingSummary[] {
-    return [...this.#recordings.values()].map((recording) => summary(recording, false));
+    return [...this.#recordings.values()].map((recording) => this.#summary(recording, false));
+  }
+
+  #summary(recording: Imported, reused: boolean): RecordingSummary {
+    return {
+      ...summary(recording, reused),
+      outlines: {
+        running: this.#outlining.has(recording.recordingId),
+        frames: this.#outlines.get(recording.recordingId)?.frames.length ?? null,
+      },
+    };
+  }
+
+  /**
+   * Starts an outline run over a recording's frames and returns at once; the run is journaled
+   * when it ends. The interpreter proposes nouns once, from the recording's middle frame.
+   */
+  startOutlines(input: unknown): RecordingSummary {
+    const parsed = z.strictObject({ recordingId: RecordingId }).safeParse(input);
+    if (!parsed.success) return invalid('Name a recording.');
+    const outliner = this.#outliner;
+    if (outliner === undefined)
+      return refuse(503, 'recorded_outlines_unavailable', 'The local scene worker is not running.');
+    const recording = this.#recordings.get(parsed.data.recordingId);
+    if (recording === undefined)
+      return refuse(404, 'recorded_unknown', 'No recording has that id.');
+    if (this.#outlining.size > 0) refuse(409, 'recorded_busy', 'An outline run is still going.');
+    this.#outlining.add(recording.recordingId);
+    void this.#outline(recording, outliner).finally(() =>
+      this.#outlining.delete(recording.recordingId),
+    );
+    return this.#summary(recording, false);
+  }
+
+  async #outline(recording: Imported, outliner: Outliner): Promise<void> {
+    try {
+      const frames = recording.frames.map((frame) => ({
+        frameId: frame.frameId,
+        jpeg: this.#media.get(frame.frameSha256, 'jpg'),
+      }));
+      const middle = frames[Math.floor(frames.length / 2)] as { jpeg: Buffer };
+      const nouns = await interpreterNouns(outliner.interpreter, middle.jpeg);
+      const run = await outlineFrames(
+        frames,
+        (jpeg, signal, proposed) => outliner.scene.observe(jpeg, signal, proposed),
+        nouns,
+      );
+      this.#record({
+        type: 'recorded.outlines.made',
+        session: recording.recordingId,
+        actor: `model:${outliner.scene.model}`,
+        data: {
+          recordingId: recording.recordingId,
+          provider: outliner.scene.provider,
+          model: outliner.scene.model,
+          proposedNouns: run.nouns,
+          nounModel: { provider: outliner.interpreter.provider, model: outliner.interpreter.model },
+          frames: run.outlined,
+          failed: run.failed,
+          wallMs: Math.round(run.wallMs),
+        },
+      });
+    } catch {
+      // A run that cannot finish journals nothing; the recording keeps its earlier outlines.
+    }
+  }
+
+  /**
+   * The shown clip's outlines, each on its own frame and in frame order, all proposed. Only
+   * outlines whose noun the local interpreter proposed for this recording are served, so the
+   * general list never names a desert "window"; a photo has none (its boop draws its own).
+   */
+  outlines(): {
+    samples: (OutlinedFrame & {
+      seconds: number | null;
+      provider: string;
+      model: string;
+      verification: 'proposed';
+    })[];
+  } {
+    const recording =
+      this.#shown === null ? undefined : this.#recordings.get(this.#shown.recordingId);
+    const run = recording === undefined ? undefined : this.#outlines.get(recording.recordingId);
+    if (recording === undefined || run === undefined || recording.kind !== 'video')
+      return { samples: [] };
+    const byFrame = new Map(run.frames.map((frame) => [frame.frameId, frame]));
+    return {
+      samples: recording.frames.flatMap((frame) => {
+        const outlined = byFrame.get(frame.frameId);
+        return outlined === undefined
+          ? []
+          : [
+              {
+                ...outlined,
+                objects: outlined.objects.filter((object) => object.origin === 'proposed'),
+                seconds: frame.seconds,
+                provider: run.provider,
+                model: run.model,
+                verification: 'proposed' as const,
+              },
+            ];
+      }),
+    };
   }
 
   show(input: unknown): SceneView {
@@ -570,6 +711,7 @@ export class RecordedScenes {
       width: frame.width,
       height: frame.height,
       sourceTimeSeconds: frame.seconds,
+      durationSeconds: recording.durationSeconds,
       capturedAt: { value: capturedAt, trust: capturedAt === null ? 'unknown' : 'unverified' },
       frameSha256: frame.frameSha256,
       frames: recording.frames.map(({ frameId, seconds, frameSha256 }) => ({
@@ -625,7 +767,7 @@ function frameTime(recording: Imported, frame: RecordedFrame): string | null {
   return new Date(Date.parse(origin) + Math.round((frame.seconds ?? 0) * 1000)).toISOString();
 }
 
-function summary(recording: Imported, reused: boolean): RecordingSummary {
+function summary(recording: Imported, reused: boolean): Omit<RecordingSummary, 'outlines'> {
   return {
     recordingId: recording.recordingId,
     kind: recording.kind,

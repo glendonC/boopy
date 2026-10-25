@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { LocalScenePerceiver, simpleOutline } from './local-scene.ts';
+import { LocalScenePerceiver, proposedNouns, simpleOutline } from './local-scene.ts';
 
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const object = {
@@ -196,4 +196,24 @@ test('missing runtime and invalid media fail without leaking frame bytes', async
     await provider.close();
   }
   await assert.rejects(provider.ready(), /closed/);
+});
+
+test('passes only plain nouns from the interpreter, at most eight', () => {
+  assert.deepEqual(
+    proposedNouns([
+      'A Kite',
+      'the hot-air balloon',
+      'kite',
+      'kite.',
+      'k1te',
+      'x'.repeat(40),
+      'an',
+      'one two three four five',
+    ]),
+    ['kite', 'hot-air balloon'],
+  );
+  assert.equal(
+    proposedNouns(Array.from({ length: 12 }, (_, i) => `thing ${'x'.repeat(i + 1)}`)).length,
+    8,
+  );
 });

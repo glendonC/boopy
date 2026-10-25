@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 import time
 import warnings
@@ -23,14 +24,47 @@ from transformers.utils import logging
 
 logging.set_verbosity_error()
 warnings.filterwarnings("ignore", category=FutureWarning)
-VOCABULARY = "a person. a chair. a table. a sofa. a door. a window. a monitor. a laptop. a phone. a book. a bottle. a cup. a plant. a lamp. a picture. a bag. a shelf. a cabinet. a bed. a sign. a circle. a rectangle."
-NOUNS = [phrase.strip().removeprefix("a ").removeprefix("an ") for phrase in VOCABULARY.split(".") if phrase.strip()]
+# One general base list for live and recorded frames alike: common indoor things, then common
+# outdoor people, animals, vehicles and features. It is never chosen for one picture or recording.
+# Shape words are not in it: a probe that draws shapes asks for them as its own nouns.
+NOUNS = ["person", "chair", "table", "sofa", "door", "window", "monitor", "laptop", "phone", "book",
+         "bottle", "cup", "plant", "lamp", "picture", "bag", "shelf", "cabinet", "bed", "sign",
+         "animal", "bird", "dog", "horse", "vehicle", "car", "truck", "motorcycle", "bicycle",
+         "boat", "tree", "building", "rock"]
+# Per request, up to this many nouns the local interpreter proposed for that picture join the list.
+# They are the interpreter's proposals placed by the detector, never a second opinion.
+MAX_PROPOSED = 8
+PROPOSED = r"^[a-z]+(?:[ -][a-z]+){0,3}$"
+
+
+def vocabulary(nouns):
+    """The detector prompt for these nouns: "a person. a chair. ..."."""
+    return " ".join(f"a {noun}." for noun in nouns)
+
+
+def request_nouns(proposed):
+    """The base list plus the request's proposed nouns, and which of them are proposals.
+
+    A proposed noun is lowercase words joined by single spaces or hyphens, never "a" or "an" on
+    its own, at most 32 characters; anything else refuses the request rather than being cleaned.
+    """
+    if not isinstance(proposed, list) or len(proposed) > MAX_PROPOSED:
+        raise ValueError()
+    extra = []
+    for noun in proposed:
+        if not isinstance(noun, str) or len(noun) > 32 or not re.fullmatch(PROPOSED, noun):
+            raise ValueError()
+        if any(word in ("a", "an") for word in re.split(r"[ -]", noun)):
+            raise ValueError()
+        if noun not in NOUNS and noun not in extra:
+            extra.append(noun)
+    return NOUNS + extra, set(extra)
 DETECTION_THRESHOLD = .30
 TEXT_THRESHOLD = .25
 MAX_INPUT = 6 * 1024 * 1024
 
 
-def noun_spans(tokens):
+def noun_spans(tokens, nouns=NOUNS):
     """Token positions of each vocabulary noun in the tokenized prompt, in vocabulary order.
 
     Special tokens, articles and periods belong to no noun. None when the prompt does not split
@@ -48,15 +82,16 @@ def noun_spans(tokens):
         current.append(position)
     if current:
         spans.append(current)
-    if len(spans) != len(NOUNS):
+    if len(spans) != len(nouns):
         return None
-    for noun, span in zip(NOUNS, spans):
-        if "".join(tokens[position].removeprefix("##") for position in span) != noun:
+    for noun, span in zip(nouns, spans):
+        # A noun of several words comes back as its word pieces with no spaces between them.
+        if "".join(tokens[position].removeprefix("##") for position in span) != noun.replace(" ", ""):
             return None
     return spans
 
 
-def best_noun(token_scores, spans, threshold):
+def best_noun(token_scores, spans, threshold, nouns=NOUNS):
     """The one vocabulary noun the detector scores highest for a box, with that noun's own score.
 
     None when that score is under the threshold or another noun has exactly the same score: an
@@ -66,7 +101,7 @@ def best_noun(token_scores, spans, threshold):
     best = max(scores)
     if best < threshold or scores.count(best) > 1:
         return None
-    return NOUNS[scores.index(best)], best
+    return nouns[scores.index(best)], best
 
 
 def turn(a, b, c):
@@ -188,12 +223,13 @@ class Perceiver:
         self.segmenter = Sam2Model.from_pretrained(segmenter_path, local_files_only=True).to(self.device).eval()
         self.segmenter_processor = Sam2Processor.from_pretrained(segmenter_path, local_files_only=True)
 
-    def observe(self, image):
+    def observe(self, image, proposed=()):
         started = time.perf_counter()
+        nouns, proposals = request_nouns(list(proposed))
         # Restrict inference resolution and memory independently of input JPEG dimensions.
         image.thumbnail((640, 480), Image.Resampling.LANCZOS)
         w, h = image.size
-        inputs = self.detector_processor(images=image, text=VOCABULARY, return_tensors="pt", size={"shortest_edge": min(h, w, 480), "longest_edge": 640}).to(self.device)
+        inputs = self.detector_processor(images=image, text=vocabulary(nouns), return_tensors="pt", size={"shortest_edge": min(h, w, 480), "longest_edge": 640}).to(self.device)
         with torch.inference_mode():
             detected = self.detector(**inputs)
         results = self.detector_processor.post_process_grounded_object_detection(detected, inputs.input_ids, threshold=DETECTION_THRESHOLD, text_threshold=TEXT_THRESHOLD, target_sizes=[(h, w)])[0]
@@ -203,7 +239,7 @@ class Perceiver:
         kept = (best > DETECTION_THRESHOLD).nonzero(as_tuple=True)[0]
         if len(kept) != len(results["scores"]) or not torch.allclose(best[kept], results["scores"].detach().cpu()):
             raise ValueError("Kept boxes do not match the detector's scores.")
-        spans = noun_spans(self.detector_processor.tokenizer.convert_ids_to_tokens(inputs.input_ids[0].tolist()))
+        spans = noun_spans(self.detector_processor.tokenizer.convert_ids_to_tokens(inputs.input_ids[0].tolist()), nouns)
         if spans is None:
             raise ValueError("The prompt does not split into the vocabulary.")
         choices = []
@@ -212,7 +248,7 @@ class Perceiver:
             box = [max(0, min(w, box[0])), max(0, min(h, box[1])), max(0, min(w, box[2])), max(0, min(h, box[3]))]
             if box[2] - box[0] < 8 or box[3] - box[1] < 8 or (box[2]-box[0])*(box[3]-box[1]) / (w*h) > .80:
                 continue
-            named = best_noun(token_scores[kept[index]], spans, TEXT_THRESHOLD)
+            named = best_noun(token_scores[kept[index]], spans, TEXT_THRESHOLD, nouns)
             if named is None:
                 continue  # The headset needs a name for every outline, so an unnamed box is left out.
             if any(overlap(box, choice[0]) > .65 for choice in choices):
@@ -244,6 +280,7 @@ class Perceiver:
                     continue
                 accepted_masks.append(binary)
                 objects.append({"label": label, "confidence": confidence,
+                                "origin": "proposed" if label in proposals else "base",
                                 "maskConfidence": float(scores[index]), **geometry})
         return {"objects": objects, "leftOut": left_out, "latencyMs": (time.perf_counter() - started) * 1000}
 
@@ -289,7 +326,7 @@ def main():
                 if source.width * source.height > 20_000_000 or source.width < 8 or source.height < 8:
                     raise ValueError()
                 image = source.convert("RGB")
-            emit({"type": "result", "id": identity, **perceiver.observe(image)})
+            emit({"type": "result", "id": identity, **perceiver.observe(image, request.get("nouns", []))})
         except Exception:
             emit({"type": "error", "id": identity})
     return 0

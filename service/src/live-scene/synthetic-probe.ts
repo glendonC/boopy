@@ -25,7 +25,8 @@ try {
       .jpeg()
       .toBuffer();
     const began = performance.now();
-    const result = await provider.observe(jpeg);
+    // The drawn shapes are this probe's own nouns, not part of the worker's general list.
+    const result = await provider.observe(jpeg, undefined, ['circle', 'rectangle']);
     console.log(
       JSON.stringify({
         phase: 'synthetic-observation',
