@@ -80,6 +80,7 @@ the file's start time plus the frame's place in the file.
     "width": 960,
     "height": 1280,
     "sourceTimeSeconds": 4.2,
+    "durationSeconds": 12.2,
     "capturedAt": { "value": null, "trust": "unknown" },
     "frameSha256": "...",
     "frames": [{ "frameId": "rfr_...", "seconds": 0, "frameSha256": "..." }]
@@ -114,3 +115,40 @@ A service that shows recordings takes recorded frames only: a room frame there i
 `recorded_only`, so its journal never mixes the room with a recording. A service without recordings
 refuses a recorded frame with 404 `recorded_unavailable`. Session views and saved context show
 `capturedAt` as null when it is unknown, and mark the observation `recorded`.
+
+## Outlines over a recording
+
+`pnpm replay outline --data-dir DIR --recording ID` starts one outline run and returns at once;
+`pnpm replay list` shows it running, then how many frames have outlines. The run needs the local scene
+worker (`BOOPY_LIVE_SCENE=local`).
+
+The local interpreter looks once at the recording's middle frame and proposes up to eight nouns for
+it. The scene worker then runs on every kept frame, one at a time, with its general list of common
+indoor and outdoor things plus those proposed nouns. Each outline says whether its noun came from
+the general list (`base`) or from the interpreter (`proposed`). A noun the interpreter proposed and
+the detector placed is still the interpreter's proposal: the two are never counted as agreeing.
+
+The run is journaled once, as `recorded.outlines.made`: the worker and interpreter, the proposed
+nouns, each frame's outlines with its frame id and time taken, the frames that failed, and the wall
+time. A frame whose run failed has no outlines, and no outline moves to another frame.
+
+`GET /v1/recorded-scene/outlines` answers the shown recording's outlines in frame order:
+
+```json
+{
+  "samples": [
+    {
+      "frameId": "rfr_...",
+      "seconds": 4.2,
+      "provider": "local",
+      "model": "...",
+      "latencyMs": 640,
+      "leftOut": 0,
+      "verification": "proposed",
+      "objects": [{ "label": "...", "confidence": 0.41, "origin": "proposed", "box": {}, "contour": [] }]
+    }
+  ]
+}
+```
+
+The headset draws a frame's outlines only on that frame, never on the next one.

@@ -67,7 +67,40 @@ class CapturingInterpreter implements Interpreter {
   }
 }
 
-async function setup() {
+/** A stand-in scene worker that names each still by the start of its own SHA-256. */
+const namingScene = {
+  provider: 'synthetic',
+  model: 'still-namer',
+  observe: async (jpeg: Buffer) => ({
+    objects: [
+      {
+        label: createHash('sha256').update(jpeg).digest('hex').slice(0, 12),
+        confidence: 0.5,
+        origin: 'proposed',
+        box: { x0: 0.1, y0: 0.1, x1: 0.4, y1: 0.4 },
+        contour: [
+          { x: 0.1, y: 0.1 },
+          { x: 0.4, y: 0.1 },
+          { x: 0.2, y: 0.4 },
+        ],
+      },
+      {
+        label: 'window',
+        confidence: 0.5,
+        origin: 'base',
+        box: { x0: 0.5, y0: 0.5, x1: 0.8, y1: 0.8 },
+        contour: [
+          { x: 0.5, y: 0.5 },
+          { x: 0.8, y: 0.5 },
+          { x: 0.6, y: 0.8 },
+        ],
+      },
+    ],
+    latencyMs: 1,
+  }),
+};
+
+async function setup(outline = false) {
   const data = await mkdtemp(join(directory, 'data-'));
   await writeFile(join(data, 'connector-token'), TOKEN, { mode: 0o600 });
   const interpreter = new CapturingInterpreter();
@@ -77,6 +110,7 @@ async function setup() {
     media: test.deps.media,
     directory: join(data, 'recorded'),
     helper,
+    ...(outline ? { outliner: { scene: namingScene, interpreter } } : {}),
   });
   const boopy = new Boopy({ ...test.deps, recorded: scenes });
   const preparation = new HandoffPreparation({
@@ -200,6 +234,7 @@ describe('recorded scene routes', () => {
       'frames',
       'height',
       'kind',
+      'outlines',
       'recordingId',
       'reused',
       'width',
@@ -295,6 +330,45 @@ describe('recorded scene routes', () => {
     });
     assert.equal(missingFile.statusCode, 404);
     assert.equal(missingFile.json().error.code, 'recorded_source_missing');
+  });
+});
+
+describe('outlines for a recording', () => {
+  it('come back on the very frames they were made from', async (context) => {
+    if (missing) return context.skip(missing);
+    const { headset, local, sha256, scenes, interpreter } = await setup(true);
+    const imported = await local('POST', '/v1/local-recorded/imports', {
+      sha256,
+      extension: 'mov',
+      sampling: { mode: 'stills', count: 4 },
+    });
+    const recordingId = imported.json().recordingId;
+    await local('POST', '/v1/local-recorded/scene', { recordingId });
+    const started = await local('POST', '/v1/local-recorded/outlines', { recordingId });
+    assert.equal(started.statusCode, 202, started.body);
+    while (scenes.recordings()[0]?.outlines.running)
+      await new Promise((done) => setTimeout(done, 10));
+    assert.equal(interpreter.inputs.length, 1, 'nouns are proposed once per recording');
+    const scene = scenes.scene();
+    const answer = await headset.inject({
+      method: 'GET',
+      url: '/v1/recorded-scene/outlines',
+      headers: HOST,
+    });
+    const samples = answer.json().samples;
+    assert.deepEqual(
+      samples.map((sample: { frameId: string; objects: { label: string }[] }) => [
+        sample.frameId,
+        sample.objects[0]?.label,
+      ]),
+      scene?.frames.map((frame) => [frame.frameId, frame.frameSha256.slice(0, 12)]),
+    );
+    assert.ok(
+      samples.every((sample: { verification: string }) => sample.verification === 'proposed'),
+    );
+    // Only nouns the interpreter proposed for this recording are served; the general list's are not.
+    assert.ok(samples.every((sample: { objects: unknown[] }) => sample.objects.length === 1));
+    assert.deepEqual(scenes.recordings()[0]?.outlines, { running: false, frames: 4 });
   });
 });
 

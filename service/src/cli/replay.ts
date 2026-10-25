@@ -6,6 +6,7 @@
  *   list    --data-dir DIR
  *   show    --data-dir DIR --recording ID [--frame ID | --at S]
  *   clear   --data-dir DIR
+ *   outline --data-dir DIR --recording ID     outlines for every kept frame, journaled when done
  *
  * Import copies the chosen file into DIR/recorded under its SHA-256 (private, never moving or
  * changing the original), then asks the running service through the authenticated local connector.
@@ -47,7 +48,12 @@ const Recording = z.object({
   frames: z.number().int(),
   captureTime: z.enum(['unknown', 'conflict', 'unverified']),
   reused: z.boolean(),
+  outlines: z.object({ running: z.boolean(), frames: z.number().int().nullable() }).optional(),
 });
+const outlined = (entry: z.infer<typeof Recording>) =>
+  entry.outlines === undefined
+    ? ''
+    : `; outlines=${entry.outlines.running ? 'running' : (entry.outlines.frames ?? 'none')}`;
 const Scene = z.object({
   scene: z
     .object({
@@ -177,7 +183,7 @@ function operator(command: string, rest: string[]): ((call: Call) => Promise<str
         .parse(await call(connection, '/v1/local-recorded/recordings', undefined, 'GET'))
         .recordings.map(
           (entry) =>
-            `recorded: ${entry.recordingId}; kind=${entry.kind}; frames=${entry.frames}; capture-time=${entry.captureTime}`,
+            `recorded: ${entry.recordingId}; kind=${entry.kind}; frames=${entry.frames}; capture-time=${entry.captureTime}${outlined(entry)}`,
         );
   }
   if (command === 'show') {
@@ -202,6 +208,23 @@ function operator(command: string, rest: string[]): ((call: Call) => Promise<str
       if (scene === null) throw new Refusal('No recording is shown.');
       return [
         `recorded: showing; recording=${scene.recordingId}; frame=${scene.frameId}; frames=${scene.frames.length}`,
+      ];
+    };
+  }
+  if (command === 'outline') {
+    const { recording } = values;
+    if (
+      !allowed(['data-dir', 'port', 'recording']) ||
+      recording === undefined ||
+      !/^rec_[a-f0-9]{32}$/.test(recording)
+    )
+      return null;
+    return async (call) => {
+      const answer = Recording.parse(
+        await call(connection, '/v1/local-recorded/outlines', { recordingId: recording }),
+      );
+      return [
+        `recorded: outlining; recording=${answer.recordingId}; frames=${answer.frames}; see pnpm replay list`,
       ];
     };
   }

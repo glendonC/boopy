@@ -72,6 +72,7 @@ const recorded = config.recordedScene
       media,
       directory: join(config.dataDir, 'recorded'),
       helper: config.recordedScene.helper,
+      ...(sceneProvider ? { outliner: { scene: sceneProvider, interpreter } } : {}),
     })
   : null;
 const boopy = new Boopy({

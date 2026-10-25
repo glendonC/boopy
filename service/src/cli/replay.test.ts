@@ -235,6 +235,18 @@ describe('the operator recording commands', () => {
       `recorded: showing; recording=${summary.recordingId}; frame=rfr_${'2'.repeat(32)}; frames=3`,
     ]);
     assert.equal(shown.lines.join().includes('2001'), false);
+    const outlining = recorder({ ...summary, outlines: { running: true, frames: null } });
+    assert.equal(
+      await runReplayCli(
+        ['outline', '--data-dir', data, '--recording', summary.recordingId],
+        outlining.dependencies,
+      ),
+      0,
+    );
+    assert.deepEqual(outlining.calls[0]?.body, { recordingId: summary.recordingId });
+    assert.deepEqual(outlining.lines, [
+      `recorded: outlining; recording=${summary.recordingId}; frames=3; see pnpm replay list`,
+    ]);
     const cleared = recorder({ scene: null });
     assert.equal(await runReplayCli(['clear', '--data-dir', data], cleared.dependencies), 0);
     assert.deepEqual(cleared.calls, [

@@ -187,12 +187,7 @@ export class Projection {
     // Live geometry has its own journal and never creates conversation facts.
     if (event.type === 'scene.observed') return;
     // Recordings and the scene on show are their own projection (recorded-source.ts).
-    if (
-      event.type === 'recorded.source.imported' ||
-      event.type === 'recorded.scene.shown' ||
-      event.type === 'recorded.scene.cleared'
-    )
-      return;
+    if (event.type.startsWith('recorded.')) return;
     // Task revisions are a separate projection. They must not create conversation facts.
     if (
       event.type === 'task.opened' ||

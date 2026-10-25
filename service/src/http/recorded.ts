@@ -17,6 +17,7 @@ export function registerRecordedSceneRoutes(app: FastifyInstance, scenes: Record
     },
   };
   app.get('/v1/recorded-scene', options, async () => ({ scene: scenes.scene() }));
+  app.get('/v1/recorded-scene/outlines', options, async () => scenes.outlines());
   app.get('/v1/recorded-scene/frames/:frameId', options, async (request, reply) =>
     reply.type('image/jpeg').send(scenes.frame((request.params as { frameId: string }).frameId)),
   );
@@ -48,6 +49,9 @@ export function registerLocalRecordedRoutes(
   app.post('/v1/local-recorded/scene', options, async (request) => ({
     scene: scenes.show(request.body),
   }));
+  app.post('/v1/local-recorded/outlines', options, async (request, reply) =>
+    reply.code(202).send(scenes.startOutlines(request.body)),
+  );
   app.post('/v1/local-recorded/scene/clear', options, async () => {
     scenes.clear();
     return { scene: null };
