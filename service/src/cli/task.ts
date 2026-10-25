@@ -6,7 +6,7 @@
  * nothing printed carries the token, the nonce or a file's contents.
  */
 import { randomBytes } from 'node:crypto';
-import { lstat, unlink } from 'node:fs/promises';
+import { lstat, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -91,19 +91,10 @@ export async function requestTask(
     ? Pending.parse(JSON.parse(await readInput(pendingPath)))
     : { eventId: id('evt'), requestId: id('trq'), nonce: randomBytes(16).toString('hex') };
   const fileName = `boopy-request-${ids.requestId}.json`;
-  if (await lstat(join(folder, fileName)).catch(() => null)) {
-    if (!kept)
-      throw new Error(
-        `${fileName} is already in that folder; existing files are never overwritten.`,
-      );
-    // An earlier run wrote the file and stopped before it removed its ids.
-    await unlink(pendingPath).catch(() => {});
-    return {
-      requestId: ids.requestId,
-      fileName,
-      message: `${fileName} is already in that folder from an earlier run, so nothing more was asked.`,
-    };
-  }
+  const finalPath = join(folder, fileName);
+  const existing = await lstat(finalPath).catch(() => null);
+  if (existing && !kept)
+    throw new Error(`${fileName} is already in that folder; existing files are never overwritten.`);
   if (!kept)
     await writeNew(folder, pendingFile, `${JSON.stringify(ids)}\n`, 'Nothing was requested.');
   let answer: z.infer<typeof Requested>;
@@ -132,12 +123,30 @@ export async function requestTask(
     sha256(answer.file) !== answer.fileSha256
   )
     throw new Error('The service returned an unexpected file. Nothing was written.');
-  await writeNew(
-    folder,
-    fileName,
-    answer.file,
-    `Run the same command again to write it; the request ${ids.requestId} is recorded on the Mac.`,
-  );
+  const again = `Run the same command again to write it; the request ${ids.requestId} is recorded on the Mac.`;
+  if (existing) {
+    // An earlier run reached the file. It counts only if it is the whole file the Mac gives back;
+    // anything else, a file cut short or a link, is replaced by a new private file renamed over
+    // that name, so no reader sees half a file and no link is followed.
+    const whole = await readInput(finalPath)
+      .then((text) => sha256(text) === answer.fileSha256)
+      .catch(() => false);
+    if (!whole) {
+      const partial = `.${fileName}.${randomBytes(8).toString('hex')}.partial`;
+      await writeNew(folder, partial, answer.file, again);
+      await rename(join(folder, partial), finalPath);
+    }
+    await unlink(pendingPath).catch(() => {});
+    return {
+      requestId: ids.requestId,
+      fileName,
+      fileSha256: answer.fileSha256,
+      message: whole
+        ? `${fileName} is already in that folder from an earlier run, whole, so nothing was rewritten.`
+        : `Rewrote ${fileName}: an earlier run left it cut short. Boopy did not send it.`,
+    };
+  }
+  await writeNew(folder, fileName, answer.file, again);
   await unlink(pendingPath).catch(() => {});
   return {
     requestId: ids.requestId,

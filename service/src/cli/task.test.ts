@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -255,23 +265,51 @@ describe('pnpm task', () => {
     }
   });
 
-  it('says the request file is already there when an earlier run wrote it', async () => {
+  it('says the request file is already there only when it is whole, and rewrites one cut short', async () => {
     const ctx = await setup();
     try {
       const { connectionId } = await connectTask({ ...ctx.connection, label: 'Study' });
       const ids = { eventId: 'evt_done', requestId: 'trq_done', nonce: 'd'.repeat(32) };
+      const pending = join(ctx.output, pendingName('tsk_cli', connectionId));
+      const final = join(ctx.output, 'boopy-request-trq_done.json');
+      const { file } = await recordEarlier(ctx.port, { ...ids, taskId: 'tsk_cli', connectionId });
+      const run = () =>
+        requestTask({ ...ctx.connection, taskId: 'tsk_cli', connectionId, outDir: ctx.output });
+      await writeFile(pending, JSON.stringify(ids), { mode: 0o600 });
+      await writeFile(final, file, { mode: 0o600 });
+      assert.match((await run()).message, /already/);
+      assert.deepEqual(await readdir(ctx.output), ['boopy-request-trq_done.json']);
+      await writeFile(pending, JSON.stringify(ids), { mode: 0o600 });
+      await writeFile(final, file.slice(0, 40), { mode: 0o600 });
+      assert.match((await run()).message, /cut short/);
+      assert.equal(await readFile(final, 'utf8'), file);
+      assert.equal((await stat(final)).mode & 0o777, 0o600);
+      assert.deepEqual(await readdir(ctx.output), ['boopy-request-trq_done.json']);
+      assert.equal(
+        ctx.journal.all().filter((event) => event.type === 'task.request-prepared').length,
+        1,
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('replaces a link left at the request file name without following it', async () => {
+    const ctx = await setup();
+    try {
+      const { connectionId } = await connectTask({ ...ctx.connection, label: 'Study' });
+      const ids = { eventId: 'evt_link', requestId: 'trq_link', nonce: 'e'.repeat(32) };
+      await recordEarlier(ctx.port, { ...ids, taskId: 'tsk_cli', connectionId });
       await writeFile(join(ctx.output, pendingName('tsk_cli', connectionId)), JSON.stringify(ids), {
         mode: 0o600,
       });
-      await writeFile(join(ctx.output, 'boopy-request-trq_done.json'), '{}\n', { mode: 0o600 });
-      const done = await requestTask({
-        ...ctx.connection,
-        taskId: 'tsk_cli',
-        connectionId,
-        outDir: ctx.output,
-      });
-      assert.match(done.message, /already/);
-      assert.deepEqual(await readdir(ctx.output), ['boopy-request-trq_done.json']);
+      const outside = join(ctx.directory, 'outside.json');
+      await writeFile(outside, 'untouched');
+      await symlink(outside, join(ctx.output, 'boopy-request-trq_link.json'));
+      await requestTask({ ...ctx.connection, taskId: 'tsk_cli', connectionId, outDir: ctx.output });
+      assert.equal(await readFile(outside, 'utf8'), 'untouched');
+      const info = await lstat(join(ctx.output, 'boopy-request-trq_link.json'));
+      assert.equal(info.isFile(), true);
     } finally {
       await ctx.close();
     }
