@@ -59,6 +59,11 @@ export interface Config {
   readonly neuralVoice: { python: string; modelDirectory: string } | null;
   readonly liveScene: { python: string; detectorModel: string; segmenterModel: string } | null;
   readonly referenceCredentialFile?: string;
+  /**
+   * Recorded footage for the headset to show and boop, off unless BOOPY_RECORDED_SCENE=1. It needs
+   * its own data folder and keeps every frame on this Mac.
+   */
+  readonly recordedScene: { readonly helper: string } | null;
 }
 
 const serviceRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -100,7 +105,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         : required(env, 'BOOPY_ZETARIS_REFERENCE_CREDENTIAL_FILE'),
     logger: env.BOOPY_LOG !== '0',
     connectionReplies: env.BOOPY_CONNECTION_REPLIES === '1',
+    recordedScene: recordedSceneConfig(env),
   };
+}
+
+function recordedSceneConfig(env: NodeJS.ProcessEnv): Config['recordedScene'] {
+  const value = env.BOOPY_RECORDED_SCENE;
+  if (value === undefined || value === '0') return null;
+  if (value !== '1') throw new Error('BOOPY_RECORDED_SCENE must be 1 or 0.');
+  if (env.BOOPY_DATA_DIR === undefined)
+    throw new Error('BOOPY_RECORDED_SCENE=1 needs its own BOOPY_DATA_DIR, never the default one.');
+  if (env.BOOPY_INTERPRETER === 'muse-spark' || env.BOOPY_SEGMENTER === 'sam')
+    throw new Error(
+      'Recorded footage stays on this Mac: use the local interpreter and no hosted segmentation.',
+    );
+  const helper =
+    env.BOOPY_RECORDED_BIN === undefined
+      ? existing(join(serviceRoot, '.build', 'boopy-recorded'))
+      : required(env, 'BOOPY_RECORDED_BIN');
+  if (helper === null)
+    throw new Error('Build the recorded still helper first: pnpm recorded:build.');
+  return { helper };
 }
 
 function activityAssistantConfig(env: NodeJS.ProcessEnv): Config['activityAssistant'] {

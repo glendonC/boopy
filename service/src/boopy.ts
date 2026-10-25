@@ -43,6 +43,7 @@ import { choiceForResponse, normalize } from './interpret/output.ts';
 import type { Journal, MediaStore, Recorded } from './journal.ts';
 import { nearest, type TextReader } from './ocr.ts';
 import { buildPackage, verificationOf } from './package.ts';
+import type { RecordedScenes, ResolvedFrame } from './recorded-source.ts';
 import {
   MAX_SEGMENT_ITEMS,
   type Segmenter,
@@ -81,6 +82,8 @@ export interface BoopyDeps {
   readonly text: TextReader | null;
   readonly segmenter?: Segmenter | null;
   readonly speechOutput?: SpeechOutput | null;
+  /** Recorded footage the operator shows; a turn may name one of its frames instead of a frame. */
+  readonly recorded?: RecordedScenes | null;
   readonly service: string;
   readonly now?: () => Date;
   readonly newId?: (prefix: string) => string;
@@ -91,6 +94,10 @@ const randomId = (prefix: string) =>
 
 /** Lines of OCR text given to a model at most, nearest the cue first. */
 const PROMPT_LINES = 40;
+
+/** Why a recorded frame is looked at: never as the person's surroundings at this moment. */
+const RECORDED_REASON =
+  'Inspect the selected recorded frame. It is a recording, and its capture time is not verified.';
 
 interface Heard {
   readonly utteranceId: string;
@@ -283,8 +290,18 @@ export class Boopy {
     request: StartSessionRequest,
     association?: { requestId: string; requestSha256: string },
   ): Promise<SessionView> {
-    if (request.frame === undefined && request.attention?.evidence !== 'none')
+    if (
+      request.frame === undefined &&
+      request.recordedFrame === undefined &&
+      request.attention?.evidence !== 'none'
+    )
       throw new BoopyError(400, 'no_frame', 'A frame is required for a visual turn.');
+    this.#refuseLiveFrame(request.frame);
+    // A recorded frame from a scene that changed is refused before any session exists.
+    const recorded =
+      request.recordedFrame === undefined
+        ? undefined
+        : this.#resolveRecorded(request.recordedFrame);
     const session = this.#newId('ses');
     this.#record({
       type: 'session.started',
@@ -298,9 +315,11 @@ export class Boopy {
     try {
       const view = await this.#exclusive(session, async () => {
         const observationId =
-          request.frame === undefined
-            ? null
-            : await this.#observe(session, request.frame, request.cues);
+          recorded !== undefined
+            ? this.#observeRecorded(session, recorded, request.cues)
+            : request.frame === undefined
+              ? null
+              : await this.#observe(session, request.frame, request.cues);
         const heard = await this.#hear(
           session,
           request.speech,
@@ -458,6 +477,7 @@ export class Boopy {
         request.selection !== undefined &&
         (selected === undefined ||
           request.frame !== undefined ||
+          request.recordedFrame !== undefined ||
           request.attention !== undefined ||
           !('text' in request.speech) ||
           request.speech.text !== selected.question ||
@@ -491,8 +511,13 @@ export class Boopy {
               (interpretation) => interpretation.id === targetItem.interpretationId,
             )?.observationId ??
             null);
+      this.#refuseLiveFrame(request.frame);
       const suppliedObservationId =
-        request.frame === undefined ? null : await this.#observe(sessionId, request.frame, cues);
+        request.recordedFrame !== undefined
+          ? this.#observeRecorded(sessionId, this.#resolveRecorded(request.recordedFrame), cues)
+          : request.frame === undefined
+            ? null
+            : await this.#observe(sessionId, request.frame, cues);
       const observationId =
         selected?.observationId ??
         (suppliedObservationId === null && targetItem != null
@@ -643,7 +668,19 @@ export class Boopy {
       intentId: session.intentId,
       items: session.items,
       relations: session.relations,
-      observations: session.observations.map((o) => ({ id: o.id, capturedAt: o.capturedAt })),
+      observations: session.observations.map((o) => ({
+        id: o.id,
+        capturedAt: o.capturedAt,
+        ...(o.recorded === undefined
+          ? {}
+          : {
+              recorded: {
+                recordingId: o.recorded.recordingId,
+                frameId: o.recorded.frameId,
+                seconds: o.recorded.seconds,
+              },
+            }),
+      })),
       utterances: session.utterances.map((u) => ({
         id: u.id,
         text: u.text,
@@ -899,6 +936,53 @@ export class Boopy {
     return observationId;
   }
 
+  /**
+   * A service that shows recordings keeps a journal of recorded frames only: a live frame there
+   * would mix the room into it and bar the data folder from the next start. A service without
+   * recordings refuses a recorded frame in #resolveRecorded, so a session is always one kind.
+   */
+  #refuseLiveFrame(frame: Frame | undefined): void {
+    if (frame !== undefined && this.#deps.recorded != null)
+      throw new BoopyError(
+        409,
+        'recorded_only',
+        'This Mac is showing recordings. Look at the recorded picture to ask about it.',
+      );
+  }
+
+  #resolveRecorded(reference: { recordingId: string; frameId: string }): ResolvedFrame {
+    if (this.#deps.recorded == null)
+      throw new BoopyError(404, 'recorded_unavailable', 'No recorded scene is set up on this Mac.');
+    return this.#deps.recorded.resolve(reference);
+  }
+
+  /** The exact recorded still the person booped, journaled as recorded and never as live. */
+  #observeRecorded(session: string, frame: ResolvedFrame, cues: Cues): string {
+    const frameSha256 = this.#deps.media.put(frame.jpeg, 'jpg');
+    if (frameSha256 !== frame.frameSha256)
+      throw new BoopyError(500, 'recorded_frame_mismatch', 'The recorded still changed.');
+    const observationId = this.#newId('obs');
+    this.#record({
+      type: 'observation.recorded',
+      session,
+      actor: 'person',
+      data: {
+        observationId,
+        frameSha256,
+        width: frame.width,
+        height: frame.height,
+        capturedAt: frame.capturedAt,
+        source: 'past-recollection',
+        timestampTrusted: false,
+        camera: null,
+        depth: null,
+        cues,
+        recorded: frame.recorded,
+      },
+    });
+    return observationId;
+  }
+
   async #hear(
     session: string,
     speech: Speech,
@@ -1021,7 +1105,7 @@ export class Boopy {
     const session = this.#open(sessionId);
     const selectedId = this.#attentionObservation(session, input, suppliedId);
     const observation = session.observations.find((candidate) => candidate.id === selectedId);
-    const decision: AttentionDecision =
+    let decision: AttentionDecision =
       input.observationId !== undefined && observation === undefined
         ? {
             action: 'clarify',
@@ -1041,12 +1125,15 @@ export class Boopy {
                   observation: {
                     id: observation.id,
                     source: observation.source,
-                    capturedAtMs: Date.parse(observation.capturedAt),
+                    capturedAtMs:
+                      observation.capturedAt === null ? null : Date.parse(observation.capturedAt),
                     timestampTrusted: observation.timestampTrusted,
                     suppliedForTurn: observation.id === suppliedId,
                   },
                 }),
           });
+    if (decision.action === 'reuse' && observation?.recorded !== undefined)
+      decision = { ...decision, reason: RECORDED_REASON };
     this.#record({
       type: 'attention.decided',
       session: sessionId,
@@ -1110,7 +1197,9 @@ export class Boopy {
     const observation = session.observations.find((entry) => entry.id === observationId);
     const useVisual = input?.evidence !== 'none' && observation !== undefined;
     const reason = useVisual
-      ? 'Inspect the explicitly selected recorded item. This does not establish its current physical state.'
+      ? observation.recorded !== undefined
+        ? RECORDED_REASON
+        : 'Inspect the explicitly selected recorded item. This does not establish its current physical state.'
       : input?.evidence === 'none'
         ? 'Keep the question without visual inspection, as requested.'
         : 'The selected item has no recorded view to inspect.';
@@ -1234,7 +1323,13 @@ export class Boopy {
           capturedAt: observation.capturedAt,
           timestampTrusted: observation.timestampTrusted,
           selectionReason:
-            work?.reason ?? 'Legacy selected view; current scene/time not established.',
+            work?.reason ??
+            (observation.recorded !== undefined
+              ? RECORDED_REASON
+              : 'Legacy selected view; current scene/time not established.'),
+          ...(observation.recorded === undefined
+            ? {}
+            : { recorded: { seconds: observation.recorded.seconds } }),
         },
         scope,
         gaze,

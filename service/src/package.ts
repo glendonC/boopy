@@ -100,6 +100,15 @@ export function buildPackage(
         frameSha256: observation.frameSha256,
         source: observation.source,
         timestampTrusted: observation.timestampTrusted,
+        ...(observation.recorded === undefined
+          ? {}
+          : {
+              recorded: {
+                recordingId: observation.recorded.recordingId,
+                frameId: observation.recorded.frameId,
+                seconds: observation.recorded.seconds,
+              },
+            }),
       })),
       utterances: session.utterances.map((utterance) => ({
         id: utterance.id,

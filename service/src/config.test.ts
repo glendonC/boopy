@@ -210,3 +210,42 @@ it('requires an absolute explicitly configured Zetaris credential path', () => {
     '/private/synthetic-credential',
   );
 });
+
+describe('recorded scene configuration', () => {
+  const env = {
+    BOOPY_INTERPRETER: 'ollama',
+    BOOPY_SEGMENTER: 'none',
+    BOOPY_DATA_DIR: '/private/synthetic-recorded-data',
+    BOOPY_RECORDED_SCENE: '1',
+    BOOPY_RECORDED_BIN: '/private/synthetic-recorded-helper',
+  };
+  it('stays off unless asked for, and takes an absolute helper path', () => {
+    assert.equal(loadConfig({ BOOPY_INTERPRETER: 'fixture' }).recordedScene, null);
+    assert.equal(loadConfig({ ...env, BOOPY_RECORDED_SCENE: '0' }).recordedScene, null);
+    assert.deepEqual(loadConfig(env).recordedScene, {
+      helper: '/private/synthetic-recorded-helper',
+    });
+    assert.throws(
+      () => loadConfig({ ...env, BOOPY_RECORDED_SCENE: 'yes' }),
+      /BOOPY_RECORDED_SCENE/,
+    );
+    assert.throws(
+      () => loadConfig({ ...env, BOOPY_RECORDED_BIN: 'helper' }),
+      /absolute local path/,
+    );
+  });
+  it('needs its own data folder, never the default one', () => {
+    const { BOOPY_DATA_DIR: _dir, ...withoutDir } = env;
+    assert.throws(() => loadConfig(withoutDir), /own BOOPY_DATA_DIR/);
+  });
+  it('keeps recorded footage on this Mac: no hosted interpreter or segmentation', () => {
+    assert.throws(
+      () => loadConfig({ ...env, BOOPY_INTERPRETER: 'muse-spark', MODEL_API_KEY: 'synthetic' }),
+      /on this Mac/,
+    );
+    assert.throws(
+      () => loadConfig({ ...env, BOOPY_SEGMENTER: 'sam', MODEL_API_KEY: 'synthetic' }),
+      /on this Mac/,
+    );
+  });
+});

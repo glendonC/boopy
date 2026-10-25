@@ -148,6 +148,51 @@ export const Cues = z.object({
 });
 export type Cues = z.infer<typeof Cues>;
 
+export const RecordingId = z.string().regex(/^rec_[a-f0-9]{32}$/);
+export const RecordedFrameId = z.string().regex(/^rfr_[a-f0-9]{32}$/);
+
+/** A frame of the recording the Mac is showing, named by its opaque ids. The Mac sends the still. */
+export const RecordedFrameRef = z.strictObject({
+  recordingId: RecordingId,
+  frameId: RecordedFrameId,
+});
+export type RecordedFrameRef = z.infer<typeof RecordedFrameRef>;
+
+/** Where an observation's recorded still came from, as views and packages show it. */
+const RecordedProvenance = z.object({
+  recordingId: z.string(),
+  frameId: z.string(),
+  seconds: z.number().nullable(),
+});
+
+/**
+ * A recorded frame has no room behind it: no camera, depth, pointer, world point or surface, and
+ * its source is the person's recording, never their surroundings.
+ */
+function recordedTurn(
+  request: {
+    frame?: unknown;
+    recordedFrame?: unknown;
+    cues?: { gaze?: { world?: unknown; onSurface: boolean }; pointer?: unknown };
+    attention?: { source: string; evidence: string };
+  },
+  context: z.RefinementCtx,
+): void {
+  if (request.recordedFrame === undefined) return;
+  const problem = (message: string, path: string[]) =>
+    context.addIssue({ code: 'custom', message, path });
+  if (request.frame !== undefined)
+    problem('Send a frame or a recorded frame, not both.', ['recordedFrame']);
+  if (request.cues?.pointer !== undefined)
+    problem('A recorded frame takes no pointer.', ['cues', 'pointer']);
+  if (request.cues?.gaze?.world !== undefined || request.cues?.gaze?.onSurface === true)
+    problem('A recorded frame has no room surface behind it.', ['cues', 'gaze']);
+  if (request.attention !== undefined && request.attention.source !== 'past-recollection')
+    problem('A recorded frame is a past recollection.', ['attention', 'source']);
+  if (request.attention?.evidence === 'none')
+    problem('A recorded frame is visual evidence.', ['attention', 'evidence']);
+}
+
 export const Speech = z.union([
   z.object({ wav: z.string().min(1) }),
   z.object({ text: z.string().trim().min(1).max(2000), language: z.string().optional() }),
@@ -161,24 +206,35 @@ export const StartSessionRequest = z
   .object({
     requestId: StartRequestId.optional(),
     frame: Frame.optional(),
+    recordedFrame: RecordedFrameRef.optional(),
     attention: AttentionInput.optional(),
     cues: Cues,
     speech: Speech,
     device: Device.optional(),
   })
-  .refine((request) => request.frame !== undefined || request.attention?.evidence === 'none', {
-    message: 'A frame is required unless this is an explicit nonvisual turn.',
-    path: ['frame'],
-  });
+  .refine(
+    (request) =>
+      request.frame !== undefined ||
+      request.recordedFrame !== undefined ||
+      request.attention?.evidence === 'none',
+    {
+      message: 'A frame is required unless this is an explicit nonvisual turn.',
+      path: ['frame'],
+    },
+  )
+  .superRefine(recordedTurn);
 export type StartSessionRequest = z.infer<typeof StartSessionRequest>;
 
-export const UtteranceRequest = z.object({
-  selection: ContextualActionSelection.optional(),
-  attention: AttentionInput.optional(),
-  frame: Frame.optional(),
-  cues: Cues.optional(),
-  speech: Speech,
-});
+export const UtteranceRequest = z
+  .object({
+    selection: ContextualActionSelection.optional(),
+    attention: AttentionInput.optional(),
+    frame: Frame.optional(),
+    recordedFrame: RecordedFrameRef.optional(),
+    cues: Cues.optional(),
+    speech: Speech,
+  })
+  .superRefine(recordedTurn);
 export type UtteranceRequest = z.infer<typeof UtteranceRequest>;
 
 /** What a pinch on a card does. */
@@ -298,7 +354,13 @@ export const SessionView = z.object({
   intentId: z.string().nullable(),
   items: z.array(Item),
   relations: z.array(Relation),
-  observations: z.array(z.object({ id: z.string(), capturedAt: z.string() })),
+  observations: z.array(
+    z.object({
+      id: z.string(),
+      capturedAt: z.string().nullable(),
+      recorded: RecordedProvenance.optional(),
+    }),
+  ),
   utterances: z.array(
     z.object({ id: z.string(), text: z.string(), language: z.string(), kind: UtteranceKind }),
   ),
@@ -370,10 +432,13 @@ const LegacyContextPackage = z.object({
     observations: z.array(
       z.object({
         id: z.string(),
-        capturedAt: z.string(),
+        /** Null only for a recorded frame whose file gives no capture time. */
+        capturedAt: z.string().nullable(),
         frameSha256: z.string(),
         source: AttentionSource.optional(),
         timestampTrusted: z.boolean().optional(),
+        /** Set for a frame of the person's recorded footage, never a live view. */
+        recorded: RecordedProvenance.optional(),
       }),
     ),
     utterances: z.array(

@@ -22,7 +22,8 @@ import type { Reading } from './utterance.ts';
 
 export interface Observation {
   readonly id: string;
-  readonly capturedAt: string;
+  /** Null only for a recorded frame whose file gives no capture time. */
+  readonly capturedAt: string | null;
   readonly source: import('./attention.ts').AttentionSource;
   readonly timestampTrusted: boolean;
   readonly frameSha256: string;
@@ -31,6 +32,8 @@ export interface Observation {
   readonly camera: Camera | null;
   readonly depth: DepthGrid | null;
   readonly cues: Cues;
+  /** Set for a frame of recorded footage; such an observation is never a live view. */
+  readonly recorded?: import('./recorded-source.ts').RecordedObservation;
 }
 
 export interface Utterance {
@@ -183,6 +186,13 @@ export class Projection {
     }
     // Live geometry has its own journal and never creates conversation facts.
     if (event.type === 'scene.observed') return;
+    // Recordings and the scene on show are their own projection (recorded-source.ts).
+    if (
+      event.type === 'recorded.source.imported' ||
+      event.type === 'recorded.scene.shown' ||
+      event.type === 'recorded.scene.cleared'
+    )
+      return;
     // Task revisions are a separate projection. They must not create conversation facts.
     if (
       event.type === 'task.opened' ||
@@ -207,6 +217,7 @@ export class Projection {
           camera: event.data.camera,
           depth: event.data.depth,
           cues: event.data.cues,
+          ...(event.data.recorded === undefined ? {} : { recorded: event.data.recorded }),
         });
         return;
       case 'attention.decided':

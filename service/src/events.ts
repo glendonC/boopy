@@ -20,6 +20,7 @@ import type {
 import type { SupersedeRequest } from './evidence-contract.ts';
 import type { HandoffPreparationEvent } from './handoff-preparation.ts';
 import type { TaskEvent } from './interaction/contract.ts';
+import type { RecordedEvent, RecordedObservation } from './recorded-source.ts';
 import type { Reading } from './utterance.ts';
 
 /** Who caused an event: the person, Boopy itself, a model, or an agent reading context. */
@@ -90,6 +91,7 @@ export type BoopyEvent =
       }
     >
   | HandoffPreparationEvent
+  | RecordedEvent
   | Event<
       'scene.observed',
       {
@@ -138,12 +140,15 @@ export type BoopyEvent =
         readonly frameSha256: string;
         readonly width: number;
         readonly height: number;
-        readonly capturedAt: string;
+        /** Null only for a recorded frame whose file gives no capture time. */
+        readonly capturedAt: string | null;
         readonly source?: import('./attention.ts').AttentionSource;
         readonly timestampTrusted?: boolean;
         readonly camera: Camera | null;
         readonly depth: DepthGrid | null;
         readonly cues: Cues;
+        /** A frame of recorded footage the operator showed, never a live view. */
+        readonly recorded?: RecordedObservation;
       }
     >
   | Event<
