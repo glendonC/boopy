@@ -17,8 +17,10 @@ import { SupersedeRequest } from '../evidence-contract.ts';
 import type { HandoffPreparation } from '../handoff-preparation.ts';
 import type { TaskStore } from '../interaction/tasks.ts';
 import { type LiveObservation, SceneObservationRequest } from '../live-observation.ts';
+import type { RecordedScenes } from '../recorded-source.ts';
 import { registerActivityRoutes } from './activities.ts';
 import { registerHandoffRoutes } from './handoff.ts';
+import { registerRecordedSceneRoutes } from './recorded.ts';
 import { CLOSE_GRACE_MS, drainOnClose } from './shutdown.ts';
 import { registerTaskRoutes } from './tasks.ts';
 
@@ -41,6 +43,8 @@ export function headsetApp(
     readonly activities?: ActivityStore;
     readonly activityCalls?: ActivityCalls;
     readonly tasks?: TaskStore;
+    /** A recorded scene for the headset to show and boop; only with BOOPY_RECORDED_SCENE=1. */
+    readonly recorded?: RecordedScenes;
     /** How long close() lets requests in progress run; tests shorten it. */
     readonly closeGraceMs?: number;
   },
@@ -157,6 +161,7 @@ export function headsetApp(
   if (options.handoff) registerHandoffRoutes(app, options.handoff);
   if (options.activities) registerActivityRoutes(app, options.activities, options.activityCalls);
   if (options.tasks) registerTaskRoutes(app, options.tasks, boopy);
+  if (options.recorded) registerRecordedSceneRoutes(app, options.recorded);
 
   return app;
 }

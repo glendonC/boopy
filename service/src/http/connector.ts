@@ -15,9 +15,11 @@ import type { HandoffPreparation } from '../handoff-preparation.ts';
 import type { TaskStore } from '../interaction/tasks.ts';
 import type { NvidiaEmbeddingWorker } from '../memory/nvidia.ts';
 import { MemoryRecall } from '../memory/recall.ts';
+import type { RecordedScenes } from '../recorded-source.ts';
 import { registerLocalActivityRoutes } from './activities.ts';
 import { error, handleError } from './headset.ts';
 import { openApiDocument } from './openapi.ts';
+import { registerLocalRecordedRoutes } from './recorded.ts';
 import { CLOSE_GRACE_MS, drainOnClose } from './shutdown.ts';
 import { registerLocalTaskRoutes } from './tasks.ts';
 
@@ -34,6 +36,8 @@ export interface ConnectorOptions {
   readonly activityCalls?: ActivityCalls;
   /** Local operator routes for a reply from a named connection; beside the handoff routes. */
   readonly tasks?: TaskStore;
+  /** The operator's recorded-scene routes; only with BOOPY_RECORDED_SCENE=1. */
+  readonly recorded?: RecordedScenes;
   readonly semanticRanker?: Pick<NvidiaEmbeddingWorker, 'rank'>;
   /** How long close() lets requests in progress run; tests shorten it. */
   readonly closeGraceMs?: number;
@@ -170,6 +174,7 @@ export function connectorApp(boopy: Boopy, options: ConnectorOptions): FastifyIn
     if (options.activities)
       registerLocalActivityRoutes(app, options.activities, localOnly, options.activityCalls);
     if (options.tasks) registerLocalTaskRoutes(app, boopy, options.tasks, localOnly);
+    if (options.recorded) registerLocalRecordedRoutes(app, options.recorded, localOnly);
   }
 
   const mcp = toNodeHandler(

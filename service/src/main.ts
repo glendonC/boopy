@@ -19,6 +19,7 @@ import { LiveObservation } from './live-observation.ts';
 import { LocalScenePerceiver } from './live-scene/local-scene.ts';
 import { NvidiaEmbeddingWorker } from './memory/nvidia.ts';
 import { VisionTextReader } from './ocr.ts';
+import { assertNoLiveCaptures, RecordedScenes } from './recorded-source.ts';
 import { SamSegmenter } from './segmentation.ts';
 import { WhisperEngine } from './speech.ts';
 import { QwenSpeechOutput } from './speech-output/qwen.ts';
@@ -62,9 +63,21 @@ const sceneJournal = sceneProvider ? Journal.open(join(config.dataDir, 'live-sce
 const liveScene =
   sceneProvider && sceneJournal ? new LiveObservation(sceneProvider, sceneJournal) : undefined;
 const journal = Journal.open(join(config.dataDir, 'journal.sqlite'));
+const media = new MediaStore(join(config.dataDir, 'media'));
+// Recorded footage runs on its own data folder: a journal with a live capture is refused.
+if (config.recordedScene) assertNoLiveCaptures(journal);
+const recorded = config.recordedScene
+  ? new RecordedScenes({
+      journal,
+      media,
+      directory: join(config.dataDir, 'recorded'),
+      helper: config.recordedScene.helper,
+    })
+  : null;
 const boopy = new Boopy({
   journal,
-  media: new MediaStore(join(config.dataDir, 'media')),
+  media,
+  recorded,
   interpreter,
   speech: config.whisper === null ? null : new WhisperEngine(config.whisper),
   text: config.ocrBinary === null ? null : new VisionTextReader(config.ocrBinary),
@@ -117,6 +130,7 @@ const headset = headsetApp(boopy, {
   activities,
   activityCalls,
   tasks,
+  ...(recorded ? { recorded } : {}),
 });
 const connector = connectorApp(boopy, {
   token: connectorToken(config.dataDir),
@@ -127,6 +141,7 @@ const connector = connectorApp(boopy, {
   activities,
   activityCalls,
   ...(config.connectionReplies ? { tasks } : {}),
+  ...(recorded ? { recorded } : {}),
   logger: config.logger,
 });
 
@@ -142,6 +157,7 @@ console.log(
     `  segmentation  ${config.segmenter === null ? 'off (approximate boxes)' : 'Meta SAM 3.1 (hosted)'}`,
     `  speech        ${config.whisper === null ? 'off (whisper.cpp not found)' : 'whisper.cpp'}`,
     `  text          ${config.ocrBinary === null ? 'off (run pnpm ocr:build)' : 'Apple Vision'}`,
+    `  recorded      ${recorded ? 'on: recorded scenes from the local operator' : 'off'}`,
   ].join('\n'),
 );
 
