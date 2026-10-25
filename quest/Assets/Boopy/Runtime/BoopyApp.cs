@@ -859,7 +859,7 @@ namespace Boopy.Quest
                     !inputAllowed || !isActiveAndEnabled || !voice.Recording) return;
                 if (evidenceTurn.RequiresPicture)
                 {
-                    Capture(hand, targetId, !fromButton);
+                    Capture(targetId);
                     if (pending == null) throw new InvalidOperationException("The capture source is unavailable.");
                     if (scene?.ConsolePlaced == true) captureScan?.Begin(pending, console?.ReducedMotion ?? false);
                 }
@@ -880,10 +880,11 @@ namespace Boopy.Quest
         }
 
         /// <summary>
-        /// The frame and cues after the listening acknowledgement. By the end of the sentence the head
-        /// may have moved. The hand's ray wins over head direction.
+        /// The frame and cues after the listening acknowledgement. By the end of the sentence the head may have moved. Only
+        /// where the person looks goes with it: the hand that pinches to talk is raised, so its ray lands near the frame's
+        /// top row and would outweigh the gaze.
         /// </summary>
-        private void Capture(HandInput hand, string? targetId, bool includePointer = true)
+        private void Capture(string? targetId)
         {
             if (room == null || gaze == null || scene == null) return;
             pendingTarget = targetId;
@@ -896,19 +897,7 @@ namespace Boopy.Quest
                 {
                     cues.Gaze = new Cue { Point = gazeImage, World = World(gaze.Point), OnSurface = gaze.OnSurface };
                 }
-                if (includePointer && hand.RayActive && room.TryHit(hand.Ray, 6f, out var handPoint, out _))
-                {
-                    var handImage = room.ToImage(handPoint, pending.Pose);
-                    if (handImage != null)
-                    {
-                        cues.Pointer = new PointerCue { Point = handImage, World = World(handPoint), OnSurface = true, Hand = hand.Right ? "right" : "left" };
-                    }
-                    marker?.Show(handPoint, true);
-                }
-                else
-                {
-                    marker?.Show(gaze.Point, gaze.OnSurface);
-                }
+                marker?.Show(gaze.Point, gaze.OnSurface);
             }
             pendingCues = cues;
         }

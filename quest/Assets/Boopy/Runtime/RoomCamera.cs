@@ -61,8 +61,11 @@ namespace Boopy.Quest
         private PassthroughCameraAccess? access;
         private EnvironmentRaycastManager? raycaster;
         private Texture2D? texture;
+        // An Editor check's frame in place of the camera: Capture returns it, ToImage projects through its own intrinsics
+        // (its size equal to its sensor), and rays meet a wall facing it at its first depth sample. Never set on the headset.
+        private Snapshot? synthetic;
 
-        public bool Ready => access != null && access.IsPlaying;
+        public bool Ready => synthetic != null || (access != null && access.IsPlaying);
 
         public static bool Supported => PassthroughCameraAccess.IsSupported;
 
@@ -81,6 +84,15 @@ namespace Boopy.Quest
         {
             point = default;
             normal = default;
+            if (synthetic != null)
+            {
+                var forward = synthetic.Pose.rotation * Vector3.forward;
+                var wall = new Plane(-forward, synthetic.Pose.position + forward * (synthetic.Depth.Meters[0] ?? 1f));
+                if (!wall.Raycast(ray, out var enter) || enter > maxDistance) return false;
+                point = ray.GetPoint(enter);
+                normal = -forward;
+                return true;
+            }
             if (raycaster == null || !EnvironmentRaycastManager.IsSupported) return false;
             if (!raycaster.Raycast(ray, out var hit, maxDistance)) return false;
             point = hit.point;
@@ -91,6 +103,7 @@ namespace Boopy.Quest
         /// <summary>The latest frame with its pose and a depth sample, or null while the camera is not running.</summary>
         public Snapshot? Capture()
         {
+            if (synthetic != null) return synthetic;
             if (access == null || !access.IsPlaying) return null;
             var capturedAt = access.Timestamp;
             if (!CameraFrameTime.TrySourceTime(capturedAt, DateTime.UtcNow, Time.unscaledTime, out var sourceTime)) return null;
@@ -144,9 +157,16 @@ namespace Boopy.Quest
         /// <summary>Where a world point falls in a frame (origin top-left), or null when it is outside it or behind the camera.</summary>
         public Point2? ToImage(Vector3 world, Pose pose)
         {
-            if (access == null || !access.IsPlaying) return null;
+            if (synthetic == null && (access == null || !access.IsPlaying)) return null;
             var local = Quaternion.Inverse(pose.rotation) * (world - pose.position);
             if (local.z < 0.05f) return null;
+            if (synthetic != null)
+            {
+                var camera = synthetic.Camera;
+                var x = (camera.FocalLength[0] * local.x / local.z + camera.PrincipalPoint[0]) / camera.SensorResolution[0];
+                var y = 1f - (camera.FocalLength[1] * local.y / local.z + camera.PrincipalPoint[1]) / camera.SensorResolution[1];
+                return x < 0f || x > 1f || y < 0f || y > 1f ? null : new Point2 { X = x, Y = y };
+            }
             var viewport = access.WorldToViewportPoint(world, pose);
             if (viewport.x < 0f || viewport.x > 1f || viewport.y < 0f || viewport.y > 1f) return null;
             return Geometry.FromViewport(new N.Vector2(viewport.x, viewport.y));

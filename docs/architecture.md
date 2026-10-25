@@ -19,8 +19,9 @@ USB `adb reverse` maps the headset's `127.0.0.1:47900` to the service. The conne
 Unity, OpenXR, and the Meta XR SDK versions pinned in `quest/Packages/manifest.json`.
 
 On talk, the client takes one passthrough frame, the camera pose at that frame's time, and a
-coarse 16 by 12 depth sample. A head ray and a seated hand ray mark where the person is
-pointing. Pinch and hold records speech. A short pinch can act on a control.
+coarse 16 by 12 depth sample. Its cue is gaze only: a head ray marks where the person looks, and the
+capture sends that point. The hand that pinches to talk sends no pointer, since it is raised to pinch;
+a hand ray still aims the controls. Pinch and hold records speech. A short pinch can act on a control.
 
 The room shows one selected subject and its label. Other detail stays in the reader. Live
 outlines can suggest names, and those outlines are not tappable. Dialogue and choices sit on
