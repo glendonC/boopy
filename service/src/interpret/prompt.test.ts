@@ -140,3 +140,49 @@ it('the shared prompt and the words Boopy adds carry no em dash', () => {
   assert.equal(userText(input).includes(emDash), false);
   assert.ok(SYSTEM_PROMPT.includes('"It looks like a camel: 낙타 in Korean."'));
 });
+
+it('says a recorded frame is recorded, with its place in the file and no capture time value', () => {
+  for (const [capturedAt, timeLine] of [
+    ['2001-02-03T04:05:06.600Z', 'Capture time: from the file, not verified.'],
+    [null, 'Capture time: unknown.'],
+  ] as const) {
+    const text = userText({
+      ...input,
+      sourceContext: {
+        source: 'past-recollection',
+        capturedAt,
+        timestampTrusted: false,
+        selectionReason: 'Inspect the selected recorded frame.',
+        recorded: { seconds: 4.2 },
+      },
+    });
+    assert.ok(
+      text.includes("Selected source: a frame of the person's own recording, 4.2 s into it."),
+    );
+    assert.ok(text.includes(timeLine));
+    assert.equal(text.includes('2001'), false, 'the capture time value stays out of the prompt');
+    assert.ok(text.includes('This is recorded footage, not what the person sees around them.'));
+    // Nothing in Boopy's own lines about a recorded frame says it is happening at this moment.
+    const own = text
+      .split('\n')
+      .filter(
+        (line) =>
+          line.startsWith('Selected source') ||
+          line.startsWith('This is recorded') ||
+          line.startsWith('Capture time'),
+      );
+    for (const word of [' live', ' now', 'fresh', 'current', 'in your room', ' here'])
+      assert.equal(own.join(' ').toLowerCase().includes(word), false, word);
+  }
+  const photo = userText({
+    ...input,
+    sourceContext: {
+      source: 'past-recollection',
+      capturedAt: null,
+      timestampTrusted: false,
+      selectionReason: 'Inspect the selected recorded frame.',
+      recorded: { seconds: null },
+    },
+  });
+  assert.ok(photo.includes("Selected source: the person's own recorded photo."));
+});

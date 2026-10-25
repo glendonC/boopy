@@ -63,7 +63,26 @@ export function userText(input: InterpretInput): string {
       'Selection and conversation do not confirm model claims. Only recorded human verification does.',
     );
   }
-  if (input.sourceContext !== undefined) {
+  if (input.sourceContext?.recorded !== undefined) {
+    // The capture time's value stays out: it is the file's unverified claim, and the model needs
+    // only to know the frame is recorded.
+    const context = input.sourceContext;
+    const seconds = context.recorded?.seconds ?? null;
+    lines.push(
+      seconds === null
+        ? "Selected source: the person's own recorded photo."
+        : `Selected source: a frame of the person's own recording, ${seconds} s into it.`,
+    );
+    lines.push(
+      context.capturedAt === null
+        ? 'Capture time: unknown.'
+        : 'Capture time: from the file, not verified.',
+    );
+    lines.push(`Evidence selection: ${context.selectionReason}`);
+    lines.push(
+      'This is recorded footage, not what the person sees around them. Do not say it is happening at this moment. Unknown time and place stay unknown.',
+    );
+  } else if (input.sourceContext !== undefined) {
     const context = input.sourceContext;
     lines.push(
       `Selected source: ${context.source}. Recorded capture time: ${context.capturedAt}; sensor timestamp trusted: ${context.timestampTrusted}.`,

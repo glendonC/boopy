@@ -21,6 +21,7 @@ import {
   decodeRecordedFrames,
   inspectRecordedMedia,
   makeRecordedMediaTool,
+  parseCaptureClaims,
   RecordedMediaError,
   type RecordedMediaTool,
 } from './recorded-media.ts';
@@ -530,6 +531,72 @@ for (const [tags, status, timezone] of [
     assert.equal(result.captureOrigin.trust, 'unknown');
   });
 }
+
+// Real phone and glasses files write six fractional digits and offsets without a colon.
+for (const [label, tags, value] of [
+  [
+    'six fractional digits',
+    { creation_time: '2020-01-02T03:04:05.123456Z' },
+    '2020-01-02T03:04:05.123Z',
+  ],
+  [
+    'nine fractional digits',
+    { creation_time: '2020-01-02T03:04:05.987654321Z' },
+    '2020-01-02T03:04:05.987Z',
+  ],
+  [
+    'an offset written without a colon',
+    { 'com.apple.quicktime.creationdate': '2020-01-02T04:04:05+0100' },
+    '2020-01-02T03:04:05.000Z',
+  ],
+  [
+    'a container date and an Apple date that agree',
+    {
+      creation_time: '2020-01-02T03:04:05.000000Z',
+      'com.apple.quicktime.creationdate': '2020-01-02T03:04:05Z',
+    },
+    '2020-01-02T03:04:05.000Z',
+  ],
+] as const) {
+  it(`reads ${label} as an unverified metadata claim`, async () => {
+    const result = await inspectRecordedMedia(clip, {
+      tool: fakeTool((probe) => {
+        Object.assign(probe.format.tags, tags);
+      }),
+    });
+    assert.equal(result.captureOrigin.value, value);
+    assert.equal(result.captureOrigin.status, 'unverified');
+    assert.equal(result.captureOrigin.trust, 'unverified');
+    assert.equal(result.captureOrigin.timezone, 'explicit');
+  });
+}
+
+it('parses claims from any named source the same way, keeping each source', () => {
+  assert.deepEqual(
+    parseCaptureClaims([
+      { source: 'exif:DateTimeOriginal', value: '2001-02-03T04:05:06.25+01:00' },
+    ]),
+    {
+      value: '2001-02-03T03:05:06.250Z',
+      source: 'metadata',
+      trust: 'unverified',
+      timezone: 'explicit',
+      status: 'unverified',
+      sources: ['exif:DateTimeOriginal'],
+    },
+  );
+  const local = parseCaptureClaims([
+    { source: 'exif:DateTimeOriginal', value: '2001-02-03T04:05:06' },
+  ]);
+  assert.equal(local.value, null);
+  assert.equal(local.timezone, 'missing');
+  assert.equal(local.status, 'unknown');
+  assert.equal(parseCaptureClaims([]).source, 'none');
+  assert.equal(
+    parseCaptureClaims([{ source: 'x', value: '2020-01-02T03:04:05+2400' }]).value,
+    null,
+  );
+});
 
 it('conflicting container and stream dates stay unresolved', async () => {
   const result = await inspectRecordedMedia(clip, {

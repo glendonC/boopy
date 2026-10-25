@@ -54,7 +54,7 @@ export type RecordedMediaTool = (request: {
   maxStdoutBytes: number;
 }) => Promise<Buffer>;
 
-type CaptureOrigin = {
+export type CaptureOrigin = {
   value: string | null;
   source: 'none' | 'metadata';
   trust: 'unknown' | 'unverified';
@@ -295,40 +295,54 @@ function timeBase(value: unknown): TimeBase {
   return { numerator, denominator };
 }
 
-function captureOrigin(
+export function captureOrigin(
   streams: Record<string, unknown>[],
   format: Record<string, unknown>,
 ): CaptureOrigin {
-  const claims: string[] = [];
-  const sources: string[] = [];
+  const claims: { source: string; value: string }[] = [];
   for (const [index, source] of [format, ...streams].entries()) {
     if (source.tags === undefined) continue;
     const tags = record(source.tags);
     for (const key of ['creation_time', 'com.apple.quicktime.creationdate']) {
       if (tags[key] !== undefined) {
         if (typeof tags[key] !== 'string') fail('invalid_probe');
-        claims.push(tags[key]);
-        sources.push(`${index === 0 ? 'format' : `stream:${integer(source.index)}`}:${key}`);
+        claims.push({
+          source: `${index === 0 ? 'format' : `stream:${integer(source.index)}`}:${key}`,
+          value: tags[key],
+        });
       }
     }
   }
+  return parseCaptureClaims(claims);
+}
+
+/**
+ * One capture time from every date the file claims, or none. Each claim keeps its source; a date
+ * without an offset or two dates that differ stay unresolved, and nothing is ever filled in from
+ * the file's dates on disk, the import time or the Mac's timezone.
+ */
+export function parseCaptureClaims(
+  claims: readonly { readonly source: string; readonly value: string }[],
+): CaptureOrigin {
   const result: CaptureOrigin = {
     value: null,
     source: claims.length ? 'metadata' : 'none',
     trust: 'unknown',
     timezone: 'unknown',
     status: 'unknown',
-    sources,
+    sources: claims.map((claim) => claim.source),
   };
   if (claims.length === 0) return result;
   const parsed: string[] = [];
-  for (const value of claims) {
+  for (const { value } of claims) {
+    // Up to nine fractional digits (kept to the millisecond, never rounded up) and an offset
+    // written with or without a colon, as phones and glasses write them.
     const parts =
-      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})?$/.exec(
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:?\d{2})?$/.exec(
         value,
       );
     if (!parts) return result;
-    const [, year, month, day, hour, minute, second, , offset] = parts;
+    const [, year, month, day, hour, minute, second, fraction, offset] = parts;
     const local = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
     const calendar = new Date(`${local}Z`);
     if (!Number.isFinite(calendar.getTime()) || calendar.toISOString().slice(0, 19) !== local)
@@ -337,7 +351,11 @@ function captureOrigin(
       result.timezone = 'missing';
       return result;
     }
-    const date = new Date(value);
+    const zone = offset === 'Z' ? offset : `${offset.slice(0, 3)}:${offset.slice(-2)}`;
+    if (zone !== 'Z' && (Number(zone.slice(1, 3)) > 23 || Number(zone.slice(4)) > 59))
+      return result;
+    const millis = (fraction ?? '').slice(0, 3).padEnd(3, '0');
+    const date = new Date(`${local}.${millis}${zone}`);
     if (!Number.isFinite(date.getTime())) return result;
     parsed.push(date.toISOString());
   }

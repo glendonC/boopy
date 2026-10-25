@@ -27,9 +27,12 @@ export interface InterpretInput {
   }[];
   readonly sourceContext?: {
     readonly source: string;
-    readonly capturedAt: string;
+    /** Null when a recorded file gives no capture time. */
+    readonly capturedAt: string | null;
     readonly timestampTrusted: boolean;
     readonly selectionReason: string;
+    /** Set for a frame of the person's recording: its time in the file, null for a photo. */
+    readonly recorded?: { readonly seconds: number | null };
   };
   /** An explicit recorded reference, not a recognition of a currently visible physical object. */
   readonly selectedReference?: {
