@@ -23,6 +23,49 @@ export function telemetryFindings(names, read) {
   return findings;
 }
 
+// The owner's footage reaches the headset only by streaming from the Mac; no picture, clip or sound rides in the APK.
+// A media file is found by its first bytes or by its name, anywhere; Android's own PNG resources under res/ are allowed.
+// A clip Unity stores whole inside a .resource or .resS file is found by its ISO BMFF 'ftyp' box (a size, the tag and a
+// known brand). Footage imported as a texture would be raw pixels inside an asset file, which this cannot see; nothing is
+// imported, and asset-privacy.mjs checks quest/Assets itself.
+export const mediaName = /\.(mp4|m4v|mov|qt|webm|mkv|3gp|avi|heic|heif|avif|jpe?g|dng|gif|webp|bmp|tiff?|wav|mp3|m4a|aac|ogg|opus|flac|png)$/i;
+const androidResource = /^res\/.+\.png$/;
+
+export function mediaKind(head) {
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'jpeg';
+  if (head.length >= 8 && head.toString('latin1', 4, 8) === 'ftyp') return 'iso-bmff';
+  const start = head.toString('latin1', 0, 4);
+  if (start === 'RIFF' || start === 'OggS' || start === 'fLaC' || start === 'GIF8') return start;
+  if (start.startsWith('ID3')) return 'mp3';
+  if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) return 'matroska';
+  if (head.length >= 4 && head[0] === 0x89 && start.slice(1) === 'PNG') return 'png';
+  return null;
+}
+
+const unityResource = /\.(resource|resS)$/;
+const brands = new Set(['isom', 'iso2', 'iso4', 'iso5', 'iso6', 'mp41', 'mp42', 'avc1', 'M4V ', 'M4A ', 'qt  ', 'heic', 'heix',
+  'mif1', 'msf1', 'hevc', 'avif', 'dash', '3gp4', '3gp5', '3g2a', 'MSNV', 'XAVC', 'crx ']);
+
+function holdsClip(bytes) {
+  for (let at = bytes.indexOf('ftyp', 4, 'latin1'); at >= 4; at = bytes.indexOf('ftyp', at + 1, 'latin1')) {
+    const size = bytes.readUInt32BE(at - 4);
+    if (size >= 16 && size <= 1024 && at + 8 <= bytes.length && brands.has(bytes.toString('latin1', at + 4, at + 8))) return true;
+  }
+  return false;
+}
+
+export function mediaFindings(names, read) {
+  const findings = [];
+  for (const name of names) {
+    if (name.endsWith('/')) continue;
+    if (androidResource.test(name)) continue;
+    const bytes = read(name);
+    if (mediaName.test(name) || mediaKind(bytes.subarray(0, 12)) !== null || (unityResource.test(name) && holdsClip(bytes)))
+      findings.push(`media file ${name}`);
+  }
+  return findings;
+}
+
 // The zip's central directory: each entry's name, method and where its data starts. No ZIP64: an APK this size never
 // needs it, and one that does is refused rather than misread.
 export function readZip(bytes) {
@@ -64,10 +107,11 @@ function main() {
   const path = process.argv[2];
   if (!path) { console.error('Usage: node apk-privacy.mjs <built APK>'); process.exit(2); }
   const { names, read } = readZip(readFileSync(path));
-  const findings = telemetryFindings(names, read);
+  const findings = [...telemetryFindings(names, read), ...mediaFindings(names, read)];
   for (const finding of findings) console.log(`Found ${finding}.`);
   if (findings.length) process.exit(1);
   console.log(`No Interaction SDK telemetry in ${path}.`);
+  console.log(`No media file in ${path}.`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

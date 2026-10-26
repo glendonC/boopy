@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { crc32, deflateRawSync } from 'node:zlib';
-import { readZip, telemetryFindings } from './apk-privacy.mjs';
+import { mediaFindings, readZip, telemetryFindings } from './apk-privacy.mjs';
 
 // A synthetic APK: a zip with the given entries, deflated unless stored, and an optional archive comment.
 function apk(entries, comment = '') {
@@ -63,4 +63,43 @@ test('refuses what it cannot read instead of passing it', () => {
   const archive = apk([{ name: 'a.txt', text: 'synthetic' }]);
   archive.writeUInt32LE(0xffffffff, archive.length - 6);
   assert.throws(() => readZip(archive), /ZIP64/);
+});
+
+// Footage reaches the headset only by streaming from the Mac, so no picture, clip or sound may ride in the APK.
+const media = bytes => { const { names, read } = readZip(bytes); return mediaFindings(names, read); };
+const box = brand => Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftyp' + brand), Buffer.alloc(12)]);
+
+test('finds footage-shaped media anywhere in the APK, by its bytes or by its name', () => {
+  assert.deepEqual(media(apk([
+    { name: 'assets/StreamingAssets/clip.bin', text: box('mp42'), stored: true },
+    { name: 'assets/bin/Data/still.dat', text: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]) },
+    { name: 'assets/photo.bin', text: box('heic') },
+    { name: 'assets/sound.bin', text: Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVE')]) },
+    { name: 'assets/voice.bin', text: Buffer.from('OggS synthetic') },
+    { name: 'assets/song.bin', text: Buffer.from('ID3 synthetic') },
+    { name: 'assets/clip.webm', text: Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0]) },
+    { name: 'assets/Sahara.MOV', text: 'synthetic, named only' },
+    { name: 'assets/icon.png', text: Buffer.concat([Buffer.from([0x89]), Buffer.from('PNG synthetic')]) },
+  ])), ['assets/StreamingAssets/clip.bin', 'assets/bin/Data/still.dat', 'assets/photo.bin', 'assets/sound.bin', 'assets/voice.bin',
+    'assets/song.bin', 'assets/clip.webm', 'assets/Sahara.MOV', 'assets/icon.png'].map(name => `media file ${name}`));
+});
+
+test("passes Android's own PNG resources and the app's code and data", () => {
+  assert.deepEqual(media(apk([
+    { name: 'res/mipmap-mdpi-v4/app_icon.png', text: Buffer.concat([Buffer.from([0x89]), Buffer.from('PNG synthetic')]) },
+    { name: 'res/drawable-xxhdpi-v4/abc_list_focused_holo.9.png', text: Buffer.concat([Buffer.from([0x89]), Buffer.from('PNG synthetic')]) },
+    { name: metadata, text: 'synthetic Boopy.Quest' },
+    { name: 'assets/bin/Data/data.unity3d', text: 'UnityFS synthetic' },
+    { name: 'lib/arm64-v8a/libil2cpp.so', text: Buffer.from([0x7f, 0x45, 0x4c, 0x46]) },
+  ])), []);
+});
+
+test("finds a clip stored inside Unity's resource files, and not a chance 'ftyp' in raw pixels", () => {
+  const clip = Buffer.concat([Buffer.from('synthetic texture bytes'), box('mp42'), Buffer.from('synthetic mdat')]);
+  const chance = Buffer.concat([Buffer.from('synthetic pixels'), Buffer.from([0x7f, 0x7f, 0x7f, 0x7f]), Buffer.from('ftypzzzz pixels')]);
+  assert.deepEqual(media(apk([
+    { name: 'assets/bin/Data/sharedassets0.resource', text: clip },
+    { name: 'assets/bin/Data/sharedassets1.assets.resS', text: clip, stored: true },
+    { name: 'assets/bin/Data/sharedassets2.assets.resS', text: chance },
+  ])), ['assets/bin/Data/sharedassets0.resource', 'assets/bin/Data/sharedassets1.assets.resS'].map(name => `media file ${name}`));
 });
