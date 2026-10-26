@@ -130,6 +130,8 @@ export function practiceResult(
   plan: { readonly open: OpenTask; readonly result: ProviderResult },
   input: {
     readonly language: string;
+    /** The person's own language; a model line in the target language's script is never shown. */
+    readonly personLanguage?: string;
     readonly languageName: string;
     readonly pick: PracticePick;
     /** The model's confidence in the subject; null, or under 0.5, is said as unsure. */
@@ -153,6 +155,36 @@ export function practiceResult(
     why: null,
     recalledReferenceId: null,
   });
+  if (
+    subject?.type === 'subject' &&
+    line?.type === 'dialogue' &&
+    annotation?.type !== 'annotation'
+  ) {
+    // Without a guess nothing is looked up, and the model's own words in the target language are
+    // not Boopy's to show: only the word list gives those.
+    if (!inScriptOf(line.text, input.language, input.personLanguage))
+      return unchangedPlan('no-guess');
+    const plain = ProviderResult.safeParse({
+      ...result,
+      components: [
+        subject,
+        {
+          type: 'dialogue',
+          text: practiceWords({ language: input.languageName, guess: 'this', term: '' }).noMatch,
+          evidenceIds: line.evidenceIds,
+        },
+      ],
+    });
+    return plain.success
+      ? {
+          result: plain.data,
+          reason: 'no-guess',
+          referenceId: null,
+          why: null,
+          recalledReferenceId: null,
+        }
+      : unchangedPlan('no-guess');
+  }
   if (annotation?.type !== 'annotation' || subject?.type !== 'subject' || line?.type !== 'dialogue')
     return unchangedPlan('no-guess');
   const guess = annotation.text;
@@ -310,4 +342,39 @@ export function correctionResult(
     evidenceIds: [...new Set([...evidence, ...cited, input.attemptEventId])],
     components: ordered,
   });
+}
+
+/** Unicode scripts by a language's usual writing system, from the runtime's own locale data. */
+const SCRIPTS: Record<string, readonly string[]> = {
+  Kore: ['Hang', 'Hani'],
+  Jpan: ['Hira', 'Kana', 'Hani'],
+  Hans: ['Hani'],
+  Hant: ['Hani'],
+};
+
+function scriptOf(language: string): readonly string[] {
+  try {
+    const script = new Intl.Locale(language).maximize().script;
+    return script === undefined ? [] : (SCRIPTS[script] ?? [script]);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether a line holds letters of the target language's script. When that script is also the
+ * person's own, nothing can be told apart, and the answer is no.
+ */
+function inScriptOf(text: string, language: string, personLanguage = 'en'): boolean {
+  const target = scriptOf(language);
+  const own = new Set(scriptOf(personLanguage));
+  return target
+    .filter((script) => !own.has(script))
+    .some((script) => {
+      try {
+        return new RegExp(`\\p{Script=${script}}`, 'u').test(text);
+      } catch {
+        return false;
+      }
+    });
 }

@@ -246,6 +246,7 @@ export function registerTaskRoutes(
     }
     const decided = practiceResult(plan, {
       language: goal.language,
+      personLanguage: goal.personLanguage,
       languageName: languageName(goal.language, goal.personLanguage),
       pick,
       confidence,

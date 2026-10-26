@@ -468,3 +468,39 @@ describe('an unsure guess', () => {
     }
   });
 });
+
+describe("the model's own words in the goal language", () => {
+  it('are never shown as Boopy’s line'.replace('’', "'"), () => {
+    const said = standIn(SESSION, IDS, {
+      ...facts,
+      referent: { ...referent, label: 'Ω meter' },
+      dialogue: facts.dialogue && {
+        ...facts.dialogue,
+        text: 'It looks like a dune: 사구 in Korean.',
+      },
+    });
+    assert.ok(said);
+    const practised = practiceResult(said, {
+      language: 'ko',
+      personLanguage: 'en',
+      languageName: 'Korean',
+      pick: { status: 'passed', rows: [] },
+      confidence: 0.9,
+    });
+    const line = practised.result.components.find((part) => part.type === 'dialogue');
+    assert.equal(
+      line?.type === 'dialogue' && line.text,
+      "I don't have a Korean word for this yet.",
+    );
+    assert.doesNotMatch(JSON.stringify(practised.result.components), /사구/);
+    const plain = practiceResult(said, {
+      language: 'fr',
+      personLanguage: 'en',
+      languageName: 'French',
+      pick: { status: 'passed', rows: [] },
+      confidence: 0.9,
+    });
+    const kept = plain.result.components.find((part) => part.type === 'dialogue');
+    assert.equal(kept?.type === 'dialogue' && kept.text, 'It looks like a dune: 사구 in Korean.');
+  });
+});

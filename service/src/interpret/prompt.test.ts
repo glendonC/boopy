@@ -76,27 +76,22 @@ it('old model output remains readable and direct answers are bounded proposals i
 });
 
 // Instruction regression only: live provider obedience needs a separate runtime probe.
-it('prioritizes requested-language naming in response on first and selected-reference turns', () => {
+it('names the referent in the person language and leaves other languages to the word list', () => {
   assert.ok(
     SYSTEM_PROMPT.includes(
-      'Requested naming/translation takes priority over general scene description',
+      'Never write a word or phrase in another language, a transliteration or a translation',
     ),
   );
-  assert.ok(SYSTEM_PROMPT.includes('on both the first turn and a selectedReference follow-up'));
-  assert.ok(SYSTEM_PROMPT.includes('in response itself, not only in an item gloss'));
-  assert.ok(SYSTEM_PROMPT.includes('낙타 in Korean'));
+  assert.ok(SYSTEM_PROMPT.includes('Boopy finds words in other languages in its own word list'));
   assert.ok(SYSTEM_PROMPT.includes('name the photograph rather than silently switching'));
   assert.ok(SYSTEM_PROMPT.includes('ask which visible candidate they mean'));
-  assert.ok(
-    SYSTEM_PROMPT.includes(
-      'Never replace the requested naming/translation with an unrelated question',
-    ),
-  );
+  assert.ok(SYSTEM_PROMPT.includes('Never replace the naming with an unrelated question'));
   assert.ok(
     SYSTEM_PROMPT.includes(
       'Do not invent a missing candidate or treat a proposed label as verified',
     ),
   );
+  assert.doesNotMatch(SYSTEM_PROMPT, /\p{Script=Hangul}|Korean for|in Korean/u);
   const firstTurn = { ...input, selectedReference: undefined };
   const first = userText(firstTurn);
   const followup = userText(input);
@@ -105,17 +100,16 @@ it('prioritizes requested-language naming in response on first and selected-refe
   assert.ok(followup.includes('Selection is not confirmation'));
 });
 
-it('keeps source-to-requested-language translation direction explicit without confirming identification', () => {
+it('asks for the subject as a short singular noun and never a gloss', () => {
+  assert.ok(SYSTEM_PROMPT.includes('a short singular common noun of one or two words'));
+  assert.ok(SYSTEM_PROMPT.includes('never a description, a place or a phrase'));
+  assert.ok(SYSTEM_PROMPT.includes('gloss is always null'));
   assert.ok(
-    SYSTEM_PROMPT.includes(
-      'distinguish the source word/language from the requested target language',
+    userText({ ...input, view: 'gaze-crop' }).includes(
+      'Image 1 is the part of the frame around where the person is looking',
     ),
   );
-  assert.ok(SYSTEM_PROMPT.includes('Korean for [English source word] is [Korean target word].'));
-  assert.ok(SYSTEM_PROMPT.includes('Korean for desert is 사막.'));
-  assert.ok(SYSTEM_PROMPT.includes('Never invert this'));
-  assert.ok(SYSTEM_PROMPT.includes('or label an English word as the Korean translation'));
-  assert.ok(SYSTEM_PROMPT.includes("does not establish a model's identification as verified"));
+  assert.ok(!userText(input).includes('around where the person is looking'));
 });
 
 it('keeps contextual Boopy answers separate from either downstream assistant and unverified delivery', () => {
@@ -126,10 +120,6 @@ it('keeps contextual Boopy answers separate from either downstream assistant and
   assert.match(SYSTEM_PROMPT, /Do not create a lesson or schedule/);
   assert.match(SYSTEM_PROMPT, /claim any external assistant received context/);
   assert.match(SYSTEM_PROMPT, /or speak as Grok or Muse/);
-  assert.match(
-    SYSTEM_PROMPT,
-    /Requested naming\/translation takes priority over general scene description/,
-  );
   assert.match(SYSTEM_PROMPT, /short contextual answer, not a lesson/);
   assert.doesNotMatch(SYSTEM_PROMPT, /Muse owns teaching and planning/);
 });
@@ -138,7 +128,6 @@ it('the shared prompt and the words Boopy adds carry no em dash', () => {
   const emDash = String.fromCharCode(0x2014);
   assert.equal(SYSTEM_PROMPT.includes(emDash), false);
   assert.equal(userText(input).includes(emDash), false);
-  assert.ok(SYSTEM_PROMPT.includes('"It looks like a camel: 낙타 in Korean."'));
 });
 
 it('says a recorded frame is recorded, with its place in the file and no capture time value', () => {
