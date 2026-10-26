@@ -145,4 +145,49 @@ public class EvidenceInputPolicyTests
         Assert.That(currentRequest.Speech, Is.SameAs(words));
         Assert.That(spoken.SpokenOnly, Is.True);
     }
+
+    private static RecordedFrameRef Recorded() => new RecordedFrameRef
+    {
+        RecordingId = "rec_0123456789abcdef0123456789abcdef", FrameId = "rfr_fedcba9876543210fedcba9876543210",
+    };
+
+    // A recorded still has no room: the gaze point on it is all that goes, never a room point, a depth claim or a pointer.
+    private static Cues RoomCues() => new Cues
+    {
+        Gaze = new Cue { Point = new Point2 { X = .3f, Y = .7f }, World = new[] { 1f, 2f, 3f }, OnSurface = true },
+        Pointer = new PointerCue { Point = new Point2 { X = .9f, Y = .1f } },
+    };
+
+    [Test] public void ATurnOnARecordedStillSendsItsReferenceAsPastRecollectionAndOnlyTheGazePoint()
+    {
+        var start = new EvidenceTurn(false).Start(new SpeechData { Text = "Synthetic question." }, RoomCues(), null, Recorded());
+        Assert.That(start.Frame, Is.Null);
+        Assert.That(start.RecordedFrame!.FrameId, Is.EqualTo("rfr_fedcba9876543210fedcba9876543210"));
+        Assert.That(start.Attention!.Source, Is.EqualTo("past-recollection"));
+        Assert.That(start.Attention.Evidence, Is.EqualTo("visual"));
+        Assert.That(start.Cues.Gaze!.Point.X, Is.EqualTo(.3f));
+        Assert.That(start.Cues.Gaze.Point.Y, Is.EqualTo(.7f));
+        Assert.That(start.Cues.Gaze.World, Is.Null);
+        Assert.That(start.Cues.Gaze.OnSurface, Is.False);
+        Assert.That(start.Cues.Pointer, Is.Null);
+        var json = Newtonsoft.Json.Linq.JObject.Parse(Wire.Write(start));
+        Assert.That(json.ContainsKey("frame"), Is.False);
+        Assert.That(((Newtonsoft.Json.Linq.JObject)json["cues"]!["gaze"]!).ContainsKey("world"), Is.False);
+        var utter = new EvidenceTurn(false).Utter(new SpeechData { Text = "Synthetic follow-on." }, RoomCues(), null, Recorded());
+        Assert.That(utter.Frame, Is.Null);
+        Assert.That(utter.RecordedFrame, Is.Not.Null);
+        Assert.That(utter.Attention!.Source, Is.EqualTo("past-recollection"));
+        Assert.That(utter.Cues!.Gaze!.World, Is.Null);
+        Assert.That(utter.Cues.Pointer, Is.Null);
+    }
+
+    [Test] public void ASpokenOnlyTurnSendsNoRecordedStillAndAFrameAndAStillTogetherAreRefused()
+    {
+        var spoken = new EvidenceTurn(true).Start(new SpeechData { Text = "Synthetic recollection." }, RoomCues(), null, Recorded());
+        Assert.That(spoken.RecordedFrame, Is.Null);
+        Assert.That(spoken.Attention!.Source, Is.EqualTo("unknown"));
+        Assert.That(new EvidenceTurn(true).Utter(new SpeechData(), RoomCues(), null, Recorded()).RecordedFrame, Is.Null);
+        Assert.Throws<System.ArgumentException>(() => new EvidenceTurn(false).Start(new SpeechData(), new Cues(), new FrameData(), Recorded()));
+        Assert.Throws<System.ArgumentException>(() => new EvidenceTurn(false).Utter(new SpeechData(), new Cues(), new FrameData(), Recorded()));
+    }
 }
