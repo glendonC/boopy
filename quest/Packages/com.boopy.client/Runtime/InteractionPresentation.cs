@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -18,8 +19,9 @@ namespace Boopy.Client
         private const string NotSent = " · Not sent to your AI";
         private static readonly HashSet<string> ComponentTypes = new HashSet<string>
         {
-            "subject", "annotation", "dialogue", "choice", "voice_reply", "task_step", "detail", "status", "agent_presence",
+            "subject", "annotation", "dialogue", "choice", "voice_reply", "task_step", "detail", "status", "agent_presence", "term",
         };
+        private static readonly HashSet<string> HeardResults = new HashSet<string> { "heard", "not-heard", "unclear" };
         private static readonly HashSet<string> ActionTypes = new HashSet<string> { "choice", "voice_reply", "task_step" };
 
         public string TargetId { get; private set; } = "";
@@ -45,6 +47,18 @@ namespace Boopy.Client
 
         /// <summary>The person's newest recorded answer, or null before any.</summary>
         public TaskAttempt? LastAttempt { get; private set; }
+
+        /// <summary>The outside word for Boopy's guess, from a dated Wikidata label through Zetaris on the Mac, or null.</summary>
+        public TaskTerm? Term { get; private set; }
+
+        /// <summary>The detail part's text, such as "Wikidata · Zetaris"; empty without one.</summary>
+        public string Detail { get; private set; } = "";
+
+        /// <summary>
+        /// Boopy's line answers the newest attempt: its dialogue cites that attempt's event id. The view then
+        /// shows Boopy's reply, not the attempt, and offers the answer again when the line asks.
+        /// </summary>
+        public bool RepliesToAnswer { get; private set; }
 
         /// <summary>
         /// The strip's speaker line: "Boopy · Not sent to your AI"; over a recorded answer "You · Not sent to your AI",
@@ -108,6 +122,9 @@ namespace Boopy.Client
 
             string? chip = null;
             string? dialogue = null;
+            IReadOnlyList<string> dialogueEvidence = Array.Empty<string>();
+            TaskTerm? term = null;
+            string detail = "";
             IReadOnlyList<string> evidence = Array.Empty<string>();
             InteractionAction? action = null;
             string? status = null;
@@ -138,7 +155,14 @@ namespace Boopy.Client
                     evidence = EvidenceIds(component);
                 }
                 else if (type == "dialogue")
+                {
                     dialogue = RequiredString(component, "text");
+                    dialogueEvidence = LineEvidenceIds(component);
+                }
+                else if (type == "term")
+                    term = TermOf(component);
+                else if (type == "detail")
+                    detail = RequiredString(component, "text");
                 else if (type == "status")
                     status = RequiredString(component, "code");
             }
@@ -151,6 +175,7 @@ namespace Boopy.Client
                 SourceRevision = sourceRevision, Sha256 = sha256, Intent = intent, TaskId = taskId, SessionId = sessionId,
                 Revision = revision, Phase = phase, LastAttempt = lastAttempt,
             };
+            var replies = lastAttempt != null && dialogue != null && dialogueEvidence.Contains(lastAttempt.EventId);
             if (status == "wrong-item")
             {
                 // The assistant's parts are cleared: no chip, no subject, no control. The answer stays recorded.
@@ -164,11 +189,16 @@ namespace Boopy.Client
             presentation.Dialogue = dialogue ?? "";
             presentation.AnnotationEvidenceIds = evidence;
             presentation.Action = action;
+            presentation.Term = term;
+            presentation.Detail = detail;
+            presentation.RepliesToAnswer = replies;
             presentation.StatusLine = "Not sent";
-            presentation.SpeakerLine = (lastAttempt == null ? "Boopy" : lastAttempt.RecognitionUncertain ? "You, as heard" : "You") + NotSent;
-            presentation.Caption = lastAttempt != null ? lastAttempt.Text : presentation.Dialogue;
-            // The control sits only under Boopy's line that asks: once the line shows the person's answer, it goes away.
-            presentation.AnswerLabel = phase == "open" && action?.Type == "voice_reply" && lastAttempt == null ? WithoutOnePeriod(action.Label) : null;
+            var showsAnswer = lastAttempt != null && !replies;
+            presentation.SpeakerLine = (!showsAnswer ? "Boopy" : lastAttempt!.RecognitionUncertain ? "You, as heard" : "You") + NotSent;
+            presentation.Caption = showsAnswer ? lastAttempt!.Text : presentation.Dialogue;
+            // The control sits only under Boopy's line that asks: once the line shows the person's answer, it goes away,
+            // and it comes back when Boopy's own reply to that answer asks again.
+            presentation.AnswerLabel = phase == "open" && action?.Type == "voice_reply" && !showsAnswer ? WithoutOnePeriod(action.Label) : null;
             return presentation;
         }
 
@@ -220,7 +250,15 @@ namespace Boopy.Client
                     throw new ArgumentException("Unknown attempt kind.");
                 if (attempt["recognitionUncertain"]?.Type != JTokenType.Boolean)
                     throw new ArgumentException("Missing recognitionUncertain.");
-                newest = new TaskAttempt(RequiredString(attempt, "text"), attempt["recognitionUncertain"]!.Value<bool>());
+                string? heard = null;
+                if (attempt["heard"] != null)
+                {
+                    heard = RequiredString(attempt, "heard");
+                    if (!HeardResults.Contains(heard))
+                        throw new ArgumentException("Unknown heard result.");
+                }
+                newest = new TaskAttempt(RequiredString(attempt, "eventId"), RequiredString(attempt, "text"),
+                    attempt["recognitionUncertain"]!.Value<bool>(), heard);
             }
             return newest;
         }
@@ -238,6 +276,36 @@ namespace Boopy.Client
                 result[index] = id!;
             }
             return result;
+        }
+
+        private static IReadOnlyList<string> LineEvidenceIds(JObject component)
+        {
+            if (component["evidenceIds"] is not JArray ids || ids.Count > 8)
+                throw new ArgumentException("A line names at most eight evidence ids.");
+            var result = new List<string>();
+            foreach (var entry in ids)
+            {
+                var id = entry.Type == JTokenType.String ? entry.Value<string>() : null;
+                if (string.IsNullOrEmpty(id))
+                    throw new ArgumentException("An evidence id is missing.");
+                result.Add(id!);
+            }
+            return result;
+        }
+
+        private static TaskTerm TermOf(JObject component)
+        {
+            if (component["reviewed"]?.Type != JTokenType.Boolean || component["reviewed"]!.Value<bool>())
+                throw new ArgumentException("An outside term is never reviewed.");
+            if (RequiredString(component, "via") != "zetaris-local")
+                throw new ArgumentException("An outside term comes through Zetaris on the Mac.");
+            if (component["notHeardLastTime"]?.Type != JTokenType.Boolean)
+                throw new ArgumentException("Missing notHeardLastTime.");
+            var gloss = component["gloss"];
+            string? glossText = gloss == null || gloss.Type == JTokenType.Null ? null : RequiredString(component, "gloss");
+            return new TaskTerm(RequiredString(component, "text"), RequiredString(component, "language"), glossText,
+                RequiredString(component, "sourceId"), RequiredString(component, "revision"), RequiredString(component, "retrievedAt"),
+                RequiredString(component, "license"), "zetaris-local", component["notHeardLastTime"]!.Value<bool>());
         }
 
         private static string WithoutOnePeriod(string prompt)
@@ -293,14 +361,55 @@ namespace Boopy.Client
     /// </summary>
     public sealed class TaskAttempt
     {
-        internal TaskAttempt(string text, bool recognitionUncertain)
+        internal TaskAttempt(string eventId, string text, bool recognitionUncertain, string? heard)
         {
+            EventId = eventId;
             Text = text;
             RecognitionUncertain = recognitionUncertain;
+            Heard = heard;
+        }
+
+        public string EventId { get; }
+        public string Text { get; }
+        public bool RecognitionUncertain { get; }
+
+        /// <summary>What Boopy heard against the task's term: heard, not-heard or unclear; null without a term. Never a grade.</summary>
+        public string? Heard { get; }
+    }
+
+    /// <summary>
+    /// The outside word for Boopy's guess: a dated Wikidata label, read through Zetaris on the Mac and never reviewed.
+    /// The annotation keeps Boopy's guess; this is the source's word for it.
+    /// </summary>
+    public sealed class TaskTerm
+    {
+        internal TaskTerm(string text, string language, string? gloss, string sourceId, string revision, string retrievedAt,
+            string license, string via, bool notHeardLastTime)
+        {
+            Text = text;
+            Language = language;
+            Gloss = gloss;
+            SourceId = sourceId;
+            Revision = revision;
+            RetrievedAt = retrievedAt;
+            License = license;
+            Via = via;
+            NotHeardLastTime = notHeardLastTime;
         }
 
         public string Text { get; }
-        public bool RecognitionUncertain { get; }
+        public string Language { get; }
+        public string? Gloss { get; }
+        public string SourceId { get; }
+        public string Revision { get; }
+        /// <summary>When the Mac read the label from Wikidata, kept as the text sent.</summary>
+        public string RetrievedAt { get; }
+        public string License { get; }
+        public string Via { get; }
+        /// <summary>Always false: the label is not reviewed.</summary>
+        public bool Reviewed => false;
+        /// <summary>This subject's term was not heard on the person's most recent attempt at it.</summary>
+        public bool NotHeardLastTime { get; }
     }
 
     /// <summary>The one interactive component already on the view. Agent presence is not an action.</summary>

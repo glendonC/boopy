@@ -446,5 +446,94 @@ namespace Boopy.Client.Tests
             Assert.Throws<ArgumentException>(() => InteractionPresentation.Read("null"));
             Assert.Throws<ArgumentException>(() => InteractionPresentation.Read("<html>busy</html>"));
         }
+            private const string TermPart =
+            "{ \"type\": \"term\", \"text\": \"낙타\", \"language\": \"ko\", \"gloss\": \"camel\", \"sourceId\": \"wikidata:Q7375\", " +
+            "\"revision\": \"101\", \"retrievedAt\": \"1970-01-01T00:00:02.000Z\", \"license\": \"CC0-1.0\", \"via\": \"zetaris-local\", " +
+            "\"reviewed\": false, \"notHeardLastTime\": false }";
+
+        private static string Practice(string term = TermPart, string line = "Camel, I think. In Korean, that's 낙타. Can you say it?",
+            string lineEvidence = "\"ev_camel\", \"wikidata:Q7375.ko\"", bool asks = true, string attempts = "[]", int revision = 1) => View(
+            "tsk_practice", "consult_source", "src_sahara_still", "What is this?", revision, false,
+            "[" +
+            "{ \"type\": \"subject\", \"sourceId\": \"src_sahara_still\", \"maskId\": null }," +
+            "{ \"type\": \"annotation\", \"text\": \"Camel\", \"evidenceIds\": [\"ev_camel\"] }," +
+            term + "," +
+            $"{{ \"type\": \"dialogue\", \"text\": \"{line}\", \"evidenceIds\": [{lineEvidence}] }}," +
+            (asks ? "{ \"type\": \"voice_reply\", \"prompt\": \"Answer.\" }," : "") +
+            "{ \"type\": \"detail\", \"text\": \"Wikidata · Zetaris\" }," +
+            "{ \"type\": \"status\", \"code\": \"not-sent\" }" +
+            "]", attempts);
+
+        [Test]
+        public void PracticeTask_ReadsTheTermBesideTheGuessAndItsSource()
+        {
+            var view = InteractionPresentation.Read(Practice());
+            Assert.That(view.Chip, Is.EqualTo("Camel"));
+            Assert.That(view.Dialogue, Is.EqualTo("Camel, I think. In Korean, that's 낙타. Can you say it?"));
+            Assert.That(view.Detail, Is.EqualTo("Wikidata · Zetaris"));
+            Assert.That(view.AnswerLabel, Is.EqualTo("Answer"));
+            Assert.That(view.RepliesToAnswer, Is.False);
+            var term = view.Term!;
+            Assert.That(term.Text, Is.EqualTo("낙타"));
+            Assert.That(term.Language, Is.EqualTo("ko"));
+            Assert.That(term.Gloss, Is.EqualTo("camel"));
+            Assert.That(term.SourceId, Is.EqualTo("wikidata:Q7375"));
+            Assert.That(term.Revision, Is.EqualTo("101"));
+            Assert.That(term.RetrievedAt, Is.EqualTo("1970-01-01T00:00:02.000Z"));
+            Assert.That(term.License, Is.EqualTo("CC0-1.0"));
+            Assert.That(term.Via, Is.EqualTo("zetaris-local"));
+            Assert.That(term.Reviewed, Is.False);
+            Assert.That(term.NotHeardLastTime, Is.False);
+            Assert.That(InteractionPresentation.Read(Practice(TermPart.Replace("\"gloss\": \"camel\"", "\"gloss\": null"))).Term!.Gloss, Is.Null);
+            Assert.That(InteractionPresentation.Read(Lesson()).Term, Is.Null);
+            Assert.That(InteractionPresentation.Read(Lesson()).Detail, Is.EqualTo(""));
+        }
+
+        [Test]
+        public void PracticeTask_RefusesATermClaimedReviewedOrFromElsewhere()
+        {
+            foreach (var term in new[]
+            {
+                TermPart.Replace("\"reviewed\": false", "\"reviewed\": true"),
+                TermPart.Replace("\"via\": \"zetaris-local\"", "\"via\": \"internet\""),
+                TermPart.Replace("\"text\": \"낙타\", ", ""),
+                TermPart.Replace("\"notHeardLastTime\": false", "\"notHeardLastTime\": \"no\""),
+            })
+                Assert.Throws<ArgumentException>(() => InteractionPresentation.Read(Practice(term)));
+        }
+
+        [Test]
+        public void Attempt_KeepsWhatBoopyHeardAndRefusesAGrade()
+        {
+            const string heard = "{\"eventId\":\"evt_first\",\"text\":\"사막\",\"recognitionUncertain\":true,\"kind\":\"practice-attempt\",\"heard\":\"not-heard\"}";
+            var view = InteractionPresentation.Read(Practice(attempts: "[" + heard + "]", revision: 2));
+            Assert.That(view.LastAttempt!.EventId, Is.EqualTo("evt_first"));
+            Assert.That(view.LastAttempt.Heard, Is.EqualTo("not-heard"));
+            Assert.That(InteractionPresentation.Read(Answered("[" + FirstAttempt + "]")).LastAttempt!.Heard, Is.Null);
+            Assert.Throws<ArgumentException>(() =>
+                InteractionPresentation.Read(Practice(attempts: "[" + heard.Replace("not-heard", "right") + "]", revision: 2)));
+        }
+
+        [Test]
+        public void Correction_ShowsBoopysReplyToTheNewestAnswer()
+        {
+            const string attempt = "{\"eventId\":\"evt_first\",\"text\":\"사막\",\"recognitionUncertain\":true,\"kind\":\"practice-attempt\",\"heard\":\"not-heard\"}";
+            var again = InteractionPresentation.Read(Practice(
+                TermPart.Replace("\"notHeardLastTime\": false", "\"notHeardLastTime\": true"),
+                "I didn't catch 낙타 there. Try again?", "\"evt_first\"", true, "[" + attempt + "]", 3));
+            Assert.That(again.RepliesToAnswer, Is.True);
+            Assert.That(again.SpeakerLine, Is.EqualTo("Boopy · Not sent to your AI"));
+            Assert.That(again.Caption, Is.EqualTo("I didn't catch 낙타 there. Try again?"));
+            Assert.That(again.AnswerLabel, Is.EqualTo("Answer"));
+            Assert.That(again.Term!.NotHeardLastTime, Is.True);
+            var heard = InteractionPresentation.Read(Practice(TermPart, "I heard 낙타.", "\"evt_first\"", false,
+                "[" + attempt.Replace("not-heard", "heard") + "]", 3));
+            Assert.That(heard.RepliesToAnswer, Is.True);
+            Assert.That(heard.Caption, Is.EqualTo("I heard 낙타."));
+            Assert.That(heard.AnswerLabel, Is.Null);
+            var before = InteractionPresentation.Read(Practice(attempts: "[" + attempt + "]", revision: 2));
+            Assert.That(before.RepliesToAnswer, Is.False);
+            Assert.That(before.Caption, Is.EqualTo("사막"));
+        }
     }
 }
