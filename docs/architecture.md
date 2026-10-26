@@ -77,16 +77,38 @@ unsent. Nothing on this path reaches an outside assistant. See [Interaction](pro
 a reply from a file the person chose, or ask the pinned local model. The local model is not
 Grok and is not Muse. See [Activities](activity-contract.md).
 
+## The practice loop
+
+Off unless the person sets a language to practise (`pnpm task goal`) and the Mac runs Zetaris
+with the practice account. Capture, correction, and commit work without it.
+
+1. Observe: a capture, or a boop on a recorded photo or clip the person imported on the Mac (see
+   [Recorded sources](recorded.md)). A recorded frame is never treated as the live room.
+2. Evidence: the local model proposes the subject. Its label is Boopy's guess and stays a proposal.
+3. Retrieve: a Meterless H-MEM index over the journal's practice records recalls earlier attempts
+   for the same guess or the same source; practice on a subject the person marked wrong is left
+   out. Then one fixed Zetaris query on this Mac joins a dated Wikidata snapshot (labels, aliases
+   and descriptions in several languages, CC0, not reviewed) with the practice record, rewritten
+   from the journal whenever it differs. The model never names a reference id, and the caller
+   cannot pass SQL. Every returned row is checked against the import's receipt, kept outside
+   Zetaris.
+4. Decide: a word shows only for exactly one item whose label or alias matches the guess. Otherwise
+   Boopy says plainly that it has no word.
+5. Act: the task's line names the guess and the word, as Boopy's own stand-in, not sent to anyone.
+6. Update: a spoken answer is heard, not heard, or unclear against the word, never graded; the
+   attempt and Boopy's reply are journaled together, and the practice table is rewritten.
+
+`pnpm trace` prints these steps for a session from the journal, without the person's words. See
+[Interaction](protocol.md) and [Memory](evidence.md).
+
 ## Optional helpers
 
-These are off the main path. Capture, correction, and commit work with all of them disabled.
+These are off the main path.
 
-- Memory search uses a small adopted subset of Meterless H-MEM. A replaced claim is left out
-  of later search. See [Memory](evidence.md).
-- Zetaris can look up three fixed outside references: dune, desert, and dromedary. The caller
-  cannot pass SQL.
-- NVIDIA embeddings can rank candidates. A score does not confirm a fact and cannot bring back
-  a claim a person replaced.
+- Memory search over saved items uses the same H-MEM subset. A replaced claim is left out of
+  later search. See [Memory](evidence.md).
+- NVIDIA embeddings can rank candidates for saved-item recall. A score does not confirm a fact
+  and cannot bring back a claim a person replaced. They are not part of the practice loop.
 
 ## Rules
 
