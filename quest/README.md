@@ -119,7 +119,9 @@ enables it. Boxes stay approximate until a mask exists.
 
 With the service's recorded-scene routes on (`BOOPY_RECORDED_SCENE=1`), the Mac can show a still of
 your own recording. The headset reads it over the same USB connection every few seconds and shows it
-as a picture ahead of you; look at it and pinch to talk about that still. The turn sends which still
+filling your view, the room hidden behind it; look at it and pinch to talk about that still. A held
+Touch controller works too: its trigger is the pinch and it points like a hand, because the headset
+tracks no hand while a controller is in it. The turn sends which still
 it is and where your eyes were on it (0 to 1 from its top-left corner), never pixels, and the reply's
 outline is drawn on the picture. The still stays in the headset's memory only: no footage file is on
 the headset or in the APK. In the editor, `Boopy.Quest.Editor.RecordedSceneValidation.Render` writes

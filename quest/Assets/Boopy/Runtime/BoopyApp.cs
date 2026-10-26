@@ -62,6 +62,8 @@ namespace Boopy.Quest
         private readonly Voice voice = new Voice();
         private Transform? head;
         private Transform? pocket;
+        // Where each Touch controller is, for its ray while it is held.
+        private Transform? leftController, rightController;
 
         private SessionView? session;
         private bool busy;
@@ -159,12 +161,13 @@ namespace Boopy.Quest
         {
             if (console == null || scene == null) return;
             turnOpen = true; turnAnswered = false;
-            // A turn about the recorded picture docks the console beside it, level with where the eyes booped.
-            Vector3? booped = null;
-            if (recorded != null && recorded.Showing && head != null && gaze != null
-                && recorded.TryHit(new Ray(head.position, gaze.Point - head.position), out var onPicture, out _)) booped = onPicture;
-            scene.OpenTurn(console, booped);
+            scene.OpenTurn(console);
         }
+
+        // A Touch controller counts as held while the headset takes input from it, which is when it tracks no hand.
+        private static HandInput.Controller Held(OVRInput.Controller touch, Transform? anchor) =>
+            anchor == null || !OVRInput.IsControllerConnected(touch) || (OVRInput.GetActiveController() & touch) == 0 ? default
+                : new HandInput.Controller(true, OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, touch), anchor.position, anchor.forward);
 
         private void CloseTurn()
         {
@@ -187,6 +190,7 @@ namespace Boopy.Quest
             }
             head = rig.centerEyeAnchor;
             pocket = rig.leftHandAnchor;
+            leftController = rig.leftControllerAnchor; rightController = rig.rightControllerAnchor;
             left = new HandInput(false, rig.leftHandAnchor.GetComponentInChildren<OVRHand>(true), rig.leftHandAnchor.GetComponentInChildren<OVRSkeleton>(true));
             right = new HandInput(true, rig.rightHandAnchor.GetComponentInChildren<OVRHand>(true), rig.rightHandAnchor.GetComponentInChildren<OVRSkeleton>(true));
 
@@ -353,9 +357,11 @@ namespace Boopy.Quest
             var now = Time.unscaledTime;
             ExpireButtonRecording(now);
             passthrough?.Poll(now);
+            // The recording's media cue stays in view, away from the subject's word.
+            if (recorded != null && recorded.Showing) recorded.Follow(head, scene.TryGetWord(out var wordAt) ? wordAt : (Vector3?)null, Time.unscaledDeltaTime);
             // Read both hands before drawing or resolving targets: never use last frame's ray.
-            var rightPinch = right.Update(head, now, inputAllowed);
-            var leftPinch = left.Update(head, now, inputAllowed);
+            var rightPinch = right.Update(head, now, inputAllowed, Held(OVRInput.Controller.RTouch, rightController));
+            var leftPinch = left.Update(head, now, inputAllowed, Held(OVRInput.Controller.LTouch, leftController));
 
             var gazeRay = new Ray(head.position, head.forward);
             var aiming = active != null ? (active.RayActive ? active : null)
@@ -381,6 +387,7 @@ namespace Boopy.Quest
                 handControl = ControlHit(aiming.Ray, out var handOnControl);
                 if (handControl != ConsoleAction.None) pointer.Show(handOnControl, true);
                 else if (handChip != null) pointer.Show(handOnChip, true);
+                else if (recorded != null && recorded.TryHit(aiming.Ray, out var handOnPicture, out _)) pointer.Show(handOnPicture, true);
                 else if (room.TryHit(aiming.Ray, 6f, out var handPoint, out _)) pointer.Show(handPoint, true);
                 else pointer.Hide();
             }

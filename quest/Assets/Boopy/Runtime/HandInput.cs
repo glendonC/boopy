@@ -10,14 +10,30 @@ namespace Boopy.Quest
     /// One tracked hand: its index pinch as taps and holds, and a ray a seated person can point
     /// with. The SDK ray needs the hand held up near shoulder height, so this one does not use it.
     /// The palm's facing comes from the knuckle positions, not from joint axes, so it does not
-    /// depend on any skeleton's axis conventions.
+    /// depend on any skeleton's axis conventions. While a Touch controller is held in that hand the
+    /// headset tracks no hand, so the controller's trigger is the pinch and its pose the ray.
     /// </summary>
     public sealed class HandInput
     {
+        /// <summary>A Touch controller in this hand, read once a frame: whether it is held, its trigger, and its pose.</summary>
+        public readonly struct Controller
+        {
+            public Controller(bool held, float trigger, Vector3 position, Vector3 forward)
+            {
+                Held = held; Trigger = trigger; Position = position; Forward = forward;
+            }
+
+            public bool Held { get; }
+            public float Trigger { get; }
+            public Vector3 Position { get; }
+            public Vector3 Forward { get; }
+        }
+
         private readonly OVRHand? hand;
         private readonly OVRSkeleton? skeleton;
         private Dictionary<OVRSkeleton.BoneId, Transform>? bones;
         private string? reportedBlock;
+        private bool usingController;
 
         public HandInput(bool right, OVRHand? hand, OVRSkeleton? skeleton)
         {
@@ -34,17 +50,24 @@ namespace Boopy.Quest
         /// <summary>A newly blocked pinch attempt this update, for a brief hint to the person.</summary>
         public string? BlockedAttempt { get; private set; }
 
-        /// <summary>Reads the hand once a frame; returns what its pinch did.</summary>
-        public PinchEvent Update(Transform head, float now, bool inputAllowed)
+        /// <summary>Reads the hand, or the controller held in it, once a frame; returns what its pinch did.</summary>
+        public PinchEvent Update(Transform head, float now, bool inputAllowed, Controller controller = default)
         {
             BlockedAttempt = null;
-            Tracked = inputAllowed && hand != null && hand.IsTracked && hand.IsDataHighConfidence;
-            var rawStrength = hand != null ? hand.GetFingerPinchStrength(OVRHand.HandFinger.Index) : 0f;
+            var handTracked = hand != null && hand.IsTracked && hand.IsDataHighConfidence;
+            var held = !handTracked && controller.Held;
+            if (held != usingController)
+            {
+                usingController = held;
+                Debug.Log($"Boopy: input {(Right ? "right" : "left")} {(held ? "controller" : "hand")}.");
+            }
+            Tracked = inputAllowed && (handTracked || held);
+            var rawStrength = held ? controller.Trigger : hand != null ? hand.GetFingerPinchStrength(OVRHand.HandFinger.Index) : 0f;
             var strength = Tracked ? rawStrength : 0f;
-            var palmFacesHead = UpdateRay(head);
-            var system = hand != null && hand.IsSystemGestureInProgress || palmFacesHead;
+            var palmFacesHead = held ? AimController(controller) : UpdateRay(head);
+            var system = !held && (hand != null && hand.IsSystemGestureInProgress || palmFacesHead);
             var pinch = Gesture.Update(Tracked, strength, system, now);
-            var blocked = !inputAllowed ? "focus" : hand == null ? "missing-hand"
+            var blocked = !inputAllowed ? "focus" : held ? null : hand == null ? "missing-hand"
                 : !hand.IsTracked ? "tracking" : !hand.IsDataHighConfidence ? "confidence"
                 : hand.IsSystemGestureInProgress ? "system" : palmFacesHead ? "palm" : null;
             // Only gesture edges and newly blocked attempts are logged: no poses, audio or
@@ -64,6 +87,14 @@ namespace Boopy.Quest
                 reportedBlock = null;
             }
             return pinch;
+        }
+
+        // A held controller points where it points; it has no palm to face the eyes.
+        private bool AimController(Controller controller)
+        {
+            RayActive = Tracked && controller.Forward.sqrMagnitude > 1e-6f;
+            Ray = new Ray(controller.Position, RayActive ? controller.Forward.normalized : Vector3.forward);
+            return false;
         }
 
         /// <summary>Updates the ray; returns whether the palm faces the eyes (the headset's menu gesture).</summary>
