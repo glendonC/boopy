@@ -25,7 +25,7 @@ namespace Boopy.Client
             float speakingActivity = 0f)
         {
             if (state != "idle" && state != "listening" && state != "processing" && state != "review"
-                && state != "saved" && state != "error")
+                && state != "saved" && state != "error" && state != "heard" && state != "not-heard" && state != "unclear")
                 throw new ArgumentOutOfRangeException(nameof(state));
             clock = Finite(clock); elapsed = Math.Max(0f, Finite(elapsed));
             attentionX = Clamp(Finite(attentionX), -1f, 1f);
@@ -33,7 +33,8 @@ namespace Boopy.Client
             float lift = 0f, pitch = 0f, roll = 0f, stretch = 1f, fin = 0f;
             float left = .92f, right = .92f;
             float leftShoulder = 12f, rightShoulder = 12f, leftElbow = 18f, rightElbow = 18f, wrist = 0f, smile = 0f;
-            if (state == "listening") { attentionX = 0f; attentionY = 0f; }
+            // Listening, and an answer with no word of the language in it, turn to the person, not to the picture.
+            if (state == "listening" || state == "unclear") { attentionX = 0f; attentionY = 0f; }
             var lookX = attentionX * .24f;
             var lookY = attentionY * .18f;
             switch (state)
@@ -68,6 +69,31 @@ namespace Boopy.Client
                 case "error":
                     roll = 8f; pitch = 4f; left = .65f; right = .92f; fin = 10f;
                     leftShoulder = 55f; rightShoulder = 25f; leftElbow = 45f;
+                    break;
+                // What Boopy heard in an answer, on its body; never a grade.
+                case "heard":
+                    // One hop; reduced motion keeps the resting pose and lets only the eyes smile.
+                    pitch = -3f; fin = -8f; leftShoulder = 30f; rightShoulder = 42f;
+                    left = right = .66f;
+                    if (!reduced)
+                    {
+                        smile = 1f; fin = -20f; leftShoulder = rightShoulder = 95f; leftElbow = rightElbow = 30f;
+                        if (elapsed < .5f)
+                        {
+                            var arc = (float)Math.Sin(elapsed / .5f * Math.PI);
+                            lift = arc * .006f; pitch = -3f - arc * 6f; stretch = 1f - arc * .02f;
+                        }
+                    }
+                    break;
+                case "not-heard":
+                    // It points at the word it listened for, and looks there.
+                    pitch = -2f; left = right = 1f; fin = -6f;
+                    leftShoulder = 24f; rightShoulder = 112f; rightElbow = 18f; wrist = 10f;
+                    break;
+                case "unclear":
+                    // It tilts toward the person, as if to say it did not catch it.
+                    roll = -11f; pitch = 3f; left = right = .9f; fin = 6f;
+                    leftShoulder = 36f; rightShoulder = 20f;
                     break;
             }
             if (!reduced)

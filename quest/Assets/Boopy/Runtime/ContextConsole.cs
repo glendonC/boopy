@@ -236,9 +236,25 @@ namespace Boopy.Quest
             voicePreparing = preparing;
             // This independent wait never locks Talk or changes the returned answer.
             dockedDialogue?.SetVoicePreparing(preparing);
-            companion?.SetState(preparing ? "processing" : busy && mode != "processing" ? "processing" : mode == "capture" ? "idle" : mode);
+            companion?.SetState(CompanionState());
         }
         public void SetCompanionFrozen(bool frozen) => companion?.SetFrozen(frozen);
+
+        // What Boopy heard in an answer shows on its body for a moment (DESIGN): a hop for heard, a point at the word for
+        // not-heard, a tilt toward the person for unclear. Then it rests as before. Never a grade.
+        private const float ReactionSeconds = 1.6f;
+        private string? reaction;
+        private float reactionAge;
+        public string? Reaction => reaction;
+        public void React(string heard, Vector3? word)
+        {
+            if (companion == null || (heard != "heard" && heard != "not-heard" && heard != "unclear")) return;
+            reaction = heard; reactionAge = 0f;
+            if (heard == "not-heard" && word is Vector3 at) companion.SetAttention(companion.transform.InverseTransformPoint(at));
+            companion.SetState(CompanionState());
+        }
+        private string CompanionState() => reaction
+            ?? (voicePreparing || (busy && mode != "processing") ? "processing" : mode == "capture" ? "idle" : mode);
         public void SetReducedMotion(bool on) { reduced = on; Assemble(); }
         public void ShowCapture(string? target = null) { Stage("capture", "", ""); ConfigureOpening(); Compose(); }
         public void ShowListening(bool correcting = false) => Stage("listening", "", "Listening…\nLet go when you’re done.");
@@ -472,7 +488,7 @@ namespace Boopy.Quest
                 companionHome = new Vector3(-.215f, beside, -.018f);
                 // Away beside a subject, or flying back, Boopy keeps its own path home.
                 if (visitPoint == null && !returning) companion.transform.localPosition = companionHome;
-                companion.SetState(voicePreparing || (busy && mode != "processing") ? "processing" : mode == "capture" ? "idle" : mode);
+                companion.SetState(CompanionState());
             }
             // An explicit sheet takes the conversation's place; closing it restores the exact caption.
             if (options.gameObject.activeSelf || card.gameObject.activeSelf) header.gameObject.SetActive(false);
@@ -849,6 +865,7 @@ namespace Boopy.Quest
         {
             if (!reduced) animationTime += Mathf.Max(0f, delta);
             homeDelay = Mathf.Max(0f, homeDelay - Mathf.Max(0f, delta));
+            if (reaction != null && (reactionAge += Mathf.Max(0f, delta)) >= ReactionSeconds) { reaction = null; companion?.SetState(CompanionState()); }
             AdvanceRelocation(delta);
             Face();
             foreach (var module in new[] { header, card, options, bar }) if (module != null && module.gameObject.activeSelf) module.Refresh(delta);

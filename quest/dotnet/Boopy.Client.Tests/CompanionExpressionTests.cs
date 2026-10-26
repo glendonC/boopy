@@ -11,6 +11,9 @@ namespace Boopy.Client.Tests
         [TestCase("review")]
         [TestCase("saved")]
         [TestCase("error")]
+        [TestCase("heard")]
+        [TestCase("not-heard")]
+        [TestCase("unclear")]
         public void ReducedMotionKeepsStateExpressionWithoutTimeDrivenMovement(string state)
         {
             var first = CompanionExpression.At(state, 0f, 0f, true);
@@ -30,7 +33,7 @@ namespace Boopy.Client.Tests
         [Test]
         public void AttentionAndTransientMotionRemainWithinCompanionEnvelope()
         {
-            foreach (var state in new[] { "idle", "listening", "processing", "review", "saved", "error" })
+            foreach (var state in new[] { "idle", "listening", "processing", "review", "saved", "error", "heard", "not-heard", "unclear" })
             for (var tick = 0; tick < 600; tick++)
             {
                 var expression = CompanionExpression.At(state, tick / 30f, tick / 30f, false, 100f, -100f);
@@ -41,6 +44,40 @@ namespace Boopy.Client.Tests
                 Assert.That(expression.LookX, Is.InRange(-.24f, .24f));
                 Assert.That(expression.LookY, Is.InRange(-.18f, .18f));
             }
+        }
+
+        // What Boopy heard in an answer shows on its body (DESIGN): a hop when it heard the word, a point at the word when it
+        // did not, a tilt toward the person when it heard no word of the language at all. Never a grade.
+        [Test]
+        public void HeardHopsOnceAndReducedMotionKeepsOnlyTheEyes()
+        {
+            var hop = CompanionExpression.At("heard", 3f, .25f, false);
+            Assert.That(hop.Lift, Is.GreaterThan(.003f));
+            Assert.That(hop.Smile, Is.EqualTo(1f));
+            Assert.That(CompanionExpression.At("heard", 3f, 1f, false).Lift, Is.LessThan(.001f), "One hop, then still.");
+            var reduced = CompanionExpression.At("heard", 3f, .25f, true);
+            var rest = CompanionExpression.At("review", 3f, .25f, true);
+            Assert.That((reduced.Lift, reduced.Pitch, reduced.Roll, reduced.RightShoulder), Is.EqualTo((rest.Lift, rest.Pitch, rest.Roll, rest.RightShoulder)));
+            Assert.That(reduced.LeftEye, Is.LessThan(rest.LeftEye), "Reduced motion: only the eyes smile.");
+        }
+
+        [Test]
+        public void NotHeardPointsAtTheWord()
+        {
+            var right = CompanionExpression.At("not-heard", 3f, .3f, false, .8f, .2f);
+            Assert.That(right.RightShoulder, Is.GreaterThanOrEqualTo(100f));
+            Assert.That(right.RightElbow, Is.LessThanOrEqualTo(30f));
+            Assert.That(right.LookX, Is.GreaterThan(.1f), "It looks where it points.");
+            Assert.That(right.Yaw, Is.GreaterThan(5f));
+        }
+
+        [Test]
+        public void UnclearTiltsTowardThePerson()
+        {
+            var unsure = CompanionExpression.At("unclear", 3f, .3f, false, .8f, .2f);
+            Assert.That(System.Math.Abs(unsure.Roll), Is.GreaterThanOrEqualTo(8f));
+            Assert.That(unsure.LookX, Is.EqualTo(0f), "It looks at the person, not at the picture.");
+            Assert.That(unsure.Yaw, Is.EqualTo(0f));
         }
 
         [Test]
