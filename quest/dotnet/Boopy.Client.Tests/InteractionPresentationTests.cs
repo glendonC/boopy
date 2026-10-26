@@ -308,6 +308,27 @@ namespace Boopy.Client.Tests
         }
 
         [Test]
+        public void AViewSentToTheGrokBotSaysSoAndOnlyThat()
+        {
+            static InteractionPresentation SentTo(string? value, string json)
+            {
+                var body = JObject.Parse(json);
+                if (value != null) body["sentTo"] = value;
+                return InteractionPresentation.Read(body.ToString());
+            }
+            var sent = SentTo("grok-bot", Lesson());
+            Assert.That(sent.SentTo, Is.EqualTo("grok-bot"));
+            Assert.That(sent.SpeakerLine, Is.EqualTo("Boopy · Sent to your Grok Bot"));
+            Assert.That(sent.StatusLine, Is.EqualTo("Sent to your Grok Bot"));
+            Assert.That(SentTo("grok-bot", Answered("[" + FirstAttempt + "]")).SpeakerLine, Is.EqualTo("You · Sent to your Grok Bot"));
+            var kept = SentTo(null, Lesson());
+            Assert.That(kept.SentTo, Is.Null);
+            Assert.That(kept.SpeakerLine, Is.EqualTo("Boopy · Not sent to your AI"));
+            Assert.That(kept.StatusLine, Is.EqualTo("Not sent"));
+            Assert.Throws<ArgumentException>(() => SentTo("your-ai", Lesson()), "Only the Grok Bot is a place a task is said to be sent.");
+        }
+
+        [Test]
         public void ATaskViewReadsBoopyNotSentWithItsDialogueAndOneAnswerControl()
         {
             var view = InteractionPresentation.Read(Lesson());

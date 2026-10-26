@@ -11,12 +11,14 @@ namespace Boopy.Client
     /// <summary>
     /// One task view as the existing scene slots. The target id is the source id. The chip's subject
     /// is the grounded item the annotation names. Continuity stays local-only and delivery stays
-    /// not-sent, so every line the headset shows for a task says "Not sent to your AI".
+    /// not-sent, so every line the headset shows for a task says "Not sent to your AI", unless the
+    /// view says the service has started sending it to the person's own Grok Bot ("sentTo":
+    /// "grok-bot"): then the line says "Sent to your Grok Bot", and nothing else is ever named.
     /// </summary>
     public sealed class InteractionPresentation
     {
         private const int MaxRevision = 1_000_000;
-        private const string NotSent = " · Not sent to your AI";
+        private const string NotSent = " · Not sent to your AI", SentToGrokBot = " · Sent to your Grok Bot";
         private static readonly HashSet<string> ComponentTypes = new HashSet<string>
         {
             "subject", "annotation", "dialogue", "choice", "voice_reply", "task_step", "detail", "status", "agent_presence", "term",
@@ -32,6 +34,8 @@ namespace Boopy.Client
         public string Utterance { get; private set; } = "";
         public string Continuity { get; private set; } = "";
         public string Delivery { get; private set; } = "";
+        /// <summary>"grok-bot" once the service has started sending the task to the person's Grok Bot; null otherwise.</summary>
+        public string? SentTo { get; private set; }
         public int SourceRevision { get; private set; }
         public string Sha256 { get; private set; } = "";
         public string Intent { get; private set; } = "";
@@ -101,6 +105,14 @@ namespace Boopy.Client
             var delivery = RequiredString(view, "delivery");
             if (delivery != "not-sent")
                 throw new ArgumentException("Delivery stays not-sent.");
+            string? sentTo = null;
+            if (view["sentTo"] != null)
+            {
+                sentTo = RequiredString(view, "sentTo");
+                if (sentTo != "grok-bot")
+                    throw new ArgumentException("A task is only ever said to be sent to the person's Grok Bot.");
+            }
+            var sentLine = sentTo != null ? SentToGrokBot : NotSent;
             if (view["source"] is not JObject source)
                 throw new ArgumentException("Task source is missing.");
             var sourceId = RequiredString(source, "sourceId");
@@ -171,7 +183,7 @@ namespace Boopy.Client
 
             var presentation = new InteractionPresentation
             {
-                TargetId = sourceId, Utterance = utterance, Continuity = continuity, Delivery = delivery,
+                TargetId = sourceId, Utterance = utterance, Continuity = continuity, Delivery = delivery, SentTo = sentTo,
                 SourceRevision = sourceRevision, Sha256 = sha256, Intent = intent, TaskId = taskId, SessionId = sessionId,
                 Revision = revision, Phase = phase, LastAttempt = lastAttempt,
             };
@@ -182,7 +194,7 @@ namespace Boopy.Client
                 presentation.wrongItem = true;
                 presentation.StatusLine = "Wrong item";
                 presentation.Caption = "Wrong item.";
-                presentation.SpeakerLine = "Boopy" + NotSent;
+                presentation.SpeakerLine = "Boopy" + sentLine;
                 return presentation;
             }
             presentation.Chip = chip ?? "";
@@ -192,9 +204,9 @@ namespace Boopy.Client
             presentation.Term = term;
             presentation.Detail = detail;
             presentation.RepliesToAnswer = replies;
-            presentation.StatusLine = "Not sent";
+            presentation.StatusLine = sentTo != null ? "Sent to your Grok Bot" : "Not sent";
             var showsAnswer = lastAttempt != null && !replies;
-            presentation.SpeakerLine = (!showsAnswer ? "Boopy" : lastAttempt!.RecognitionUncertain ? "You, as heard" : "You") + NotSent;
+            presentation.SpeakerLine = (!showsAnswer ? "Boopy" : lastAttempt!.RecognitionUncertain ? "You, as heard" : "You") + sentLine;
             presentation.Caption = showsAnswer ? lastAttempt!.Text : presentation.Dialogue;
             // The control sits only under Boopy's line that asks: once the line shows the person's answer, it goes away,
             // and it comes back when Boopy's own reply to that answer asks again.
