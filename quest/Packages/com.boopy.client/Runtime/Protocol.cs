@@ -131,6 +131,8 @@ namespace Boopy.Client
     {
         public string? RequestId { get; set; }
         public FrameData? Frame { get; set; } = new FrameData();
+        /// <summary>A recorded still the Mac shows, in place of <see cref="Frame"/>.</summary>
+        public RecordedFrameRef? RecordedFrame { get; set; }
         public AttentionInput? Attention { get; set; }
         public Cues Cues { get; set; } = new Cues();
         public SpeechData Speech { get; set; } = new SpeechData();
@@ -151,6 +153,8 @@ namespace Boopy.Client
         public ContextualActionSelection? Selection { get; set; }
         public AttentionInput? Attention { get; set; }
         public FrameData? Frame { get; set; }
+        /// <summary>A recorded still the Mac shows, in place of <see cref="Frame"/>.</summary>
+        public RecordedFrameRef? RecordedFrame { get; set; }
         public Cues? Cues { get; set; }
         public SpeechData Speech { get; set; } = new SpeechData();
     }
