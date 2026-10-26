@@ -66,6 +66,16 @@ Nothing reaches the person's own assistant. A later Talk turn
 returns to the conversation's own line and follow-up questions. Without a task, the
 conversation looks as before.
 
+The Mac can show a recorded scene: one still of the person's own recording, chosen on the Mac. The
+headset shows it as a large flat picture ahead and a little below the eyes, fixed in the room, and
+takes it away when the Mac clears it. No words sit on it: a still from a clip has a player's thin
+bar along its bottom edge, stopped where the still is, with the play triangle; a photo has nothing.
+While it shows, every Talk turn is about that still: the turn names the still and the point the
+eyes were on, never sends a frame of the room, and the room's live outlines are off. The reply's outline lies on the picture, and the chip, Boopy's line and the
+controls work as on any turn. Another still from the Mac replaces the picture between turns and
+takes the old still's outline and chip with it. A recorded still is never the room as it is now,
+and the headset keeps it in memory only.
+
 Arrange-and-sequence activities have service support and no scene renderer. Do not add a tray
 or a stack of cards for them.
 

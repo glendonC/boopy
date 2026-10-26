@@ -67,9 +67,13 @@ and never retries app requests or opens a network listener. Stop it with Ctrl-C 
 ends. With multiple headsets, select one using `BOOPY_QUEST_SERIAL`; `BOOPY_ADB` overrides the
 verified Unity adb path. `--once` performs a single check. Tests: `node --test quest/scripts/tether.test.mjs`.
 Without the guard, restore the reverse mapping manually after every Unity build.
-Before any install, check a built APK carries none of the Interaction SDK's telemetry:
+Before any install, check a built APK carries none of the Interaction SDK's telemetry and no
+picture, clip or sound outside Android's own resources:
 `node quest/scripts/apk-privacy.mjs quest/Builds/Boopy.apk`
-(tests: `node --test quest/scripts/apk-privacy.test.mjs`).
+(tests: `node --test quest/scripts/apk-privacy.test.mjs`). Before a build, check what it is built from:
+`node quest/scripts/asset-privacy.mjs quest/Assets <private footage folder>...` fails on any media file or link
+under `quest/Assets`, ignored folders included, and on any copy of a file from the folders named
+(tests: `node --test quest/scripts/asset-privacy.test.mjs`).
 
 On the Mac, start Ollama (`OLLAMA_NO_CLOUD=1 OLLAMA_HOST=127.0.0.1:11434 ollama serve`) and the
 service (`cd ../service && pnpm start`). Reuse an existing local-only Ollama server when available;
@@ -110,6 +114,17 @@ Boopy does not send it. An agent you connect to the Mac's connector can read it.
 
 A successful build is not a worn test. Segmentation is optional and off unless the service
 enables it. Boxes stay approximate until a mask exists.
+
+## A recorded scene
+
+With the service's recorded-scene routes on (`BOOPY_RECORDED_SCENE=1`), the Mac can show a still of
+your own recording. The headset reads it over the same USB connection every few seconds and shows it
+as a picture ahead of you; look at it and pinch to talk about that still. The turn sends which still
+it is and where your eyes were on it (0 to 1 from its top-left corner), never pixels, and the reply's
+outline is drawn on the picture. The still stays in the headset's memory only: no footage file is on
+the headset or in the APK. In the editor, `Boopy.Quest.Editor.RecordedSceneValidation.Render` writes
+stills of a synthetic picture; with `BOOPY_RECORDED_FRAME` set to the absolute path of a JPEG still and
+`BOOPY_RENDER_DIR` to a private folder, it also renders that still, with no outline on it.
 
 ## Check first on the headset
 
