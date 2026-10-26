@@ -113,7 +113,8 @@ a retry names the same result.
 `POST /v1/tasks/{taskId}/answers` takes `{ "eventId", "sessionId", "expectedRevision",
 "speech": { "wav": "<base64 WAV>" } }`. An answer is audio only. The Mac transcribes it with
 the same local recognizer that session turns use. No interpreter runs. The answer starts no
-session turn and adds no result.
+session turn and adds no result, except on a task that practises a term, where Boopy's own reply to
+the attempt follows it (see "Practice under a goal").
 
 The transcript is recorded as a `voice_reply` attempt. The recognizer gives no confidence for
 its words, so `recognitionUncertain` is always `true`. An unknown confidence is not a certain
@@ -138,6 +139,46 @@ An empty transcript gets 422 `no_words`. A transcript longer than 400 characters
 than one line gets 422 `answer_unusable`. A recognizer that fails gets 502 `speech_failed`. A
 Mac without speech set up gets 503 `recognizer_unavailable`. None of these appends to the
 journal.
+
+## Practice under a goal
+
+Code: `service/src/interaction/practice.ts`, `service/src/memory/practice.ts`,
+`service/src/references/zetaris.ts` and the task routes. Off unless the person has set a goal and
+the Mac runs Zetaris with the practice account.
+
+- The person sets the goal on the Mac: practise words in one language, shown around words of their
+  own language. It is journaled as `goal.set` with the person as its actor. The latest goal holds; a
+  goal with no language turns practice off. Without a goal, nothing on this page happens.
+- When a task opens, Boopy's guess (the annotation's label, the model's proposal) is folded into a
+  match key. H-MEM recalls earlier practice for the same guess or the same source from the
+  journal's practice records; practice on a subject the person marked wrong is left out first. Then
+  Boopy runs one fixed Zetaris query on this Mac, `term-pick-v1`, which joins the items whose label
+  or alias is that key with the practice record per item and language. The model never names a
+  reference id. The pick is bounded; a result that arrives later is dropped. Every row is checked
+  against the import's receipt kept outside Zetaris.
+- What came back and what Boopy decided are journaled as `task.reference-retrieved`, in the same
+  transaction as the opening and the first result. The rows are a dated Wikidata snapshot, never
+  reviewed and never called live.
+- The annotation keeps Boopy's guess. A `term` part carries the source's word: `text`,
+  `language`, `gloss`, `sourceId` (`wikidata:Q…`), `revision`, `retrievedAt`, `license`,
+  `via: "zetaris-local"`, `reviewed: false` and `notHeardLastTime` (this subject's term was not
+  heard on the person's most recent attempt at it). A term shows only for exactly one item that matches
+  the guess, with a label in the target language that the display rules take as it is. The line
+  asks the person to say it, and a detail part says "Wikidata label, revision N, via Zetaris on your
+  Mac, not reviewed". Earlier practice on another item appears only in that detail, never on the
+  subject.
+- Otherwise the subject and the guess stay and the line says why there is no word, with no answer
+  offered: no item in the word list, more than one, a script the headset cannot show yet, Zetaris
+  not answering in time, or rows that do not match the import.
+- An answer on a practice task is assessed against the term: `heard` when the term's letters are in
+  the recognized text, `not-heard` when letters of its script were recognized but not the term,
+  `unclear` when none were. `recognitionUncertain` stays `true` and no result is a grade. The
+  attempt, `task.answer-assessed` and Boopy's reply as the next stand-in result are one journal
+  transaction, so the view moves two revisions. That reply's line cites the attempt's event id and
+  never quotes what was recognized. The attempt in the view gains `heard`.
+- After an answer, and after a wrong subject on a practice task, the practice table in Zetaris is
+  rewritten whole from the journal, and `task.practice-staged` records the outcome. The table holds
+  ids, the item, the language, the result, the flag and the time, never words.
 
 ## Task actions
 
