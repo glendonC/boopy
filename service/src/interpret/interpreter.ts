@@ -53,6 +53,8 @@ export interface InterpretInput {
   readonly pointer: Point | null;
   /** The frame with the cue markers drawn, as JPEG. */
   readonly image: Buffer;
+  /** Set when image 1 is the part of a recorded frame around the gaze, not the whole frame. */
+  readonly view?: 'gaze-crop';
   /** A full-resolution close-up around the main cue, as JPEG, and where it sits in the frame. */
   readonly crop: { readonly image: Buffer; readonly region: Box } | null;
   readonly text: readonly TextLine[];

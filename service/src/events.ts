@@ -197,6 +197,8 @@ export type BoopyEvent =
         readonly raw: string;
         readonly actions?: readonly ContextualAction[];
         readonly choice?: ChoiceCard;
+        /** The model saw this part of the frame around the gaze; its boxes were mapped back. */
+        readonly view?: { readonly kind: 'gaze-crop'; readonly region: Box };
       }
     >
   | Event<

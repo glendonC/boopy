@@ -29,7 +29,7 @@ import {
   StartSessionRequest as StartSessionSchema,
 } from './contracts.ts';
 import type { BoopyEvent, Correction, TextLine, TurnStage } from './events.ts';
-import { prepareEvidence } from './evidence.ts';
+import { fromView, gazeView, intoView, pointFromView, prepareEvidence } from './evidence.ts';
 import {
   type EvidenceRef,
   evidenceRecords,
@@ -1269,13 +1269,39 @@ export class Boopy {
         : { x: (targetBox.x0 + targetBox.x1) / 2, y: (targetBox.y0 + targetBox.y1) / 2 };
     const gaze = selectedTarget === undefined ? (observation.cues.gaze?.point ?? null) : null;
     const pointer = selectedTarget === undefined ? (observation.cues.pointer?.point ?? null) : null;
-    const [lines, evidence] = await Promise.all([
+    // A recorded frame has no room depth to single out a small subject, so the model sees the view
+    // around the person's gaze instead, unless they asked about the whole scene. Its answer is
+    // mapped back into the frame's coordinates.
+    const view =
+      observation.recorded !== undefined &&
+      gaze !== null &&
+      pointer === null &&
+      selectedTarget === undefined &&
+      scope !== 'scene'
+        ? await gazeView(jpeg, gaze)
+        : null;
+    const inView = (point: Point | null): Point | null =>
+      point === null || view === null
+        ? point
+        : {
+            x: (point.x - view.region.x0) / (view.region.x1 - view.region.x0),
+            y: (point.y - view.region.y0) / (view.region.y1 - view.region.y0),
+          };
+    const [frameLines, evidence] = await Promise.all([
       work?.ocr === false
         ? Promise.resolve([] as TextLine[])
         : this.#readText(sessionId, observationId, jpeg, heard.utteranceId),
-      prepareEvidence(jpeg, { gaze, pointer }, targetPoint),
+      prepareEvidence(view?.image ?? jpeg, { gaze: inView(gaze), pointer }, targetPoint),
     ]);
-    const focus: Point = targetPoint ?? pointer ?? gaze ?? { x: 0.5, y: 0.5 };
+    // The model reads OCR boxes on the image it sees.
+    const lines =
+      view === null
+        ? frameLines
+        : frameLines.flatMap((line) => {
+            const box = intoView(line.box, view.region);
+            return box === null ? [] : [{ ...line, box }];
+          });
+    const focus: Point = targetPoint ?? pointer ?? inView(gaze) ?? { x: 0.5, y: 0.5 };
     const interpreter = this.#deps.interpreter;
     const interpretationId = this.#newId('int');
     const started = performance.now();
@@ -1332,8 +1358,9 @@ export class Boopy {
             : { recorded: { seconds: observation.recorded.seconds } }),
         },
         scope,
-        gaze,
+        gaze: inView(gaze),
         pointer,
+        ...(view === null ? {} : { view: 'gaze-crop' as const }),
         image: evidence.marked,
         crop: evidence.crop,
         text: nearest(lines, focus.x, focus.y, PROMPT_LINES),
@@ -1350,6 +1377,15 @@ export class Boopy {
         scope,
         text: lines,
       });
+      if (view !== null)
+        for (const item of normalized.items) {
+          const grounding = item.grounding;
+          if (grounding.box !== undefined) grounding.box = fromView(grounding.box, view.region);
+          if (grounding.point !== undefined)
+            grounding.point = pointFromView(grounding.point, view.region);
+          if (grounding.contour !== undefined)
+            grounding.contour = grounding.contour.map((point) => pointFromView(point, view.region));
+        }
       // A subject the model did not name may come from the person's near cue, never on a turn
       // about the whole scene or a selected record. Its reply and follow-ups stay unattached.
       const fromCue =
@@ -1432,6 +1468,7 @@ export class Boopy {
           raw: result.raw,
           actions,
           ...(choice === undefined ? {} : { choice }),
+          ...(view === null ? {} : { view: { kind: 'gaze-crop' as const, region: view.region } }),
         },
       });
       this.#notices.set(

@@ -415,7 +415,17 @@ describe('a turn on a recorded frame', () => {
     const input = interpreter.inputs[0];
     assert.equal(input?.sourceContext?.source, 'past-recollection');
     assert.deepEqual(input?.sourceContext?.recorded, { seconds: scene.frames[2].seconds });
-    assert.deepEqual(input?.gaze, { x: 0.4, y: 0.6 });
+    // The model sees the view around the gaze; mapped back through the journaled region, its gaze
+    // is the boop's point on the frame.
+    assert.equal(input?.view, 'gaze-crop');
+    const proposed = journal.all().find((event) => event.type === 'interpretation.proposed');
+    assert.ok(proposed?.type === 'interpretation.proposed' && proposed.data.view && input?.gaze);
+    const region = proposed.data.view.region;
+    const back = {
+      x: region.x0 + input.gaze.x * (region.x1 - region.x0),
+      y: region.y0 + input.gaze.y * (region.y1 - region.y0),
+    };
+    assert.ok(Math.abs(back.x - 0.4) < 1e-9 && Math.abs(back.y - 0.6) < 1e-9);
     for (const word of NOT_ABOUT_A_RECORDING)
       assert.equal(input?.sourceContext?.selectionReason.toLowerCase().includes(word), false, word);
     assert.equal(JSON.stringify(journal.all()).includes('current-surroundings'), false);
