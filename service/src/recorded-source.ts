@@ -7,7 +7,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, existsSync, mkdirSync } from 'node:fs';
-import { chmod, lstat, mkdtemp, open, readFile, realpath, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, open, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { z } from 'zod';
@@ -28,6 +28,13 @@ const LONG_EDGE = 1280;
 const DISPLAY_LONG_EDGE = 2560;
 const MAX_DISPLAY_BYTES = 4 * 1024 * 1024;
 const FFPROBE = '/opt/homebrew/bin/ffprobe';
+const FFMPEG = '/opt/homebrew/bin/ffmpeg';
+/** The diagonal a 35 mm-equivalent focal length is defined against (a 36 by 24 mm frame). */
+const FULL_FRAME_DIAGONAL_MM = Math.hypot(36, 24);
+const FOCAL_TAG = 'com.apple.quicktime.camera.focal_length.35mm_equivalent';
+/** The only tags the remux may keep: the container's own, none from the recording. */
+const CONTAINER_TAGS = ['major_brand', 'minor_version', 'compatible_brands'];
+const STREAM_TAGS = ['language', 'handler_name'];
 const VIDEO = ['mov', 'mp4', 'm4v'] as const;
 const PHOTO = ['heic', 'heif', 'jpg', 'jpeg', 'png'] as const;
 
@@ -133,12 +140,53 @@ interface DisplayMade {
   }[];
 }
 
+/** The recording for playback: its video alone, H.264 in standard range, no audio, no tag. */
+interface VideoMade {
+  readonly recordingId: string;
+  readonly videoSha256: string;
+  readonly bytes: number;
+  readonly width: number;
+  readonly height: number;
+  /** Frames over duration: the average, since a recording's frame times may vary. */
+  readonly frameRate: number | null;
+}
+
+/**
+ * Where the picture's edges were from the capturing camera's forward axis: the tangents of the
+ * angles to its left, right, top and bottom edges, all positive (a rectilinear picture).
+ */
+export const Tangents = z.strictObject({
+  tanLeft: z.number().positive().max(20),
+  tanRight: z.number().positive().max(20),
+  tanUp: z.number().positive().max(20),
+  tanDown: z.number().positive().max(20),
+});
+const ProfileName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
+/** A projection someone measured for the recording device, kept as that. */
+export const MeasuredProjection = Tangents.extend({
+  profile: ProfileName,
+  /** Whether where the picture sits around the forward axis was measured or inferred. */
+  centring: z.enum(['measured', 'inferred']),
+  /** The profile's other measured shape, kept beside it (for example the square capture). */
+  reference: Tangents.extend({ profile: ProfileName }).optional(),
+});
+interface ProjectionSet extends z.infer<typeof Tangents> {
+  readonly recordingId: string;
+  readonly source: 'lens-tag' | 'measured-device-profile';
+  readonly profile: string | null;
+  /** A lens tag gives no optical centre, so a centred picture is assumed. */
+  readonly centring: 'measured' | 'inferred' | 'assumed';
+  readonly reference?: z.infer<typeof MeasuredProjection>['reference'];
+}
+
 export type RecordedEvent =
   | Envelope<'recorded.source.imported', Imported>
   | Envelope<'recorded.scene.shown', { readonly recordingId: string; readonly frameId: string }>
   | Envelope<'recorded.scene.cleared', { readonly recordingId: string }>
   | Envelope<'recorded.outlines.made', OutlinesMade>
-  | Envelope<'recorded.display.made', DisplayMade>;
+  | Envelope<'recorded.display.made', DisplayMade>
+  | Envelope<'recorded.video.made', VideoMade>
+  | Envelope<'recorded.projection.set', ProjectionSet>;
 
 /** What makes outlines for a recording: the local scene worker and the local interpreter. */
 export interface Outliner {
@@ -163,6 +211,9 @@ export interface RecordingSummary {
   readonly outlines: { readonly running: boolean; readonly frames: number | null };
   /** Frames with a display rendition, null before any; running while one is being made. */
   readonly display: { readonly running: boolean; readonly frames: number | null };
+  /** Whether the playback video is made, and where the projection came from, if anywhere. */
+  readonly video: boolean;
+  readonly projection: ProjectionSet['source'] | null;
 }
 
 export interface SceneView {
@@ -174,6 +225,16 @@ export interface SceneView {
   readonly sourceTimeSeconds: number | null;
   /** The clip's length; null for a photo. */
   readonly durationSeconds: number | null;
+  /** The recording to play, as it was captured; frames[].seconds are times in it. Null for a photo. */
+  readonly video: {
+    readonly url: string;
+    readonly sha256: string;
+    readonly width: number;
+    readonly height: number;
+    readonly durationSeconds: number | null;
+    readonly frameRate: number | null;
+  } | null;
+  readonly projection: Omit<ProjectionSet, 'recordingId' | 'reference'> | null;
   readonly capturedAt: { readonly value: string | null; readonly trust: 'unknown' | 'unverified' };
   readonly frameSha256: string;
   readonly frames: readonly { frameId: string; seconds: number | null; frameSha256: string }[];
@@ -251,22 +312,17 @@ function helperAt(binary: string): Helper {
     });
 }
 
-/** The file's own capture-date tags, asked for by name so no other tag value is ever read. */
-function videoDates(path: string): Promise<CaptureOrigin> {
+/** A fixed media tool with an argument array and a deadline: its bounded stdout, or null. */
+function runTool(file: string, args: string[], timeoutMs: number): Promise<Buffer | null> {
   return new Promise((resolve) => {
-    const child = spawn(
-      FFPROBE,
-      [
-        ...['-v', 'error', '-protocol_whitelist', 'file', '-format_whitelist', 'mov'],
-        ...['-enable_drefs', '0', '-use_absolute_path', '0', '-show_entries'],
-        'format_tags=creation_time,com.apple.quicktime.creationdate:stream=index:stream_tags=creation_time,com.apple.quicktime.creationdate',
-        ...['-of', 'json', '-i', path],
-      ],
-      { shell: false, stdio: ['ignore', 'pipe', 'ignore'], env: { LC_ALL: 'C' } },
-    );
+    const child = spawn(file, args, {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { LC_ALL: 'C' },
+    });
     const chunks: Buffer[] = [];
     let size = 0;
-    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
       size += chunk.length;
       if (size > 65_536) child.kill('SIGKILL');
@@ -275,19 +331,69 @@ function videoDates(path: string): Promise<CaptureOrigin> {
     child.on('error', () => undefined);
     child.on('close', (code) => {
       clearTimeout(timer);
-      try {
-        if (code !== 0) throw new Error();
-        const probe = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-          format?: Record<string, unknown>;
-          streams?: Record<string, unknown>[];
-        };
-        resolve(captureOrigin(probe.streams ?? [], probe.format ?? {}));
-      } catch {
-        // An unreadable answer is no claim at all, never a guessed time.
-        resolve(parseCaptureClaims([]));
-      }
+      resolve(code === 0 && size <= 65_536 ? Buffer.concat(chunks) : null);
     });
   });
+}
+
+type TagProbe = { format?: Record<string, unknown>; streams?: Record<string, unknown>[] };
+
+/** The named tags of a stored file, asked for by name so no other tag value is ever read. */
+async function probeTags(path: string, entries: string): Promise<TagProbe | null> {
+  const output = await runTool(
+    FFPROBE,
+    [
+      ...['-v', 'error', '-protocol_whitelist', 'file', '-format_whitelist', 'mov'],
+      ...['-enable_drefs', '0', '-use_absolute_path', '0', '-show_entries', entries],
+      ...['-of', 'json', '-i', path],
+    ],
+    10_000,
+  );
+  try {
+    return output === null ? null : (JSON.parse(output.toString('utf8')) as TagProbe);
+  } catch {
+    return null;
+  }
+}
+
+/** The file's own capture-date tags. */
+async function videoDates(path: string): Promise<CaptureOrigin> {
+  const probe = await probeTags(
+    path,
+    'format_tags=creation_time,com.apple.quicktime.creationdate:stream=index:stream_tags=creation_time,com.apple.quicktime.creationdate',
+  );
+  // An unreadable answer is no claim at all, never a guessed time.
+  return probe === null
+    ? parseCaptureClaims([])
+    : captureOrigin(probe.streams ?? [], probe.format ?? {});
+}
+
+/** The 35 mm-equivalent focal length a video's camera wrote, by that one tag's name, or null. */
+async function videoFocalLength(path: string): Promise<number | null> {
+  const probe = await probeTags(path, `format_tags=${FOCAL_TAG}:stream_tags=${FOCAL_TAG}`);
+  for (const tags of [
+    probe?.format?.tags,
+    ...(probe?.streams ?? []).map((stream) => stream.tags),
+  ]) {
+    const value = Number((tags as Record<string, unknown> | undefined)?.[FOCAL_TAG]);
+    if (Number.isFinite(value) && value >= 1 && value <= 2000) return value;
+  }
+  return null;
+}
+
+/**
+ * The projection a 35 mm-equivalent focal length gives an upright picture of this shape, centred:
+ * the equivalent is defined on a 36 by 24 mm frame's diagonal, which the picture's diagonal takes.
+ */
+export function lensProjection(focal35: number, width: number, height: number) {
+  const half = FULL_FRAME_DIAGONAL_MM / (2 * focal35) / Math.hypot(width, height);
+  const tangent = (value: number) => Math.round(value * 1e4) / 1e4;
+  return {
+    tanLeft: tangent(half * width),
+    tanRight: tangent(half * width),
+    tanUp: tangent(half * height),
+    tanDown: tangent(half * height),
+  };
 }
 
 /** EXIF DateTimeOriginal with its own offset and fraction; the GPS block is never read. */
@@ -390,6 +496,8 @@ export class RecordedScenes {
   readonly #outlines = new Map<string, OutlinesMade>();
   readonly #outlining = new Set<string>();
   readonly #display = new Map<string, Map<string, DisplayMade['frames'][number]>>();
+  readonly #videos = new Map<string, VideoMade>();
+  readonly #projection = new Map<string, ProjectionSet>();
   readonly #displaying = new Set<string>();
   readonly #outliner: Outliner | undefined;
 
@@ -421,6 +529,10 @@ export class RecordedScenes {
     else if (event.type === 'recorded.scene.cleared') this.#shown = null;
     else if (event.type === 'recorded.outlines.made')
       this.#outlines.set(event.data.recordingId, event.data);
+    else if (event.type === 'recorded.video.made')
+      this.#videos.set(event.data.recordingId, event.data);
+    else if (event.type === 'recorded.projection.set')
+      this.#projection.set(event.data.recordingId, event.data);
     else if (event.type === 'recorded.display.made')
       this.#display.set(
         event.data.recordingId,
@@ -575,7 +687,7 @@ export class RecordedScenes {
       });
       // The headset's sharper renditions; without them it is shown the stills, so a failure here
       // leaves the import as it is.
-      await this.#makeDisplay(imported, path).catch(() => undefined);
+      await this.#prepare(imported, path);
       return this.#summary(imported, false);
     } finally {
       this.#busy = false;
@@ -594,6 +706,8 @@ export class RecordedScenes {
         running: this.#displaying.has(recording.recordingId),
         frames: this.#display.get(recording.recordingId)?.size ?? null,
       },
+      video: this.#videos.has(recording.recordingId),
+      projection: this.#projection.get(recording.recordingId)?.source ?? null,
       outlines: {
         running: this.#outlining.has(recording.recordingId),
         frames: this.#outlines.get(recording.recordingId)?.frames.length ?? null,
@@ -654,6 +768,147 @@ export class RecordedScenes {
     }
   }
 
+  /**
+   * Everything the headset needs beyond the stills, each made once and each optional: the display
+   * renditions, the playback video, and the field of view from a lens tag. One failing part leaves
+   * the others and the recording as they are.
+   */
+  async #prepare(recording: Imported, path: string): Promise<void> {
+    if (!this.#display.has(recording.recordingId))
+      await this.#makeDisplay(recording, path).catch(() => undefined);
+    if (recording.kind === 'video' && !this.#videos.has(recording.recordingId))
+      await this.#makeVideo(recording, path).catch(() => undefined);
+    if (!this.#projection.has(recording.recordingId)) {
+      const focal =
+        recording.kind === 'video'
+          ? await videoFocalLength(path)
+          : await this.#helper(['probe-photo', path], 60_000).then(
+              (probe) => (typeof probe.focalLength35mm === 'number' ? probe.focalLength35mm : null),
+              () => null,
+            );
+      if (focal !== null && focal >= 1 && focal <= 2000)
+        this.#record({
+          type: 'recorded.projection.set',
+          session: recording.recordingId,
+          actor: 'person',
+          data: {
+            recordingId: recording.recordingId,
+            source: 'lens-tag',
+            profile: null,
+            centring: 'assumed',
+            ...lensProjection(focal, recording.width, recording.height),
+          },
+        });
+    }
+  }
+
+  /**
+   * The recording for playback: the helper writes its video alone as H.264 in standard range,
+   * every frame at its own time, then ffmpeg copies it once more with no tag at all and the index
+   * first. A tag left beyond the container's own refuses it. Stored 0600, named by its SHA-256.
+   */
+  async #makeVideo(recording: Imported, path: string): Promise<void> {
+    const work = await mkdtemp(join(this.#directory, '.work-'));
+    try {
+      await chmod(work, 0o700);
+      const raw = join(work, 'raw.mp4');
+      const out = join(work, 'out.mp4');
+      const answer = await this.#helper(['export-video', path, raw], 10 * 60_000);
+      const width = number(answer.width, (n) => n > 0 && n <= 16384);
+      const height = number(answer.height, (n) => n > 0 && n <= 16384);
+      const written = number(answer.frames, (n) => Number.isInteger(n) && n > 0);
+      const copied = await runTool(
+        FFMPEG,
+        [
+          ...['-v', 'error', '-nostdin', '-protocol_whitelist', 'file', '-i', raw],
+          ...['-map', '0:v:0', '-c', 'copy', '-map_metadata', '-1', '-map_metadata:s', '-1'],
+          ...[
+            '-fflags',
+            '+bitexact',
+            '-flags:v',
+            '+bitexact',
+            '-movflags',
+            '+faststart',
+            '-y',
+            out,
+          ],
+        ],
+        120_000,
+      );
+      const tags = copied === null ? null : await probeTags(out, 'format_tags:stream_tags');
+      if (
+        tags === null ||
+        !Object.keys(tags.format?.tags ?? {}).every((key) => CONTAINER_TAGS.includes(key)) ||
+        !(tags.streams ?? []).every((stream) =>
+          Object.keys((stream.tags as object | undefined) ?? {}).every((key) =>
+            STREAM_TAGS.includes(key),
+          ),
+        )
+      )
+        refuse(422, 'recorded_decode_failed', 'Boopy could not make a clean video from it.');
+      const hash = createHash('sha256');
+      let bytes = 0;
+      const file = await open(out, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        for await (const chunk of file.createReadStream({ autoClose: false })) {
+          hash.update(chunk as Buffer);
+          bytes += (chunk as Buffer).length;
+        }
+      } finally {
+        await file.close();
+      }
+      const videoSha256 = hash.digest('hex');
+      const folder = join(this.#directory, 'video');
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
+      await rename(out, join(folder, `${videoSha256}.mp4`));
+      await chmod(join(folder, `${videoSha256}.mp4`), 0o600);
+      const turned = recording.rotation === 90 || recording.rotation === 270;
+      this.#record({
+        type: 'recorded.video.made',
+        session: recording.recordingId,
+        actor: 'person',
+        data: {
+          recordingId: recording.recordingId,
+          videoSha256,
+          bytes,
+          width: turned ? height : width,
+          height: turned ? width : height,
+          frameRate:
+            recording.durationSeconds === null || recording.durationSeconds <= 0
+              ? null
+              : Math.round((written / recording.durationSeconds) * 1000) / 1000,
+        },
+      });
+    } finally {
+      await rm(work, { recursive: true, force: true });
+    }
+  }
+
+  /** The playback video of the shown recording, for the headset's range reads. */
+  video(recordingId: string): { path: string; bytes: number } {
+    const made = this.#videos.get(recordingId);
+    if (this.#shown?.recordingId !== recordingId || made === undefined)
+      return refuse(404, 'recorded_unknown', 'No video of the shown recording.');
+    return { path: join(this.#directory, 'video', `${made.videoSha256}.mp4`), bytes: made.bytes };
+  }
+
+  /** A projection someone measured for the device that recorded this, kept as that. */
+  setProjection(input: unknown): RecordingSummary {
+    const parsed = MeasuredProjection.extend({ recordingId: RecordingId }).safeParse(input);
+    if (!parsed.success) return invalid('Name a recording and its measured projection.');
+    const { recordingId, ...measured } = parsed.data;
+    const recording = this.#recordings.get(recordingId);
+    if (recording === undefined)
+      return refuse(404, 'recorded_unknown', 'No recording has that id.');
+    this.#record({
+      type: 'recorded.projection.set',
+      session: recordingId,
+      actor: 'person',
+      data: { recordingId, source: 'measured-device-profile', ...measured },
+    });
+    return this.#summary(recording, false);
+  }
+
   /** Makes display renditions for a recording imported before they existed; returns at once. */
   startDisplay(input: unknown): RecordingSummary {
     const parsed = z.strictObject({ recordingId: RecordingId }).safeParse(input);
@@ -670,7 +925,7 @@ export class RecordedScenes {
       return refuse(404, 'recorded_source_missing', 'The original is not in the store.');
     this.#busy = true;
     this.#displaying.add(recording.recordingId);
-    void this.#makeDisplay(recording, path)
+    void this.#prepare(recording, path)
       .catch(() => undefined)
       .finally(() => {
         this.#busy = false;
@@ -831,6 +1086,33 @@ export class RecordedScenes {
       height: shown?.height ?? frame.height,
       sourceTimeSeconds: frame.seconds,
       durationSeconds: recording.durationSeconds,
+      video: (() => {
+        const made = this.#videos.get(recording.recordingId);
+        return made === undefined
+          ? null
+          : {
+              url: `/v1/recorded/${recording.recordingId}/video`,
+              sha256: made.videoSha256,
+              width: made.width,
+              height: made.height,
+              durationSeconds: recording.durationSeconds,
+              frameRate: made.frameRate,
+            };
+      })(),
+      projection: (() => {
+        const set = this.#projection.get(recording.recordingId);
+        return set === undefined
+          ? null
+          : {
+              tanLeft: set.tanLeft,
+              tanRight: set.tanRight,
+              tanUp: set.tanUp,
+              tanDown: set.tanDown,
+              source: set.source,
+              profile: set.profile,
+              centring: set.centring,
+            };
+      })(),
       capturedAt: { value: capturedAt, trust: capturedAt === null ? 'unknown' : 'unverified' },
       frameSha256: shown?.displaySha256 ?? frame.frameSha256,
       frames: recording.frames.map(({ frameId, seconds, frameSha256 }) => ({
@@ -902,7 +1184,7 @@ function frameTime(recording: Imported, frame: RecordedFrame): string | null {
 function summary(
   recording: Imported,
   reused: boolean,
-): Omit<RecordingSummary, 'outlines' | 'display'> {
+): Omit<RecordingSummary, 'outlines' | 'display' | 'video' | 'projection'> {
   return {
     recordingId: recording.recordingId,
     kind: recording.kind,

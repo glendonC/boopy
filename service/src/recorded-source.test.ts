@@ -484,7 +484,8 @@ describe('recorded import', () => {
       sampling: { mode: 'every', seconds: 1, startSeconds: 10, durationSeconds: 5 },
     });
     assert.equal(window.frames, 5);
-    assert.deepEqual(await readdir(good.store), [`${long}.mov`]);
+    // The store keeps the original and the playback video; no work folder is left behind.
+    assert.deepEqual(await readdir(good.store), [`${long}.mov`, 'video']);
     const bad = await setup(failing);
     const sha256 = await bad.place(clips.palette as string, 'mov');
     await refusal(bad.scenes.importSource({ sha256, extension: 'mov' }), 'recorded_decode_failed');
@@ -567,8 +568,10 @@ describe('recorded scene', () => {
       'frames',
       'height',
       'kind',
+      'projection',
       'recordingId',
       'sourceTimeSeconds',
+      'video',
       'width',
     ]);
     const jpeg = scenes.frame(scene.frames[3]?.frameId ?? '');

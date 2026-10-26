@@ -6,6 +6,7 @@
 // Usage:
 //   boopy-recorded probe-video <file>
 //   boopy-recorded stills-video <file> <folder> <long-edge> <value/timescale>...
+//   boopy-recorded export-video <file> <out.mp4>
 //   boopy-recorded probe-photo <file>
 //   boopy-recorded still-photo <file> <folder> <long-edge>
 // A failure prints {"error":"<code>"} and exits 2. No path or metadata value is ever printed.
@@ -167,6 +168,57 @@ func stillsVideo(_ url: URL, _ folder: URL, _ longEdge: Int, _ requested: [Strin
     emit(["stills": stills])
 }
 
+/// The video alone, re-encoded as H.264 in standard range (BT.709), every frame at its own time on
+/// the movie's timeline (edits applied, variable frame times kept), no audio and no metadata. The
+/// service then copies it once more without any tag and with its index first.
+func exportVideo(_ url: URL, _ out: URL) async {
+    let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+    let video = await videoTrack(asset)
+    let sdr: [String: Any] = [
+        AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+        AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+    ]
+    guard let reader = try? AVAssetReader(asset: asset) else { fail("video_reader") }
+    let output = AVAssetReaderTrackOutput(track: video.track, outputSettings: [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        AVVideoColorPropertiesKey: sdr,
+    ])
+    output.alwaysCopiesSampleData = false
+    guard reader.canAdd(output) else { fail("video_reader") }
+    reader.add(output)
+    guard let writer = try? AVAssetWriter(outputURL: out, fileType: .mp4) else { fail("video_writer") }
+    writer.metadata = []
+    let width = Int(video.natural.width), height = Int(video.natural.height)
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: width,
+        AVVideoHeightKey: height,
+        AVVideoColorPropertiesKey: sdr,
+        AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: max(4_000_000, width * height * 6)],
+    ])
+    input.expectsMediaDataInRealTime = false
+    input.transform = (try? await video.track.load(.preferredTransform)) ?? .identity
+    guard writer.canAdd(input) else { fail("video_writer") }
+    writer.add(input)
+    guard reader.startReading(), writer.startWriting() else { fail("video_writer") }
+    writer.startSession(atSourceTime: .zero)
+    var written = 0
+    while let sample = output.copyNextSampleBuffer() {
+        if CMSampleBufferGetNumSamples(sample) == 0 { continue }
+        while !input.isReadyForMoreMediaData { usleep(2_000) }
+        // Decoded frames already carry their time on the movie's timeline (edits applied), the
+        // same times probe-video reports, so they are written as they come.
+        guard input.append(sample) else { fail("video_writer") }
+        written += 1
+    }
+    if reader.status != .completed { fail("video_reader") }
+    input.markAsFinished()
+    await writer.finishWriting()
+    if writer.status != .completed { fail("video_writer") }
+    emit(["frames": written, "width": width, "height": height])
+}
+
 func photoSource(_ url: URL) -> (CGImageSource, Int) {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
         let type = CGImageSourceGetType(source) as String?,
@@ -185,7 +237,8 @@ func probePhoto(_ url: URL) {
     else { fail("photo_size") }
     let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
     if !(1...8).contains(orientation) { fail("photo_orientation") }
-    // Only the three capture-date fields are read from the EXIF block. The GPS block is never read.
+    // Only the three capture-date fields and the focal length are read from the EXIF block. The GPS
+    // block is never read.
     let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
     func text(_ key: CFString) -> Any { (exif[key] as? String) ?? NSNull() }
     let turned = orientation >= 5
@@ -197,6 +250,8 @@ func probePhoto(_ url: URL) {
         "dateTimeOriginal": text(kCGImagePropertyExifDateTimeOriginal),
         "offsetTimeOriginal": text(kCGImagePropertyExifOffsetTimeOriginal),
         "subsecTimeOriginal": text(kCGImagePropertyExifSubsecTimeOriginal),
+        // The one lens field read: the 35 mm-equivalent focal length, for the field of view.
+        "focalLength35mm": (exif[kCGImagePropertyExifFocalLenIn35mmFilm] as? Int).map { $0 as Any } ?? NSNull(),
     ])
 }
 
@@ -227,6 +282,10 @@ case "stills-video":
     let folder = URL(fileURLWithPath: arguments[3])
     let times = Array(arguments[5...])
     run { await stillsVideo(file, folder, longEdge, times) }
+case "export-video":
+    guard arguments.count == 4 else { fail("usage") }
+    let out = URL(fileURLWithPath: arguments[3])
+    run { await exportVideo(file, out) }
 case "probe-photo":
     probePhoto(file)
 case "still-photo":
