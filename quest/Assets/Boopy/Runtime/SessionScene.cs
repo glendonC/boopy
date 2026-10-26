@@ -421,7 +421,7 @@ namespace Boopy.Quest
 
         /// <summary>
         /// The word on a subject in a recorded picture (DESIGN): in the picture's plane, one gap above the subject's outline,
-        /// else below, right or left of it, inside the picture and never over the subject; its ink read from the still under
+        /// else below, right or left of it, inside the part of the picture in view and never over the subject; its ink read from the still under
         /// it. With a task the word is the task's outside term and Boopy's guess and their source; without one, the guess.
         /// </summary>
         private void ShowWord(Item item)
@@ -440,19 +440,21 @@ namespace Boopy.Quest
             var w = word.Size.x / plane.Width; var h = word.Size.y / plane.Height;
             var gap = SpatialTheme.Gap * Vector3.Distance(eyes, center) / plane.Height;
             var middle = (x0 + x1) / 2f; var level = (y0 + y1) / 2f;
-            // Above the subject first, climbing toward the picture's top a gap at a time (a third of the block at least, so a
-            // tall picture stays a few dozen spots); then below, right and left of it.
+            // The picture covers the view, so part of it lies past the view's edge: the word stays in the part well in view.
+            var (vx0, vy0, vx1, vy1) = picture != null && picture.Showing ? picture.Readable : (0f, 0f, 1f, 1f);
+            // Above the subject first, climbing toward the top of the view a gap at a time (a third of the block at least,
+            // so a tall picture stays a few dozen spots); then below, right and left of it.
             var spots = new List<N.Vector2>();
             var climb = Mathf.Max(gap, h / 3f);
-            for (var y = y0 - gap - h / 2f; y - h / 2f >= 0f; y -= climb) spots.Add(new N.Vector2(middle, y));
+            for (var y = y0 - gap - h / 2f; y - h / 2f >= vy0; y -= climb) spots.Add(new N.Vector2(middle, y));
             spots.Add(new N.Vector2(middle, y1 + gap + h / 2f));
             spots.Add(new N.Vector2(x1 + gap + w / 2f, level)); spots.Add(new N.Vector2(x0 - gap - w / 2f, level));
-            var inside = spots.Where(at => at.X - w / 2f >= 0f && at.X + w / 2f <= 1f && at.Y - h / 2f >= 0f && at.Y + h / 2f <= 1f).ToList();
+            var inside = spots.Where(at => at.X - w / 2f >= vx0 && at.X + w / 2f <= vx1 && at.Y - h / 2f >= vy0 && at.Y + h / 2f <= vy1).ToList();
             // Each line sits on calm pixels, never across busy detail such as a rider's arm or head (DESIGN): the first spot
-            // where every line is calm, else the calmest; with no spot inside the picture, above the subject, kept inside.
+            // where every line is calm, else the calmest; with no spot in view, above the subject, kept in view.
             var spot = inside.FirstOrDefault(at => Busiest(word, plane, at) <= CalmSpread);
             if (spot == default && inside.Count > 0) spot = inside.OrderBy(at => Busiest(word, plane, at)).First();
-            if (spot == default) spot = new N.Vector2(Mathf.Clamp(middle, w / 2f, 1f - w / 2f), Mathf.Max(h / 2f, y0 - gap - h / 2f));
+            if (spot == default) spot = new N.Vector2(Mathf.Clamp(middle, vx0 + w / 2f, vx1 - w / 2f), Mathf.Clamp(y0 - gap - h / 2f, vy0 + h / 2f, vy1 - h / 2f));
             var away = N.Vector3.Normalize(N.Vector3.Cross(plane.Right, plane.Up));
             var at = plane.At(spot.X, spot.Y, -away, .002f);
             var right = new Vector3(plane.Right.X, plane.Right.Y, plane.Right.Z); var up = new Vector3(plane.Up.X, plane.Up.Y, plane.Up.Z);
@@ -496,6 +498,10 @@ namespace Boopy.Quest
             else if (heard == "not-heard") word.Brighten();
             return true;
         }
+
+        /// <summary>Whether a point lies on a shown word, a gap around it included, where a dot would sit on its letters.</summary>
+        public bool OnWord(Vector3 point, Vector3 eyes) =>
+            words.Values.Any(word => word.Covers(point, SpatialTheme.Gap * Vector3.Distance(eyes, point)));
 
         /// <summary>Where the presented subject's word is, for Boopy to point at.</summary>
         public bool TryGetWord(out Vector3 position)

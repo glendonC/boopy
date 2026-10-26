@@ -7,25 +7,29 @@ using N = System.Numerics;
 namespace Boopy.Quest
 {
     /// <summary>
-    /// The recorded scene the Mac shows, filling the person's view as the room would: world-fixed, placed once in front of
-    /// the person at eye level when it first appears, upright and facing them, tall enough to cover the headset's view
-    /// from top to bottom and as wide as its own aspect makes it, with the room hidden behind it in every direction, so
-    /// the person looks around the recording as if they were there. A 2D source has no depth, so the picture's plane is
-    /// where its subjects lie. No words sit on it. Because it fills the view it is never mistaken for the room as it is now:
-    /// one small media cue stays in the lower-left of the view the whole time (the upper-left when the subject's word is
-    /// there). For a clip it is a player's thin bar filled to where the still is in the clip, with the play triangle just
-    /// left of it, as any player shows a stopped video (two bars would be the privacy Pause); for a photo it is the one
-    /// word "Recorded" in the same ink. Its still stays in memory only, never on the headset's storage; a coarse grid of its
-    /// luminance stays with it so words on it can choose their ink.
+    /// The recorded scene the Mac shows, filling the person's view edge to edge as a full-screen video does: placed once
+    /// straight ahead of the eyes and square to the view when it first appears, and scaled to cover the headset's whole
+    /// view, so whichever way the still runs past the view is cropped by the view's edge and nothing else shows around
+    /// it. The app holds the view still while it shows, so it stays fixed to the view as the head turns, and Boopy, the
+    /// word and the outline on it ride with it. A 2D source has no depth, so the picture's plane is where its subjects lie.
+    /// No words sit on it. Because it fills the view it is never mistaken for the room as it is now: one small media cue
+    /// stays in the lower-left of the view the whole time (the upper-left when the subject's word is there). For a clip
+    /// it is a player's thin bar filled to where the still is in the clip, with the play triangle just left of it, as any
+    /// player shows a stopped video (two bars would be the privacy Pause); for a photo it is the one word "Recorded" in
+    /// the same ink. Its still stays in memory only, never on the headset's storage; a coarse grid of its luminance stays
+    /// with it so words on it can choose their ink.
     /// </summary>
     public sealed class RecordedPicture : MonoBehaviour
     {
-        // Ahead at eye level, past Boopy and its line, and this many degrees tall from the eyes (the headset shows about 96):
-        // the still keeps its own aspect, so a portrait still fits the height and a wide one runs past the sides.
-        public const float Distance = 3f, ViewDegrees = 100f;
-        public static float Height => 2f * Distance * Mathf.Tan(ViewDegrees * Mathf.Deg2Rad / 2f);
-        // The room cover's half size: past the picture's corners, which are the farthest part of it from the eyes.
-        private const float CoverHalf = 8f;
+        // Ahead of the eyes, past Boopy and its line, covering the view with this many degrees to spare at each edge.
+        public const float Distance = 3f, SpareDegrees = 3f;
+        // The view when the eyes give no projection (in the editor): about what a Quest 3 shows across both eyes and tall.
+        public const float WideDegrees = 110f, TallDegrees = 96f;
+        // Each eye sits about this far to the side of the middle, so its view's outer edge starts that far out.
+        private const float EyeOffset = .035f;
+        // The room cover's half size: past the picture's corners, which are the farthest part of it from the eyes. It is
+        // never in view while the picture covers the view; it keeps the room hidden all the same.
+        private const float CoverHalf = 12f;
         // The media cue: this far from the eyes, this far left of and below where they look, this long (a clip's bar) and
         // this tall (a photo's word); it moves to the upper-left when the subject's word is within AvoidDegrees of it.
         public const float CueDistance = 1.1f, CueYaw = 22f, CuePitch = 20f, CueBarDegrees = 8f, MarkDegrees = 1f, AvoidDegrees = 15f;
@@ -48,6 +52,13 @@ namespace Boopy.Quest
 
         /// <summary>How far along its clip the still is held, as the player bar shows it; null for a photo or no bar.</summary>
         public float? Held { get; private set; }
+
+        /// <summary>
+        /// Where on the still a word can sit, in image coordinates (0 to 1, origin top-left): in view, and at least
+        /// <see cref="EdgeDegrees"/> inside the view's edge, where the lenses are sharp.
+        /// </summary>
+        public (float X0, float Y0, float X1, float Y1) Readable { get; private set; } = (0f, 0f, 1f, 1f);
+        public const float EdgeDegrees = 8f;
 
         /// <summary>The picture's rectangle in the room, as the person sees it.</summary>
         public PicturePlane Plane
@@ -116,7 +127,9 @@ namespace Boopy.Quest
         {
             if (surface == null) return false;
             var decoded = new Texture2D(2, 2, TextureFormat.RGBA32, true) { name = "Recorded still", wrapMode = TextureWrapMode.Clamp };
-            if (!decoded.LoadImage(jpeg, false) || decoded.width != scene.Width || decoded.height != scene.Height)
+            // The still shown may be sharper than the frame it stands for, never another shape; its size is read from it.
+            if (!decoded.LoadImage(jpeg, false) || decoded.height == 0
+                || Mathf.Abs((float)decoded.width / decoded.height - (float)scene.Width / scene.Height) > .01f)
             {
                 Discard(decoded);
                 return false;
@@ -128,17 +141,20 @@ namespace Boopy.Quest
             if (texture != null) Discard(texture);
             texture = decoded; still = jpeg; Scene = scene;
             surface.sharedMaterial.mainTexture = texture;
-            var aspect = (float)scene.Width / scene.Height;
-            var height = Height;
+            // Covers the view and its spare degrees, keeping the still's aspect; the view's edge crops the rest.
+            var view = HalfView(head.GetComponent<Camera>());
+            float Spare(float half) => Mathf.Tan(Mathf.Atan(half) + SpareDegrees * Mathf.Deg2Rad);
+            var aspect = (float)decoded.width / decoded.height;
+            var height = Mathf.Max(2f * Distance * Spare(view.y), 2f * (Distance * Spare(view.x) + EyeOffset) / aspect);
             var width = height * aspect;
             frame!.localScale = new Vector3(width, height, 1f);
+            float Inside(float half) => Distance * Mathf.Tan(Mathf.Atan(half) - EdgeDegrees * Mathf.Deg2Rad);
+            var across = Inside(view.x) / width; var tall = Inside(view.y) / height;
+            Readable = (Mathf.Max(0f, .5f - across), Mathf.Max(0f, .5f - tall), Mathf.Min(1f, .5f + across), Mathf.Min(1f, .5f + tall));
             ShowBar(RecordedScenes.Progress(scene));
             if (first)
             {
-                var forward = Vector3.ProjectOnPlane(head.forward, Vector3.up);
-                if (forward.sqrMagnitude < 1e-4f) forward = Vector3.ProjectOnPlane(head.up, Vector3.up);
-                forward.Normalize();
-                transform.SetPositionAndRotation(head.position + forward * Distance, Quaternion.LookRotation(forward, Vector3.up));
+                transform.SetPositionAndRotation(head.position + head.forward * Distance, head.rotation);
                 Follow(head, null, float.PositiveInfinity);
             }
             gameObject.SetActive(true);
@@ -167,6 +183,27 @@ namespace Boopy.Quest
             if (surface != null) surface.sharedMaterial.mainTexture = null;
             if (texture != null) Discard(texture);
             texture = null; still = null; Scene = null; Held = null; luminance = System.Array.Empty<float>();
+            Readable = (0f, 0f, 1f, 1f);
+        }
+
+        /// <summary>
+        /// The view's half extents from the middle of the eyes, as tangents across and up or down: the larger side of
+        /// both eyes' projections when the headset gives them, else about a Quest 3's view.
+        /// </summary>
+        public static Vector2 HalfView(Camera? eyes)
+        {
+            var fallback = new Vector2(Mathf.Tan(WideDegrees * Mathf.Deg2Rad / 2f), Mathf.Tan(TallDegrees * Mathf.Deg2Rad / 2f));
+            if (eyes == null || !eyes.stereoEnabled) return fallback;
+            var half = Vector2.zero;
+            foreach (var eye in new[] { Camera.StereoscopicEye.Left, Camera.StereoscopicEye.Right })
+            {
+                var p = eyes.GetStereoProjectionMatrix(eye);
+                if (Mathf.Abs(p.m00) < 1e-4f || Mathf.Abs(p.m11) < 1e-4f) return fallback;
+                half.x = Mathf.Max(half.x, Mathf.Abs((p.m02 - 1f) / p.m00), Mathf.Abs((p.m02 + 1f) / p.m00));
+                half.y = Mathf.Max(half.y, Mathf.Abs((p.m12 - 1f) / p.m11), Mathf.Abs((p.m12 + 1f) / p.m11));
+            }
+            // A projection that is not yet the headset's (before its first frame) is narrower than any headset's view.
+            return half.x > .5f && half.y > .5f && !float.IsNaN(half.x + half.y) ? half : fallback;
         }
 
         private LineRenderer Bar(string name, Color color, int order)

@@ -8,10 +8,11 @@ namespace Boopy.Quest
 {
     /// <summary>
     /// One tracked hand: its index pinch as taps and holds, and a ray a seated person can point
-    /// with. The SDK ray needs the hand held up near shoulder height, so this one does not use it.
-    /// The palm's facing comes from the knuckle positions, not from joint axes, so it does not
-    /// depend on any skeleton's axis conventions. While a Touch controller is held in that hand the
-    /// headset tracks no hand, so the controller's trigger is the pinch and its pose the ray.
+    /// with. The SDK ray needs the hand held up near shoulder height, so the room does not use it;
+    /// a recording that fills the view does, since there the Quest's own pointing is what the
+    /// person knows. The palm's facing comes from the knuckle positions, not from joint axes, so it
+    /// does not depend on any skeleton's axis conventions. While a Touch controller is held in that
+    /// hand the headset tracks no hand, so the controller's trigger is the pinch and its pose the ray.
     /// </summary>
     public sealed class HandInput
     {
@@ -34,6 +35,7 @@ namespace Boopy.Quest
         private Dictionary<OVRSkeleton.BoneId, Transform>? bones;
         private string? reportedBlock;
         private bool usingController;
+        private int reportedHand = -1;
 
         public HandInput(bool right, OVRHand? hand, OVRSkeleton? skeleton)
         {
@@ -43,6 +45,8 @@ namespace Boopy.Quest
         }
 
         public bool Right { get; }
+        /// <summary>Whether the scene gave this hand its OVRHand and OVRSkeleton.</summary>
+        public bool Found => hand != null && skeleton != null;
         public PinchGesture Gesture { get; } = new PinchGesture();
         public bool RayActive { get; private set; }
         public Ray Ray { get; private set; }
@@ -50,10 +54,14 @@ namespace Boopy.Quest
         /// <summary>A newly blocked pinch attempt this update, for a brief hint to the person.</summary>
         public string? BlockedAttempt { get; private set; }
 
-        /// <summary>Reads the hand, or the controller held in it, once a frame; returns what its pinch did.</summary>
-        public PinchEvent Update(Transform head, float now, bool inputAllowed, Controller controller = default)
+        /// <summary>
+        /// Reads the hand, or the controller held in it, once a frame; returns what its pinch did. With
+        /// <paramref name="pointing"/> the hand's ray is the Quest's own pointing pose.
+        /// </summary>
+        public PinchEvent Update(Transform head, float now, bool inputAllowed, Controller controller = default, bool pointing = false)
         {
             BlockedAttempt = null;
+            ReportHand();
             var handTracked = hand != null && hand.IsTracked && hand.IsDataHighConfidence;
             var held = !handTracked && controller.Held;
             if (held != usingController)
@@ -64,7 +72,7 @@ namespace Boopy.Quest
             Tracked = inputAllowed && (handTracked || held);
             var rawStrength = held ? controller.Trigger : hand != null ? hand.GetFingerPinchStrength(OVRHand.HandFinger.Index) : 0f;
             var strength = Tracked ? rawStrength : 0f;
-            var palmFacesHead = held ? AimController(controller) : UpdateRay(head);
+            var palmFacesHead = held ? AimController(controller) : pointing ? AimPointer() : UpdateRay(head);
             var system = !held && (hand != null && hand.IsSystemGestureInProgress || palmFacesHead);
             var pinch = Gesture.Update(Tracked, strength, system, now);
             var blocked = !inputAllowed ? "focus" : held ? null : hand == null ? "missing-hand"
@@ -95,6 +103,26 @@ namespace Boopy.Quest
             RayActive = Tracked && controller.Forward.sqrMagnitude > 1e-6f;
             Ray = new Ray(controller.Position, RayActive ? controller.Forward.normalized : Vector3.forward);
             return false;
+        }
+
+        // The Quest's own pointing pose, while it has one; the headset's menu gesture comes as a system gesture instead.
+        private bool AimPointer()
+        {
+            RayActive = Tracked && hand != null && hand.IsPointerPoseValid;
+            if (RayActive) Ray = new Ray(hand!.PointerPose.position, hand.PointerPose.forward);
+            return false;
+        }
+
+        // What the headset says of this hand, logged on each change only, so a device run shows which of tracking, valid
+        // data and confidence a pinch waited on. No poses.
+        private void ReportHand()
+        {
+            if (hand == null) return;
+            var state = (hand.IsTracked ? 1 : 0) | (hand.IsDataValid ? 2 : 0) | (hand.IsDataHighConfidence ? 4 : 0);
+            if (state == reportedHand) return;
+            reportedHand = state;
+            static string Said(bool yes) => yes ? "yes" : "no";
+            Debug.Log($"Boopy: input {(Right ? "right" : "left")} hand tracked={Said(hand.IsTracked)} valid={Said(hand.IsDataValid)} confident={Said(hand.IsDataHighConfidence)}.");
         }
 
         /// <summary>Updates the ray; returns whether the palm faces the eyes (the headset's menu gesture).</summary>

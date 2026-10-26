@@ -46,12 +46,18 @@ namespace Boopy.Quest.Editor
         /// <summary>
         /// A tracked hand under its anchor: OVRHand for the pinch, OVRSkeleton for the joints the
         /// seated ray needs, with the OpenXR skeleton this project uses. The person sees their real
-        /// hands in passthrough, so nothing draws a virtual one.
+        /// hands in passthrough, so nothing draws a virtual one. OVRHand keeps its data valid whether
+        /// or not a controller is in that hand: its own check asks the runtime, and any failed answer
+        /// there reads as a controller in hand, which leaves every pinch at zero. HandInput chooses
+        /// between hand and controller itself. Its pointing pose sits in the tracking space, so it
+        /// stays right when the view is held over a recording.
         /// </summary>
         private static void AddHand(GameObject rig, GameObject prefab, string anchorPath, bool left)
         {
             var anchor = rig.transform.Find(anchorPath)
                 ?? throw new InvalidOperationException($"The camera rig has no {anchorPath}.");
+            var space = rig.transform.Find("TrackingSpace")
+                ?? throw new InvalidOperationException("The camera rig has no TrackingSpace.");
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab, anchor);
             // Unpacked, so every value below is written into the scene. As a prefab instance, a value
             // equal to the prefab's in-editor default records no override, and that default is changed
@@ -59,6 +65,8 @@ namespace Boopy.Quest.Editor
             PrefabUtility.UnpackPrefabInstance(instance, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
             instance.name = left ? "LeftHand" : "RightHand";
             Set(instance.GetComponent<OVRHand>(), "HandType", (int)(left ? OVRHand.Hand.HandLeft : OVRHand.Hand.HandRight));
+            Set(instance.GetComponent<OVRHand>(), "m_showState", (int)OVRInput.InputDeviceShowState.Always);
+            Set(instance.GetComponent<OVRHand>(), "_pointerPoseRoot", space);
             Set(instance.GetComponent<OVRSkeleton>(), "_skeletonType",
                 (int)(left ? OVRSkeleton.SkeletonType.XRHandLeft : OVRSkeleton.SkeletonType.XRHandRight));
             var mesh = instance.GetComponent<OVRMesh>();
@@ -79,6 +87,16 @@ namespace Boopy.Quest.Editor
             var field = serialized.FindProperty(property)
                 ?? throw new InvalidOperationException($"{target.GetType().Name} has no serialized {property}.");
             field.intValue = value;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void Set(UnityEngine.Object? target, string property, UnityEngine.Object value)
+        {
+            if (target == null) throw new InvalidOperationException($"OVRHandPrefab is missing the component that holds {property}.");
+            var serialized = new SerializedObject(target);
+            var field = serialized.FindProperty(property)
+                ?? throw new InvalidOperationException($"{target.GetType().Name} has no serialized {property}.");
+            field.objectReferenceValue = value;
             serialized.ApplyModifiedPropertiesWithoutUndo();
         }
 

@@ -67,18 +67,21 @@ returns to the conversation's own line and follow-up questions. Without a task, 
 conversation looks as before.
 
 The Mac can show a recorded scene: one still of the person's own recording, chosen on the Mac. The
-headset shows it filling the view as if the person were there: ahead at eye level, taller than the
-headset's view, fixed where it first appeared so the person still aims by looking, with the room
-hidden behind it in every direction, and takes it away when the Mac clears it. A portrait still
-fits the height, with dark on either side. No words sit on it, and it never passes for the room as
-it is now: one small cue stays in the lower-left of the view the whole time (the upper-left when the
-subject's word is there). For a clip it is a player's thin bar, stopped where the still is, with the
-play triangle; for a photo it is the word "Recorded".
-While it shows, every Talk turn is about that still: the turn names the still and the point the
-eyes were on, never sends a frame of the room, and the room's live outlines are off. Boopy's line
-and the controls sit where they sit in the room, in front of the recording. The reply's outline lies on the picture, with a
-dark edge so it reads on bright sand and sky, and the subject's word sits on the picture right above
-it, with no box: in a practice task the outside word, Boopy's guess under it, and where the word
+headset shows it full screen, as a full-screen video is: it fills the view edge to edge, scaled to
+cover the whole view and cropped by the view's edge where it runs past, so nothing shows around it,
+and it stays fixed to the view as the head turns. The headset takes it away when the Mac clears it.
+No words sit on it, and it never passes for the room as it is now: one small cue stays in the
+lower-left of the view the whole time (the upper-left when the subject's word is there). For a clip
+it is a player's thin bar, stopped where the still is, with the play triangle; for a photo it is the
+word "Recorded".
+While it shows, the person points at it with a hand (the Quest's own pointing ray) or a held
+controller, and one small dot shows where the ray lands on the picture; it gives way while the ray
+is on the subject's word, so it never sits on the letters. Every Talk turn is about
+that still: the turn names the still and the point the talking hand or controller aimed at (else
+the middle of the view), never sends a frame of the room, and the room's live outlines are off.
+Boopy's line and the controls ride on the recording where they sit in the view in the room. The reply's outline lies on the picture, with a
+dark edge so it reads on bright sand and sky, and the subject's word sits right above it (below it
+when above would leave the view), always a few degrees inside the view's edge, with no box: in a practice task the outside word, Boopy's guess under it, and where the word
 came from. When the person answers, Boopy shows what it heard: the word lights up once and Boopy
 hops when it heard the word, the word lights up and Boopy points at it when it did not catch it,
 and Boopy tilts toward the person when it heard none of that language. On a later turn the word

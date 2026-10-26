@@ -50,6 +50,7 @@ namespace Boopy.Quest.Editor
                 SynchronizationContext.SetSynchronizationContext(null);
                 using (var live = new Fixture()) ValidateLiveStaysInTheRoom(live);
                 ValidateController();
+                ValidateHeldView();
                 using var f = new Fixture();
                 ValidateScene(f);
                 Debug.Log("Boopy recorded scene validation passed (synthetic still and transport; no camera, microphone or device).");
@@ -85,6 +86,20 @@ namespace Boopy.Quest.Editor
             finally { UnityEngine.Object.DestroyImmediate(eyes); }
         }
 
+        // While a recording shows the view is held: the tracking space moves so that the eyes, wherever the head has gone
+        // in it, are where they were when the recording appeared, turned as they were.
+        private static void ValidateHeldView()
+        {
+            var held = new Pose(new Vector3(.4f, 1.6f, -.2f), Quaternion.Euler(12f, 35f, -4f));
+            var place = typeof(BoopyApp).GetMethod("HeldSpace", BindingFlags.Static | BindingFlags.NonPublic)!;
+            foreach (var (at, turn) in new[] { (new Vector3(.1f, 1.5f, .3f), Quaternion.Euler(-20f, 70f, 3f)), (Vector3.zero, Quaternion.identity) })
+            {
+                var space = (Pose)place.Invoke(null, new object[] { held, at, turn })!;
+                Require(Vector3.Distance(space.position + space.rotation * at, held.position) < 1e-4f && Quaternion.Angle(space.rotation * turn, held.rotation) < .01f,
+                    "The held view does not keep the eyes where they were.");
+            }
+        }
+
         private static void ValidateScene(Fixture f)
         {
             // The Mac shows a still: the headset reads it, checks its digest, and shows it as a picture ahead.
@@ -95,10 +110,22 @@ namespace Boopy.Quest.Editor
             Require(Vector3.Distance(Unity(plane.Center), new Vector3(0f, 0f, RecordedPicture.Distance)) < .001f,
                 "The picture is not ahead of the person at eye level: " + Unity(plane.Center));
             Require(Mathf.Abs(plane.Width / plane.Height - (float)Width / Height) < .001f, "The picture lost its still's aspect.");
-            // It fills the view as the room would: taller from the eyes than the headset's view (about 96 degrees), with the
-            // room covered around it in every direction and the cover drawn before the picture.
+            // It fills the view edge to edge: from the eyes it runs past the headset's view on every side (here, with no eyes'
+            // projection, about a Quest 3's) by its spare degrees, and no further than covering needs on its tight side, so the
+            // view's edge crops the rest; the part in view is the middle of the still. The room is covered around it in every
+            // direction and the cover drawn before the picture.
             var pictureTall = 2f * Mathf.Atan(plane.Height / 2f / RecordedPicture.Distance) * Mathf.Rad2Deg;
-            Require(pictureTall >= 96f, $"The picture does not fill the view from top to bottom: {pictureTall:0.0} degrees tall.");
+            var pictureWide = 2f * Mathf.Atan(plane.Width / 2f / RecordedPicture.Distance) * Mathf.Rad2Deg;
+            Require(pictureTall >= RecordedPicture.TallDegrees + 2f * RecordedPicture.SpareDegrees - .01f
+                && pictureWide >= RecordedPicture.WideDegrees + 2f * RecordedPicture.SpareDegrees - .01f
+                && Mathf.Min(pictureTall - RecordedPicture.TallDegrees, pictureWide - RecordedPicture.WideDegrees) < 2f * RecordedPicture.SpareDegrees + 1.5f,
+                $"The picture does not just cover the view: {pictureWide:0.0} by {pictureTall:0.0} degrees.");
+            // A word keeps to the middle of the still, a few degrees inside the view's edge, where the lenses are sharp.
+            var seen = f.Picture.Readable;
+            Require(seen.X0 > 0f && seen.Y0 > 0f && seen.X1 < 1f && seen.Y1 < 1f && Mathf.Abs(seen.X0 + seen.X1 - 1f) < .001f && Mathf.Abs(seen.Y0 + seen.Y1 - 1f) < .001f
+                && Mathf.Abs(Mathf.Atan((.5f - seen.Y0) * plane.Height / RecordedPicture.Distance) * Mathf.Rad2Deg
+                    - (RecordedPicture.TallDegrees / 2f - RecordedPicture.EdgeDegrees)) < .05f,
+                $"The part of the still a word can sit on is not the sharp middle of the view: {seen}.");
             var renderers = f.Picture.GetComponentsInChildren<MeshRenderer>(true);
             var cover = renderers.Single(renderer => renderer.name == "Room cover");
             var face = renderers.Single(renderer => renderer.name == "Recorded picture");
@@ -133,6 +160,17 @@ namespace Boopy.Quest.Editor
             Require(cues?.Gaze != null && Mathf.Abs(cues.Gaze.Point.X - .42f) < .001f && Mathf.Abs(cues.Gaze.Point.Y - .63f) < .001f,
                 "The gaze point on the still is off: " + (cues?.Gaze == null ? "none" : cues.Gaze.Point.X + ", " + cues.Gaze.Point.Y));
             Require(cues!.Gaze!.World == null && !cues.Gaze.OnSurface && cues.Pointer == null, "A turn on the still sent a room point, a depth claim or a pointer.");
+            // The view is held on the picture, so the eyes rest on its middle: a talking hand or controller that points at
+            // the picture sets the point instead, still as the one gaze point a recorded frame takes.
+            var pointing = new HandInput(true, null, null);
+            var from = new Vector3(.2f, -.3f, .4f); var toward = Unity(plane.At(.3f, .4f)) - from;
+            pointing.Update(f.Eyes, 0f, true, new HandInput.Controller(true, 0f, from, toward));
+            Set(f.App, "active", pointing);
+            Invoke(f.App, "Capture", new object?[] { null });
+            Set(f.App, "active", null);
+            var aimed = ((Cues?)Get(f.App, "pendingCues"))?.Gaze;
+            Require(aimed != null && Mathf.Abs(aimed.Point.X - .3f) < .001f && Mathf.Abs(aimed.Point.Y - .4f) < .001f && aimed.World == null,
+                "The point the hand aims at on the still is not the turn's point: " + (aimed == null ? "none" : aimed.Point.X + ", " + aimed.Point.Y));
             // Off the picture, the turn is still about the still, as a whole.
             Look(f, plane.At(1.4f, .5f));
             Invoke(f.App, "Capture", new object?[] { null });

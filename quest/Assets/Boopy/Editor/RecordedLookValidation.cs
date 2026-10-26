@@ -81,8 +81,12 @@ namespace Boopy.Quest.Editor
             Require(OffPlane(plane, word.transform.position) < .004f, "The word is not in the picture's plane.");
             var center = ImageOf(plane, word.transform.position);
             var half = new Vector2(word.Size.x / plane.Width, word.Size.y / plane.Height) / 2f;
-            Require(center.y + half.y <= SubjectBox.Y0 + .001f && center.x - half.x >= 0f && center.x + half.x <= 1f && center.y - half.y >= 0f,
-                $"The word is not above the subject inside the picture: {center}, half {half}.");
+            var readable = f.Picture.Readable;
+            Require(center.y + half.y <= SubjectBox.Y0 + .001f && center.x - half.x >= readable.X0 && center.x + half.x <= readable.X1 && center.y - half.y >= readable.Y0,
+                $"The word is not above the subject in the sharp part of the view: {center}, half {half}, readable {readable}.");
+            // The hand's dot gives way on the word, so it never sits on the term's letters; off the word it shows.
+            Require(f.Scene.OnWord(word.WordPosition, f.Eyes.position) && !f.Scene.OnWord(Unity(plane.At(.5f, .9f)), f.Eyes.position),
+                "The hand's dot would sit on the word's letters, or gives way off the word.");
             var distance = Vector3.Distance(f.Eyes.position, word.transform.position);
             var termText = word.GetComponentsInChildren<TextMeshPro>(true).Single(text => text.name == "Term");
             var termDegrees = 2f * Mathf.Atan(termText.fontSize / 10f * termText.transform.lossyScale.y / 2f / distance) * Mathf.Rad2Deg;

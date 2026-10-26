@@ -45,6 +45,14 @@ namespace Boopy.Quest
         /// <summary>The large line's center, where Boopy points.</summary>
         public Vector3 WordPosition => term != null ? term.transform.position : transform.position;
 
+        /// <summary>Whether a point lies on the shown block, or within <paramref name="margin"/> meters of it.</summary>
+        public bool Covers(Vector3 point, float margin)
+        {
+            if (!gameObject.activeInHierarchy) return false;
+            var local = transform.InverseTransformPoint(point);
+            return Mathf.Abs(local.x) <= Size.x / 2f + margin && Mathf.Abs(local.y) <= Size.y / 2f + margin;
+        }
+
         public static WordBlock Create(Transform parent)
         {
             var go = new GameObject("Word on the subject");

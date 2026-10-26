@@ -107,6 +107,11 @@ namespace Boopy.Quest
         private bool pictureObserved;
         // The last recorded-scene failure logged, so a Mac that stays away is logged once, not every five seconds.
         private string? recordedFailure;
+        // While a recording shows, the view is held where the eyes were when it appeared (HoldView), and the tracking space
+        // goes back to where it rested when it ends.
+        private OVRCameraRig? rig;
+        private Pose? heldView;
+        private Pose trackingRest;
         private bool NeedsCaptureRecovery => unresolvedStartId != null || recoveryStorageFailed;
 
         private Chip? dwellChip;
@@ -181,7 +186,7 @@ namespace Boopy.Quest
 
         private void Start()
         {
-            var rig = FindAnyObjectByType<OVRCameraRig>();
+            rig = FindAnyObjectByType<OVRCameraRig>();
             if (rig == null)
             {
                 Debug.LogError("Boopy: the scene has no OVRCameraRig. Run Boopy > Build Scene.");
@@ -193,6 +198,8 @@ namespace Boopy.Quest
             leftController = rig.leftControllerAnchor; rightController = rig.rightControllerAnchor;
             left = new HandInput(false, rig.leftHandAnchor.GetComponentInChildren<OVRHand>(true), rig.leftHandAnchor.GetComponentInChildren<OVRSkeleton>(true));
             right = new HandInput(true, rig.rightHandAnchor.GetComponentInChildren<OVRHand>(true), rig.rightHandAnchor.GetComponentInChildren<OVRSkeleton>(true));
+            Debug.Log($"Boopy: hands left={(left.Found ? "found" : "missing")} right={(right.Found ? "found" : "missing")}.");
+            rig.UpdatedAnchors += HoldView;
 
             passthrough = new PassthroughView(gameObject);
             passthrough.Start(Time.unscaledTime);
@@ -250,7 +257,45 @@ namespace Boopy.Quest
             DiscardRecording();
             OVRManager.InputFocusLost -= OnFocusLost;
             OVRManager.InputFocusAcquired -= OnFocusAcquired;
+            if (rig != null) rig.UpdatedAnchors -= HoldView;
             client?.Dispose();
+        }
+
+        /// <summary>
+        /// While a recording shows, the view is held where the eyes were when it appeared, as a full-screen video is: after
+        /// every anchor update the rig's tracking space moves against the head, so the eyes stay put in the world and the
+        /// picture, its word, its outline and Boopy stay where the person sees them. Hands and controllers are in the
+        /// tracking space, so they point across the picture as they point across the view.
+        /// </summary>
+        private void HoldView(OVRCameraRig moved)
+        {
+            if (heldView is not Pose held) return;
+            var space = HeldSpace(held, moved.centerEyeAnchor.localPosition, moved.centerEyeAnchor.localRotation);
+            moved.trackingSpace.SetPositionAndRotation(space.position, space.rotation);
+        }
+
+        /// <summary>Where the tracking space goes so that eyes at this pose in it are at <paramref name="held"/> in the world.</summary>
+        internal static Pose HeldSpace(Pose held, Vector3 eyesInSpace, Quaternion eyesTurnInSpace)
+        {
+            var turn = held.rotation * Quaternion.Inverse(eyesTurnInSpace);
+            return new Pose(held.position - turn * eyesInSpace, turn);
+        }
+
+        // Holds the view once a recording shows and lets it go with the recording.
+        private void KeepView()
+        {
+            var showing = recorded != null && recorded.Showing;
+            if (rig == null || head == null || showing == (heldView != null)) return;
+            if (showing)
+            {
+                trackingRest = new Pose(rig.trackingSpace.localPosition, rig.trackingSpace.localRotation);
+                heldView = new Pose(head.position, head.rotation);
+                Debug.Log("Boopy: view held for the recording.");
+                return;
+            }
+            heldView = null;
+            rig.trackingSpace.SetLocalPositionAndRotation(trackingRest.position, trackingRest.rotation);
+            Debug.Log("Boopy: view let go.");
         }
 
         /// <summary>Focus lost to a system menu: hands give no input, and a recording in progress is dropped (VRC.Quest.Input.4).</summary>
@@ -357,11 +402,14 @@ namespace Boopy.Quest
             var now = Time.unscaledTime;
             ExpireButtonRecording(now);
             passthrough?.Poll(now);
+            KeepView();
             // The recording's media cue stays in view, away from the subject's word.
-            if (recorded != null && recorded.Showing) recorded.Follow(head, scene.TryGetWord(out var wordAt) ? wordAt : (Vector3?)null, Time.unscaledDeltaTime);
-            // Read both hands before drawing or resolving targets: never use last frame's ray.
-            var rightPinch = right.Update(head, now, inputAllowed, Held(OVRInput.Controller.RTouch, rightController));
-            var leftPinch = left.Update(head, now, inputAllowed, Held(OVRInput.Controller.LTouch, leftController));
+            var recording = recorded != null && recorded.Showing;
+            if (recording) recorded!.Follow(head, scene.TryGetWord(out var wordAt) ? wordAt : (Vector3?)null, Time.unscaledDeltaTime);
+            // Read both hands before drawing or resolving targets: never use last frame's ray. On a recording a hand points
+            // with the Quest's own pointing pose.
+            var rightPinch = right.Update(head, now, inputAllowed, Held(OVRInput.Controller.RTouch, rightController), recording);
+            var leftPinch = left.Update(head, now, inputAllowed, Held(OVRInput.Controller.LTouch, leftController), recording);
 
             var gazeRay = new Ray(head.position, head.forward);
             var aiming = active != null ? (active.RayActive ? active : null)
@@ -374,7 +422,9 @@ namespace Boopy.Quest
             var gazeControl = ControlHit(gazeRay, out var onControl);
             if (gazeControl != ConsoleAction.None) gaze.Show(onControl, true);
             else if (gazeChip != null) gaze.Show(onChip, true);
-            else if (recorded != null && recorded.TryHit(gazeRay, out var onPicture, out _)) gaze.Show(onPicture, true);
+            // The eyes always rest on the middle of a held recording, so that point is kept but not marked: the one dot on
+            // the picture is where the hand or controller points.
+            else if (recorded != null && recorded.TryHit(gazeRay, out var onPicture, out _)) { gaze.Show(onPicture, true); gaze.Hide(); }
             else if (room.TryHit(gazeRay, 6f, out var point, out _)) gaze.Show(point, true);
             else gaze.Show(head.position + head.forward * 1.5f, false);
 
@@ -387,9 +437,15 @@ namespace Boopy.Quest
                 handControl = ControlHit(aiming.Ray, out var handOnControl);
                 if (handControl != ConsoleAction.None) pointer.Show(handOnControl, true);
                 else if (handChip != null) pointer.Show(handOnChip, true);
-                else if (recorded != null && recorded.TryHit(aiming.Ray, out var handOnPicture, out _)) pointer.Show(handOnPicture, true);
+                else if (recorded != null && recorded.TryHit(aiming.Ray, out var handOnPicture, out _))
+                {
+                    // Never on the word's letters: the dot gives way while the ray is on the word, so the term reads clear.
+                    if (scene.OnWord(handOnPicture, head.position)) pointer.Hide();
+                    else pointer.Show(handOnPicture, true);
+                }
                 else if (room.TryHit(aiming.Ray, 6f, out var handPoint, out _)) pointer.Show(handPoint, true);
-                else pointer.Hide();
+                // With nothing ahead, the dot still shows where the hand or controller points, dimmed, as the gaze's does.
+                else pointer.Show(aiming.Ray.GetPoint(1.5f), false);
             }
             else
             {
@@ -527,7 +583,7 @@ namespace Boopy.Quest
                 if (shown == null)
                 {
                     if (!recorded.Showing) return;
-                    recorded.Hide(); ForgetPicture();
+                    recorded.Hide(); ForgetPicture(); KeepView();
                     Debug.Log("Boopy: recorded scene cleared.");
                     return;
                 }
@@ -535,7 +591,7 @@ namespace Boopy.Quest
                 var still = await client.ReadRecordedFrameAsync(shown.FrameId, shown.FrameSha256, read.Token);
                 if (read.IsCancellationRequested || !RecordedSceneMayChange) return;
                 if (!recorded.Show(shown, still, head!)) { Debug.LogWarning("Boopy: recorded still did not decode."); return; }
-                ForgetPicture();
+                ForgetPicture(); KeepView();
                 Debug.Log($"Boopy: recorded scene shown {shown.Kind} {shown.Width}x{shown.Height}.");
             }
             catch (OperationCanceledException) { }
@@ -635,7 +691,7 @@ namespace Boopy.Quest
                     // A stray tap leaves the task's line in place; the hint shows over it and gives it back.
                     ShowTask();
                     if (pendingTarget != null) _ = Act(pendingTarget);
-                    else SayStatus("Tap Talk to start speaking.", 4f);
+                    else SayStatus("Hold and ask.", 4f);
                     RestoreConsole();
                     break;
                 case PinchEvent.Released:
@@ -975,12 +1031,16 @@ namespace Boopy.Quest
         {
             if (room == null || gaze == null || scene == null) return;
             pendingTarget = targetId;
-            // A recorded scene: the turn is about its still, with the gaze point on it when the eyes are there; no room frame.
+            // A recorded scene: the turn is about its still, with the point the person attends to on it; no room frame. The
+            // view is held on it, so the eyes rest on its middle: the point is where the talking hand or controller points on
+            // it, else where the eyes rest. The Mac takes it as the gaze cue, the one point a recorded frame takes.
             if (recorded != null && recorded.Showing && head != null)
             {
                 pending = recorded.Still();
                 var onStill = new Cues { TargetItemId = pendingTarget };
-                if (pending != null && recorded.TryHit(new Ray(head.position, gaze.Point - head.position), out var looked, out var image))
+                var eyes = new Ray(head.position, gaze.Point - head.position);
+                if (pending != null && (active != null && active.RayActive && recorded.TryHit(active.Ray, out var looked, out var image)
+                    || recorded.TryHit(eyes, out looked, out image)))
                 {
                     onStill.Gaze = new Cue { Point = image };
                     marker?.Show(looked, true);
