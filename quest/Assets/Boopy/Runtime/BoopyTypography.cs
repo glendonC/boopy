@@ -7,7 +7,10 @@ using UnityEngine.TextCore.LowLevel;
 
 namespace Boopy.Quest
 {
-    /// <summary>Bundled, licensed IBM Plex Sans faces with the existing system Hangul fallback chain.</summary>
+    /// <summary>
+    /// Bundled, licensed IBM Plex Sans faces, with the bundled IBM Plex Sans KR of the same weight as each one's first
+    /// fallback so Hangul stays in the family; ScriptCoverage adds a face for any other script they lack.
+    /// </summary>
     public static class BoopyTypography
     {
         private static TMP_FontAsset? regular;
@@ -22,11 +25,21 @@ namespace Boopy.Quest
                 : new List<TMP_FontAsset>();
             regular = Create("IBMPlexSans-Regular");
             medium = Create("IBMPlexSans-Medium");
-            // Share the list: HangulFont.Install may add the CJK face after UI construction.
-            regular.fallbackFontAssetTable = fallbacks;
-            medium.fallbackFontAssetTable = fallbacks;
+            regular.fallbackFontAssetTable = new List<TMP_FontAsset> { Create("IBMPlexSansKR-Regular", false) };
+            medium.fallbackFontAssetTable = new List<TMP_FontAsset> { Create("IBMPlexSansKR-Medium", false) };
+            foreach (var earlier in fallbacks) AddFallback(earlier);
             TMP_Settings.defaultFontAsset = regular;
             return regular;
+        }
+
+        /// <summary>Adds a face for a script the bundled faces lack to both weights, after them; false when it is there.</summary>
+        public static bool AddFallback(TMP_FontAsset face)
+        {
+            Load();
+            var added = false;
+            foreach (var list in new[] { regular!.fallbackFontAssetTable, medium!.fallbackFontAssetTable })
+                if (!list.Contains(face)) { list.Add(face); added = true; }
+            return added;
         }
 
         public static TMP_FontAsset Medium
@@ -34,7 +47,7 @@ namespace Boopy.Quest
             get { Load(); return medium!; }
         }
 
-        private static TMP_FontAsset Create(string name)
+        private static TMP_FontAsset Create(string name, bool interfaceGlyphs = true)
         {
             var source = Resources.Load<Font>("Fonts/" + name)
                 ?? throw new InvalidOperationException("The bundled Boopy font is missing: " + name);
@@ -51,8 +64,8 @@ namespace Boopy.Quest
             material.SetFloat(ShaderUtilities.ID_UnderlayDilate, .16f);
             material.SetFloat(ShaderUtilities.ID_UnderlaySoftness, .06f);
             ShaderUtilities.UpdateShaderRatios(material);
-            // ASCII, explicit ellipsis and common interface punctuation are verified before use.
-            if (!asset.TryAddCharacters("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/()-+…·", out var missing)
+            // ASCII, explicit ellipsis and common interface punctuation are verified before use; a fallback face only fills in.
+            if (interfaceGlyphs && !asset.TryAddCharacters("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/()-+…·", out var missing)
                 && !string.IsNullOrEmpty(missing))
                 throw new InvalidOperationException("The bundled Boopy font lacks required interface glyphs.");
             return asset;
