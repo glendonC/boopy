@@ -5,8 +5,9 @@ interprets, records corrections, commits context packages, and serves them to ag
 is in [../docs/architecture.md](../docs/architecture.md).
 
 `src/interaction/` is a separate journal projection for task revisions, source identity, user
-actions, and stale-result rejection. Its views are `local-only` and `not-sent`. It does not call
-Grok, Ollama, Zetaris, or NVIDIA. The older activity file loop remains in `src/activity.ts`.
+actions, and stale-result rejection. Its views are `local-only` and `not-sent`. Under a practice
+goal it calls Zetaris on this Mac for the subject's word (see "Practice with Zetaris and memory");
+it never calls Grok or NVIDIA. The older activity file loop remains in `src/activity.ts`.
 
 ## Requirements
 
@@ -86,6 +87,10 @@ All optional.
 | `BOOPY_WHISPER_BIN`, `BOOPY_WHISPER_MODEL`, `BOOPY_WHISPER_VAD_MODEL` | `~/.halcyonic/speech` when present | whisper.cpp |
 | `BOOPY_OCR_BIN` | `.build/boopy-ocr` | The OCR tool |
 | `BOOPY_LOG` | on | `0` silences request logs |
+| `BOOPY_ZETARIS_PRACTICE_CREDENTIAL_FILE` | unset | The practice account's two-line 0600 file; setting it turns practice on |
+| `BOOPY_ZETARIS_TERMS` | none | Folder holding `wikidata_term.csv` and its receipt; required with practice |
+| `BOOPY_ZETARIS_PRACTICE_TABLE` | none | `practice_attempt`, or `practice_check` for checks; required with practice |
+| `BOOPY_PROBE_JAR` | none | The Zetaris JDBC driver jar the runner uses |
 
 For Muse Spark, store the key yourself in `~/.boopy/model-api-key` (or under
 `BOOPY_DATA_DIR`) with mode `0600`. When `MODEL_API_KEY` is unset, the service reads that file
@@ -282,6 +287,31 @@ headset can say which connection a reply came through.
 The commands use the connector's local-only routes under `/v1/local-tasks/`: bearer token,
 loopback Host and peer, and no Origin or forwarding headers. They are not in OpenAPI or MCP, and
 the headset API has none of them.
+
+## Practice with Zetaris and memory
+
+With the four `BOOPY_ZETARIS_*`/`BOOPY_PROBE_JAR` settings, the service checks the word list against
+its receipt at start (a mismatch stops the start), makes one warm-up pick, and logs
+`Zetaris practice ready.`. Zetaris runs locally in Docker on loopback; see
+[the Zetaris probes](probes/zetaris/README.md) for the import, the tables and the account.
+
+```bash
+pnpm task goal --language ko        # the person's own goal, journaled as theirs; --off ends it
+pnpm trace                          # every session with a practice retrieval, from the journal
+pnpm trace ses_ID                   # one session
+```
+
+`pnpm task goal` and `pnpm trace` take `--data-dir`/`--port` and `--journal` like the other local
+commands, and default to `$BOOPY_DATA_DIR` or `~/.boopy`. The trace is read-only and prints no
+words the person said, no transcript, no OCR text, no path and no frame.
+
+The practice table in Zetaris is a copy of the journal's practice records (ids, the item, the
+language, the result, the time). It lives in the Zetaris stack's own Docker volume under
+`shared/boopy/`. To empty it:
+
+```bash
+printf 'end\n' | node probes/zetaris/run-federation.mjs /absolute/private/practice-credential-file practice-stage
+```
 
 ## Check
 
