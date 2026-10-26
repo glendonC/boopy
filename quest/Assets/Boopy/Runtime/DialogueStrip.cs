@@ -250,7 +250,8 @@ namespace Boopy.Quest
             Paginate();
         }
 
-        // The line's pages: its words in pieces that fit the caption, then each item's alone, every source character kept.
+        // The line's pages: its words in pieces that fit the caption, then each item's alone, every character kept of the words
+        // as drawn (a run no face can show is DESIGN's line in its place; FullText keeps the words themselves).
         // Items under the line, a choice's options, each share a page with the whole line, which the contract bounds (a
         // 160-character prompt, 60-character options); every such page takes the tallest one's height, so paging never moves
         // the panel's top, and the panel grows upward to hold it.
@@ -259,17 +260,19 @@ namespace Boopy.Quest
             pages.Clear(); pageItems.Clear(); pageHeights.Clear(); page = 0;
             if (caption == null) return;
             itemsUnder = itemsUnderLine;
-            var tallest = itemsUnder ? Mathf.Max(CaptionHeight, items.Max(Under)) : CaptionHeight;
-            if (!itemsUnder) Pieces(FullText, -1, CaptionHeight);
+            var line = ScriptCoverage.Prepare(FullText);
+            var tallest = itemsUnder ? Mathf.Max(CaptionHeight, items.Max(item => Under(line, item))) : CaptionHeight;
+            if (!itemsUnder) Pieces(line, -1, CaptionHeight);
             for (var item = 0; item < items.Count; item++)
-                if (!itemsUnder) Pieces(items[item], item, CaptionHeight + ItemRoom);
-                else { pages.Add(FullText); pageItems.Add(item); pageHeights.Add(tallest); }
+                if (!itemsUnder) Pieces(ScriptCoverage.Prepare(items[item]), item, CaptionHeight + ItemRoom);
+                else { pages.Add(line); pageItems.Add(item); pageHeights.Add(tallest); }
             if (pages.Count == 0) { pages.Add(""); pageItems.Add(-1); pageHeights.Add(CaptionHeight); }
             DrawPage();
         }
 
         // The height of the line with an item one gap under it.
-        private float Under(string item) => SpatialTheme.Height(caption!, FullText, CaptionWidth) + SpatialTheme.Gap + SpatialTheme.Height(caption!, item, CaptionWidth);
+        private float Under(string line, string item) => SpatialTheme.Height(caption!, line, CaptionWidth) + SpatialTheme.Gap
+            + SpatialTheme.Height(caption!, ScriptCoverage.Prepare(item), CaptionWidth);
 
         private void Pieces(string words, int item, float budget)
         {
@@ -331,7 +334,7 @@ namespace Boopy.Quest
             var show = itemsUnder && ShownItem >= 0;
             shownItem.gameObject.SetActive(show);
             if (!show) return;
-            shownItem.text = items[ShownItem];
+            shownItem.text = ScriptCoverage.Prepare(items[ShownItem]);
             shownItem.rectTransform.sizeDelta = new Vector2(CaptionWidth, CaptionHeight + Mathf.Max(ItemRoom, Extra));
             caption.ForceMeshUpdate(true, true);
             var lineBottom = caption.transform.localPosition.y + caption.textBounds.min.y;

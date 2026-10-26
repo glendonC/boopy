@@ -48,7 +48,7 @@ namespace Boopy.Quest
             control.text = SpatialTheme.Text(control.visual, "Verb", SpatialTheme.Body, SpatialTheme.Ivory);
             // Every control label is Plex Regular; Medium is the chip's name only.
             control.text.font = BoopyTypography.Load();
-            control.text.text = words; control.text.rectTransform.sizeDelta = new Vector2(width - 0.016f, 0.046f);
+            control.text.text = ScriptCoverage.Prepare(words); control.text.rectTransform.sizeDelta = new Vector2(width - 0.016f, 0.046f);
             control.text.transform.localPosition = new Vector3(0f, 0f, -0.004f);
             control.text.alignment = TextAlignmentOptions.Center;
             control.pictogram = SpatialActionIcon.Create(control.visual);
@@ -91,7 +91,7 @@ namespace Boopy.Quest
             text.transform.localPosition += shift;
             pictogram.transform.localPosition = iconPosition + shift;
         }
-        public void Label(string words) { if (text != null) text.text = words; pictogram?.Configure(Action, words); LayoutLabel(); }
+        public void Label(string words) { if (text != null) text.text = ScriptCoverage.Prepare(words); pictogram?.Configure(Action, words); LayoutLabel(); }
         public void SetSelected(bool on) { selected = on; }
         public void SetInteractable(bool on)
         {

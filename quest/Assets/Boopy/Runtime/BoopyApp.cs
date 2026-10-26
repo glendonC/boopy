@@ -215,8 +215,8 @@ namespace Boopy.Quest
             OVRManager.InputFocusLost += OnFocusLost;
             OVRManager.InputFocusAcquired += OnFocusAcquired;
 
-            var font = HangulFont.Install();
-            Debug.Log(font == null ? "Boopy: no Korean font found; Hangul will not render." : $"Boopy: Korean from {font}.");
+            // Faces for scripts Plex lacks are found as text needs them; the log names each one taken.
+            ScriptCoverage.Install();
             SayStatus(null);
             RestoreCaptureRecovery();
             RestoreHandoffRecovery();

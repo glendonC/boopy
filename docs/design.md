@@ -22,8 +22,13 @@ headset. IBM Plex stays until Inter Variable and Noto Sans KR are checked on dev
 
 ## Type
 
-Target faces: Inter Variable for Latin, Noto Sans KR for Korean. Regular or medium weight.
-Do not make type thin to look futuristic.
+IBM Plex Sans, regular or medium weight, for every line and control; IBM Plex Sans KR keeps Hangul in
+the same family once it is bundled. A script Plex lacks is drawn by the first face that has it: the
+bundled faces, then on the headset Android's own font families in their own order, and in the editor
+the Mac's font folders. A script that joins its letters or runs right to left (Arabic, Hebrew,
+Devanagari, Thai and others) and emoji are not drawn yet: "(can't show Arabic text yet)", or "(can't
+show this text yet)", stands in their place, never empty boxes. Only what is drawn changes; the words
+themselves are kept. Do not make type thin to look futuristic.
 
 Starting sizes, not a comfort guarantee: labels 22–24 dp, dialogue 18–20 dp, secondary copy
 14–16 dp.

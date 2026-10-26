@@ -109,14 +109,14 @@ namespace Boopy.Quest
             edge = hasIdentityAccent ? identityAccent : Visuals.Border(style.Tone);
             caption.fontSize = SpatialTheme.Title;
             caption.fontStyle = style.Tone == ChipTone.Rejected ? FontStyles.Strikethrough : FontStyles.Normal;
-            caption.text = item.Label;
+            caption.text = ScriptCoverage.Prepare(item.Label);
             caption.color = isIntent ? Visuals.Intent : Visuals.Text;
             caption.ForceMeshUpdate(true, true);
             var labelSize = caption.GetPreferredValues(item.Label, MaxWidth, Mathf.Infinity);
             var labelHeight = Mathf.Max(labelSize.y, 0.024f);
             var hasGloss = !string.IsNullOrWhiteSpace(item.Gloss);
             gloss.gameObject.SetActive(hasGloss);
-            gloss.text = item.Gloss ?? "";
+            gloss.text = ScriptCoverage.Prepare(item.Gloss);
             gloss.ForceMeshUpdate(true, true);
             var glossSize = hasGloss ? gloss.GetPreferredValues(gloss.text, MaxWidth, Mathf.Infinity) : Vector2.zero;
             var glossHeight = hasGloss ? Mathf.Max(0.018f, glossSize.y) + 0.003f : 0f;
@@ -156,7 +156,7 @@ namespace Boopy.Quest
             hit.enabled = false; hit.size = Vector3.zero;
             gloss.gameObject.SetActive(false); state.gameObject.SetActive(false);
             caption.font = BoopyTypography.Medium; caption.fontSize = SpatialTheme.Title;
-            caption.fontStyle = FontStyles.Normal; caption.text = proposedName + "?";
+            caption.fontStyle = FontStyles.Normal; caption.text = ScriptCoverage.Prepare(proposedName) + "?";
             caption.color = Visuals.Text; caption.ForceMeshUpdate(true, true);
             var measured = caption.GetPreferredValues(caption.text, MaxWidth, Mathf.Infinity);
             var width = Mathf.Clamp(measured.x, .06f, MaxWidth); var height = Mathf.Max(measured.y, .024f);

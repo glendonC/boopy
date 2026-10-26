@@ -67,10 +67,10 @@ namespace Boopy.Quest
             // On the line's column the words start on the text column and keep every word the full measure would show: the
             // panel grows to hold them, and nothing pads it under its last words.
             var width = column ? SpatialTheme.ShelfWidth : measure;
-            eyebrow.text = state;
-            title.text = SpatialTheme.Summary(title, heading, measure, maxTitleHeight);
+            eyebrow.text = ScriptCoverage.Prepare(state);
+            title.text = SpatialTheme.Summary(title, ScriptCoverage.Prepare(heading), measure, maxTitleHeight);
             title.color = intent ? SpatialTheme.Sand : SpatialTheme.Ivory;
-            body.text = SpatialTheme.Summary(body, words, measure, maxBodyHeight);
+            body.text = SpatialTheme.Summary(body, ScriptCoverage.Prepare(words), measure, maxBodyHeight);
             var stateHeight = string.IsNullOrEmpty(state) ? 0f : Mathf.Max(0.017f, SpatialTheme.Height(eyebrow, state, width));
             var titleHeight = string.IsNullOrEmpty(heading) ? 0f : Mathf.Max(0.024f, SpatialTheme.Height(title, title.text, width));
             var bodyHeight = string.IsNullOrEmpty(words) ? 0f : Mathf.Max(0.020f, SpatialTheme.Height(body, body.text, width));
@@ -108,7 +108,7 @@ namespace Boopy.Quest
             foreach (var label in new[] { eyebrow, title, body })
                 if (label != null) label.GetComponent<MeshRenderer>().enabled = visible;
         }
-        public void SetBody(string words) { if (body != null) body.text = words; }
+        public void SetBody(string words) { if (body != null) body.text = ScriptCoverage.Prepare(words); }
 
         public void Shimmer(float time, bool active)
         {
@@ -134,7 +134,7 @@ namespace Boopy.Quest
         /// <summary>From clear to full over <paramref name="seconds"/>, alpha only.</summary>
         public void FadeIn(float seconds) { amount = 0f; FadeTo(1f, seconds); }
 
-        public void SetState(string words) { if (eyebrow != null) eyebrow.text = words; }
+        public void SetState(string words) { if (eyebrow != null) eyebrow.text = ScriptCoverage.Prepare(words); }
 
         public void ReserveHeight(float minimum)
         {

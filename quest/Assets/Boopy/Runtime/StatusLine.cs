@@ -98,7 +98,7 @@ namespace Boopy.Quest
                 transform.position = Target();
                 velocity = Vector3.zero;
             }
-            text.text = words;
+            text.text = ScriptCoverage.Prepare(words);
             // TMP must have an initialized font before preferred values are measured after hiding.
             text.ForceMeshUpdate(true, true);
             var preferred = text.GetPreferredValues(words, TextWidth, Mathf.Infinity);

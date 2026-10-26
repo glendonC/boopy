@@ -145,7 +145,7 @@ These cannot be settled off the device:
   pinch per object. Check secondary masks against their own boxes, not the primary capture cue,
   and keep approximate/unavailable results visible as such. More than four refinements remain
   approximate; all evidence is still accessible in Review.
-- **Hangul.** The device log says which system font was used (`adb logcat -s Unity | grep Korean`).
+- **Scripts.** The device log names each face taken for a script Plex lacks (`adb logcat -s Unity | grep "script face"`).
 - **Legibility and comfort.** Chip size, distance and the status line's height.
 - **Latency.** The headset shows no timer; the service records model latency.
 - **Pinch.** Whether holding to talk feels natural, and whether taps are mistaken for holds.

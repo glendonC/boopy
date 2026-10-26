@@ -713,6 +713,9 @@ namespace Boopy.Quest
             var intent = view?.Items.FirstOrDefault(item => item.Id == view.IntentId);
             if (intent != null) words += "\nGoal interpretation: " + intent.Label + "\n" + intent.Statement;
             if (view?.Model != null) words += $"\nSession model: {view.Model.Provider} / {view.Model.Id}, {view.Model.LatencyMs / 1000f:0.0} s";
+            // Measure the words as drawn: a run no face can show is a longer line in its place, so a page measured on the
+            // source words could overflow. The item keeps its own words.
+            words = ScriptCoverage.Prepare(words);
             var probe = SpatialTheme.Text(transform, "Page measuring probe", SpatialTheme.Body, SpatialTheme.Ivory);
             probe.gameObject.SetActive(false); var pages = new List<string>(); var start = 0;
             while (start < words.Length)
