@@ -49,6 +49,9 @@ export function registerLocalRecordedRoutes(
   app.post('/v1/local-recorded/scene', options, async (request) => ({
     scene: scenes.show(request.body),
   }));
+  app.post('/v1/local-recorded/display', options, async (request, reply) =>
+    reply.code(202).send(scenes.startDisplay(request.body)),
+  );
   app.post('/v1/local-recorded/outlines', options, async (request, reply) =>
     reply.code(202).send(scenes.startOutlines(request.body)),
   );

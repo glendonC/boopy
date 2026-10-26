@@ -6,7 +6,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { constants, mkdirSync } from 'node:fs';
+import { constants, existsSync, mkdirSync } from 'node:fs';
 import { chmod, lstat, mkdtemp, open, readFile, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -24,6 +24,9 @@ const MAX_WINDOW_SECONDS = 60;
 const MAX_FRAMES = 600;
 const MAX_STILL_BYTES = 2 * 1024 * 1024;
 const LONG_EDGE = 1280;
+/** The headset shows a recorded frame across about 100 degrees, so it gets a sharper rendition. */
+const DISPLAY_LONG_EDGE = 2560;
+const MAX_DISPLAY_BYTES = 4 * 1024 * 1024;
 const FFPROBE = '/opt/homebrew/bin/ffprobe';
 const VIDEO = ['mov', 'mp4', 'm4v'] as const;
 const PHOTO = ['heic', 'heif', 'jpg', 'jpeg', 'png'] as const;
@@ -118,11 +121,24 @@ interface OutlinesMade {
   readonly wallMs: number;
 }
 
+/** The sharper stills the headset shows; the model, gaze crop and outlines keep the 1280 stills. */
+interface DisplayMade {
+  readonly recordingId: string;
+  readonly longEdge: number;
+  readonly frames: readonly {
+    readonly frameId: string;
+    readonly displaySha256: string;
+    readonly width: number;
+    readonly height: number;
+  }[];
+}
+
 export type RecordedEvent =
   | Envelope<'recorded.source.imported', Imported>
   | Envelope<'recorded.scene.shown', { readonly recordingId: string; readonly frameId: string }>
   | Envelope<'recorded.scene.cleared', { readonly recordingId: string }>
-  | Envelope<'recorded.outlines.made', OutlinesMade>;
+  | Envelope<'recorded.outlines.made', OutlinesMade>
+  | Envelope<'recorded.display.made', DisplayMade>;
 
 /** What makes outlines for a recording: the local scene worker and the local interpreter. */
 export interface Outliner {
@@ -145,6 +161,8 @@ export interface RecordingSummary {
   readonly reused: boolean;
   /** Frames with outlines from the latest run, null before any; running while one is under way. */
   readonly outlines: { readonly running: boolean; readonly frames: number | null };
+  /** Frames with a display rendition, null before any; running while one is being made. */
+  readonly display: { readonly running: boolean; readonly frames: number | null };
 }
 
 export interface SceneView {
@@ -332,8 +350,12 @@ function choose(times: readonly number[], duration: number, sampling: Sampling):
 }
 
 /** Re-encodes a helper still with sharp, which keeps no metadata, and checks that none is left. */
-async function cleanStill(bytes: Buffer): Promise<{ jpeg: Buffer; width: number; height: number }> {
-  const jpeg = await sharp(bytes, { limitInputPixels: LONG_EDGE * LONG_EDGE })
+async function cleanStill(
+  bytes: Buffer,
+  longEdge = LONG_EDGE,
+  maxBytes = MAX_STILL_BYTES,
+): Promise<{ jpeg: Buffer; width: number; height: number }> {
+  const jpeg = await sharp(bytes, { limitInputPixels: longEdge * longEdge })
     .jpeg({ quality: 85 })
     .toBuffer();
   const metadata = await sharp(jpeg).metadata();
@@ -341,8 +363,8 @@ async function cleanStill(bytes: Buffer): Promise<{ jpeg: Buffer; width: number;
     metadata.format !== 'jpeg' ||
     metadata.width === undefined ||
     metadata.height === undefined ||
-    Math.max(metadata.width, metadata.height) > LONG_EDGE ||
-    jpeg.length > MAX_STILL_BYTES ||
+    Math.max(metadata.width, metadata.height) > longEdge ||
+    jpeg.length > maxBytes ||
     metadata.exif !== undefined ||
     metadata.icc !== undefined ||
     metadata.xmp !== undefined ||
@@ -367,6 +389,8 @@ export class RecordedScenes {
   #busy = false;
   readonly #outlines = new Map<string, OutlinesMade>();
   readonly #outlining = new Set<string>();
+  readonly #display = new Map<string, Map<string, DisplayMade['frames'][number]>>();
+  readonly #displaying = new Set<string>();
   readonly #outliner: Outliner | undefined;
 
   constructor(options: {
@@ -397,6 +421,11 @@ export class RecordedScenes {
     else if (event.type === 'recorded.scene.cleared') this.#shown = null;
     else if (event.type === 'recorded.outlines.made')
       this.#outlines.set(event.data.recordingId, event.data);
+    else if (event.type === 'recorded.display.made')
+      this.#display.set(
+        event.data.recordingId,
+        new Map(event.data.frames.map((frame) => [frame.frameId, frame])),
+      );
   }
 
   #record(event: RecordedEvent): void {
@@ -494,6 +523,7 @@ export class RecordedScenes {
             'stills-video',
             path,
             work,
+            String(LONG_EDGE),
             ...frames.map((frame) => `${frame.time?.value}/${timescale}`),
           ],
           10 * 60_000,
@@ -501,7 +531,7 @@ export class RecordedScenes {
       } else {
         frames = [{ seconds: null, time: null }];
         origin = photoDates(probe);
-        answer = await this.#helper(['still-photo', path, work], 60_000);
+        answer = await this.#helper(['still-photo', path, work, String(LONG_EDGE)], 60_000);
       }
       if (!Array.isArray(answer.stills) || answer.stills.length !== frames.length)
         refuse(422, 'recorded_decode_failed', 'Boopy could not read frames from it.');
@@ -543,6 +573,9 @@ export class RecordedScenes {
         actor: 'person',
         data: imported,
       });
+      // The headset's sharper renditions; without them it is shown the stills, so a failure here
+      // leaves the import as it is.
+      await this.#makeDisplay(imported, path).catch(() => undefined);
       return this.#summary(imported, false);
     } finally {
       this.#busy = false;
@@ -557,11 +590,93 @@ export class RecordedScenes {
   #summary(recording: Imported, reused: boolean): RecordingSummary {
     return {
       ...summary(recording, reused),
+      display: {
+        running: this.#displaying.has(recording.recordingId),
+        frames: this.#display.get(recording.recordingId)?.size ?? null,
+      },
       outlines: {
         running: this.#outlining.has(recording.recordingId),
         frames: this.#outlines.get(recording.recordingId)?.frames.length ?? null,
       },
     };
+  }
+
+  /**
+   * Makes the headset's sharper renditions of every kept frame, long side 2560 or the source's own
+   * size, from the original in the store: upright, standard range, no metadata. One helper job at a
+   * time; journaled once as recorded.display.made.
+   */
+  async #makeDisplay(recording: Imported, path: string): Promise<void> {
+    const work = await mkdtemp(join(this.#directory, '.work-'));
+    try {
+      await chmod(work, 0o700);
+      const timed = recording.frames.filter((frame) => frame.time !== null);
+      const answer =
+        recording.kind === 'video'
+          ? await this.#helper(
+              [
+                'stills-video',
+                path,
+                work,
+                String(DISPLAY_LONG_EDGE),
+                ...timed.map((frame) => `${frame.time?.value}/${frame.time?.timescale}`),
+              ],
+              10 * 60_000,
+            )
+          : await this.#helper(['still-photo', path, work, String(DISPLAY_LONG_EDGE)], 60_000);
+      if (!Array.isArray(answer.stills) || answer.stills.length !== recording.frames.length)
+        refuse(422, 'recorded_decode_failed', 'Boopy could not read frames from it.');
+      const frames: DisplayMade['frames'][number][] = [];
+      for (const [index, frame] of recording.frames.entries()) {
+        const still = await cleanStill(
+          await readFile(join(work, `${index}.jpg`)),
+          DISPLAY_LONG_EDGE,
+          MAX_DISPLAY_BYTES,
+        );
+        // The rendition must keep the still's shape, so normalized points mean the same place.
+        if (Math.abs(still.width / still.height - frame.width / frame.height) > 0.01)
+          refuse(422, 'recorded_decode_failed', 'Boopy could not read frames from it.');
+        frames.push({
+          frameId: frame.frameId,
+          displaySha256: this.#media.put(still.jpeg, 'jpg'),
+          width: still.width,
+          height: still.height,
+        });
+      }
+      this.#record({
+        type: 'recorded.display.made',
+        session: recording.recordingId,
+        actor: 'person',
+        data: { recordingId: recording.recordingId, longEdge: DISPLAY_LONG_EDGE, frames },
+      });
+    } finally {
+      await rm(work, { recursive: true, force: true });
+    }
+  }
+
+  /** Makes display renditions for a recording imported before they existed; returns at once. */
+  startDisplay(input: unknown): RecordingSummary {
+    const parsed = z.strictObject({ recordingId: RecordingId }).safeParse(input);
+    if (!parsed.success) return invalid('Name a recording.');
+    const recording = this.#recordings.get(parsed.data.recordingId);
+    if (recording === undefined)
+      return refuse(404, 'recorded_unknown', 'No recording has that id.');
+    if (this.#busy) refuse(409, 'recorded_busy', 'Another import is still running.');
+    const extensions = recording.kind === 'video' ? VIDEO : PHOTO;
+    const path = extensions
+      .map((extension) => join(this.#directory, `${recording.sourceSha256}.${extension}`))
+      .find((candidate) => existsSync(candidate));
+    if (path === undefined)
+      return refuse(404, 'recorded_source_missing', 'The original is not in the store.');
+    this.#busy = true;
+    this.#displaying.add(recording.recordingId);
+    void this.#makeDisplay(recording, path)
+      .catch(() => undefined)
+      .finally(() => {
+        this.#busy = false;
+        this.#displaying.delete(recording.recordingId);
+      });
+    return this.#summary(recording, false);
   }
 
   /**
@@ -704,20 +819,24 @@ export class RecordedScenes {
       (candidate) => candidate.frameId === this.#shown?.frameId,
     ) as RecordedFrame;
     const capturedAt = frameTime(recording, frame);
+    // The headset checks the bytes it fetches and their size against these, so they describe the
+    // display rendition when there is one.
+    const display = this.#display.get(recording.recordingId);
+    const shown = display?.get(frame.frameId);
     return {
       recordingId: recording.recordingId,
       frameId: frame.frameId,
       kind: recording.kind,
-      width: frame.width,
-      height: frame.height,
+      width: shown?.width ?? frame.width,
+      height: shown?.height ?? frame.height,
       sourceTimeSeconds: frame.seconds,
       durationSeconds: recording.durationSeconds,
       capturedAt: { value: capturedAt, trust: capturedAt === null ? 'unknown' : 'unverified' },
-      frameSha256: frame.frameSha256,
+      frameSha256: shown?.displaySha256 ?? frame.frameSha256,
       frames: recording.frames.map(({ frameId, seconds, frameSha256 }) => ({
         frameId,
         seconds,
-        frameSha256,
+        frameSha256: display?.get(frameId)?.displaySha256 ?? frameSha256,
       })),
     };
   }
@@ -734,14 +853,15 @@ export class RecordedScenes {
       : { provider: run.provider, model: run.model, frame };
   }
 
-  /** A still of the shown recording; any other frame is unknown to the headset. */
+  /** A frame of the shown recording as the headset shows it; any other frame is unknown to it. */
   frame(frameId: string): Buffer {
     const recording =
       this.#shown === null ? undefined : this.#recordings.get(this.#shown.recordingId);
     const frame = recording?.frames.find((candidate) => candidate.frameId === frameId);
     if (frame === undefined)
       return refuse(404, 'recorded_frame_unknown', 'That frame is not in the shown recording.');
-    return this.#media.get(frame.frameSha256, 'jpg');
+    const display = this.#display.get((recording as Imported).recordingId)?.get(frameId);
+    return this.#media.get(display?.displaySha256 ?? frame.frameSha256, 'jpg');
   }
 
   /** The exact frame a boop names, from the recording shown now and no other. */
@@ -779,7 +899,10 @@ function frameTime(recording: Imported, frame: RecordedFrame): string | null {
   return new Date(Date.parse(origin) + Math.round((frame.seconds ?? 0) * 1000)).toISOString();
 }
 
-function summary(recording: Imported, reused: boolean): Omit<RecordingSummary, 'outlines'> {
+function summary(
+  recording: Imported,
+  reused: boolean,
+): Omit<RecordingSummary, 'outlines' | 'display'> {
   return {
     recordingId: recording.recordingId,
     kind: recording.kind,

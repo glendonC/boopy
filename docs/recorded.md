@@ -46,6 +46,14 @@ are kept as the file has them; a frame is never moved to a neighbouring one. Sti
 file's rotation or EXIF orientation applied), in standard dynamic range, at most 1280 pixels on the
 long edge, and JPEG with no metadata at all.
 
+The headset shows a recorded frame across about 100 degrees, so it also gets a sharper rendition of
+every kept frame: long side 2560 pixels, or the source's own size when smaller, made by the same
+helper from the original (upright, standard range, no metadata) and journaled once as
+`recorded.display.made`. Import makes them; `pnpm replay display --data-dir DIR --recording ID`
+makes them for a recording imported earlier. The headset is served the rendition, and the scene view
+gives its size and digest; the interpreter, the gaze crop and the outlines keep the 1280 stills.
+Normalized points mean the same place in both, since a rendition keeps its still's shape.
+
 Nothing the commands print carries a file name, a path, a capture time or any other metadata value.
 
 ## What the journal keeps

@@ -1,13 +1,13 @@
 // Reads one recorded photo or video that the service already holds in its private store, on this
 // Mac, and prints JSON on stdout. It reads capture-date fields only: never a location, a device
 // name or any other metadata value. Stills are written upright, in standard dynamic range, at most
-// 1280 pixels on the long edge, as JPEG with no metadata copied from the source.
+// the given long edge (never enlarged), as JPEG with no metadata copied from the source.
 //
 // Usage:
 //   boopy-recorded probe-video <file>
-//   boopy-recorded stills-video <file> <folder> <value/timescale>...
+//   boopy-recorded stills-video <file> <folder> <long-edge> <value/timescale>...
 //   boopy-recorded probe-photo <file>
-//   boopy-recorded still-photo <file> <folder>
+//   boopy-recorded still-photo <file> <folder> <long-edge>
 // A failure prints {"error":"<code>"} and exits 2. No path or metadata value is ever printed.
 
 import AVFoundation
@@ -16,8 +16,6 @@ import ImageIO
 import UniformTypeIdentifiers
 
 umask(0o077)
-
-let longEdge = 1280
 
 func emit(_ object: Any) {
     guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
@@ -144,7 +142,7 @@ func probeVideo(_ url: URL) async {
     ])
 }
 
-func stillsVideo(_ url: URL, _ folder: URL, _ requested: [String]) async {
+func stillsVideo(_ url: URL, _ folder: URL, _ longEdge: Int, _ requested: [String]) async {
     let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
     _ = await videoTrack(asset)
     let generator = AVAssetImageGenerator(asset: asset)
@@ -202,7 +200,7 @@ func probePhoto(_ url: URL) {
     ])
 }
 
-func stillPhoto(_ url: URL, _ folder: URL) {
+func stillPhoto(_ url: URL, _ folder: URL, _ longEdge: Int) {
     let (source, primary) = photoSource(url)
     let options = [
         kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -224,15 +222,17 @@ switch arguments[1] {
 case "probe-video":
     run { await probeVideo(file) }
 case "stills-video":
-    guard arguments.count >= 5 else { fail("usage") }
+    guard arguments.count >= 6, let longEdge = Int(arguments[4]), (64...4096).contains(longEdge)
+    else { fail("usage") }
     let folder = URL(fileURLWithPath: arguments[3])
-    let times = Array(arguments[4...])
-    run { await stillsVideo(file, folder, times) }
+    let times = Array(arguments[5...])
+    run { await stillsVideo(file, folder, longEdge, times) }
 case "probe-photo":
     probePhoto(file)
 case "still-photo":
-    guard arguments.count == 4 else { fail("usage") }
-    stillPhoto(file, URL(fileURLWithPath: arguments[3]))
+    guard arguments.count == 5, let longEdge = Int(arguments[4]), (64...4096).contains(longEdge)
+    else { fail("usage") }
+    stillPhoto(file, URL(fileURLWithPath: arguments[3]), longEdge)
 default:
     fail("usage")
 }

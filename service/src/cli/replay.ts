@@ -7,6 +7,8 @@
  *   show    --data-dir DIR --recording ID [--frame ID | --at S]
  *   clear   --data-dir DIR
  *   outline --data-dir DIR --recording ID     outlines for every kept frame, journaled when done
+ *   display --data-dir DIR --recording ID     the headset's sharper stills, for a recording imported
+ *                                             before they were made at import
  *
  * Import copies the chosen file into DIR/recorded under its SHA-256 (private, never moving or
  * changing the original), then asks the running service through the authenticated local connector.
@@ -49,11 +51,15 @@ const Recording = z.object({
   captureTime: z.enum(['unknown', 'conflict', 'unverified']),
   reused: z.boolean(),
   outlines: z.object({ running: z.boolean(), frames: z.number().int().nullable() }).optional(),
+  display: z.object({ running: z.boolean(), frames: z.number().int().nullable() }).optional(),
 });
 const outlined = (entry: z.infer<typeof Recording>) =>
-  entry.outlines === undefined
+  (entry.outlines === undefined
     ? ''
-    : `; outlines=${entry.outlines.running ? 'running' : (entry.outlines.frames ?? 'none')}`;
+    : `; outlines=${entry.outlines.running ? 'running' : (entry.outlines.frames ?? 'none')}`) +
+  (entry.display === undefined
+    ? ''
+    : `; display=${entry.display.running ? 'running' : (entry.display.frames ?? 'none')}`);
 const Scene = z.object({
   scene: z
     .object({
@@ -208,6 +214,23 @@ function operator(command: string, rest: string[]): ((call: Call) => Promise<str
       if (scene === null) throw new Refusal('No recording is shown.');
       return [
         `recorded: showing; recording=${scene.recordingId}; frame=${scene.frameId}; frames=${scene.frames.length}`,
+      ];
+    };
+  }
+  if (command === 'display') {
+    const { recording } = values;
+    if (
+      !allowed(['data-dir', 'port', 'recording']) ||
+      recording === undefined ||
+      !/^rec_[a-f0-9]{32}$/.test(recording)
+    )
+      return null;
+    return async (call) => {
+      const answer = Recording.parse(
+        await call(connection, '/v1/local-recorded/display', { recordingId: recording }),
+      );
+      return [
+        `recorded: making display stills; recording=${answer.recordingId}; frames=${answer.frames}; see pnpm replay list`,
       ];
     };
   }

@@ -235,6 +235,7 @@ describe('recorded scene routes', () => {
     assert.equal(imported.statusCode, 200, imported.body);
     assert.deepEqual(Object.keys(imported.json()).sort(), [
       'captureTime',
+      'display',
       'durationSeconds',
       'frames',
       'height',

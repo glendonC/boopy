@@ -407,7 +407,10 @@ describe('recorded import', () => {
     });
     assert.equal(again.recordingId, first.recordingId);
     assert.equal(again.reused, true);
-    assert.equal(journal.all().length, 1);
+    assert.equal(
+      journal.all().filter((event) => event.type === 'recorded.source.imported').length,
+      1,
+    );
   });
 
   it('refuses a file whose bytes do not match its name, a link, an unknown kind and bad sampling', async (context) => {
@@ -487,6 +490,41 @@ describe('recorded import', () => {
     await refusal(bad.scenes.importSource({ sha256, extension: 'mov' }), 'recorded_decode_failed');
     assert.deepEqual(await readdir(bad.store), [`${sha256}.mov`]);
     assert.equal(bad.journal.all().length, 0);
+  });
+});
+
+describe('display stills', () => {
+  it('give the headset a sharper still of the same frame while the model keeps the 1280 still', async (context) => {
+    if (missing) return context.skip(missing);
+    const { scenes, journal, media, place } = await setup();
+    const large = join(directory, 'large.mov');
+    tool(FFMPEG, [
+      ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=1600x1200:rate=10', '-t', '1'],
+      ...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', large],
+    ]);
+    const summary = await scenes.importSource({
+      sha256: await place(large, 'mov'),
+      extension: 'mov',
+      sampling: { mode: 'stills', count: 2 },
+    });
+    assert.deepEqual(summary.display, { running: false, frames: 2 });
+    scenes.show({ recordingId: summary.recordingId });
+    const scene = scenes.scene();
+    assert.ok(scene !== null);
+    // The headset is told the rendition's size and digest, and gets exactly those bytes.
+    assert.equal(`${scene.width}x${scene.height}`, '1600x1200');
+    const shown = scenes.frame(scene.frameId);
+    assert.equal(createHash('sha256').update(shown).digest('hex'), scene.frameSha256);
+    const look = await sharp(shown).metadata();
+    assert.equal(`${look.width}x${look.height}`, '1600x1200');
+    for (const key of ['exif', 'icc', 'xmp', 'iptc'] as const)
+      assert.equal(look[key], undefined, key);
+    // The model, the gaze crop and the outlines keep the 1280 still of the same frame.
+    const resolved = scenes.resolve({ recordingId: summary.recordingId, frameId: scene.frameId });
+    assert.equal(`${resolved.width}x${resolved.height}`, '1280x960');
+    assert.notEqual(resolved.frameSha256, scene.frameSha256);
+    assert.equal((await sharp(media.get(resolved.frameSha256, 'jpg')).metadata()).width, 1280);
+    assert.equal(journal.all().filter((event) => event.type === 'recorded.display.made').length, 1);
   });
 });
 
