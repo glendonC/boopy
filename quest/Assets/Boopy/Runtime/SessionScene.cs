@@ -22,6 +22,9 @@ namespace Boopy.Quest
         private Transform? head;
         private Mesh? quad;
         private readonly Dictionary<string, GroundedOverlay> overlays = new Dictionary<string, GroundedOverlay>();
+        // A subject on a recorded picture carries its word in the picture's plane instead of a chip in front of it.
+        private readonly Dictionary<string, WordBlock> words = new Dictionary<string, WordBlock>();
+        private RecordedPicture? picture;
         private readonly ObjectAccents accents = new ObjectAccents();
         private string? focusedItemId;
         private SessionView? renderedView;
@@ -88,6 +91,10 @@ namespace Boopy.Quest
             if (ProjectedKeepout.TryEnvelope(controlCorners.Select(ToNumerics).ToArray(), viewer, out var footprint)) occupied.Add(footprint);
         }
 
+        /// <summary>The recorded picture that shows, or null: its still's luminance sets the words' ink, and a turn about it
+        /// docks the console beside it.</summary>
+        public void SetPicture(RecordedPicture? shown) => picture = shown;
+
         public void SetReducedMotion(bool on)
         {
             reducedMotion = on;
@@ -123,7 +130,7 @@ namespace Boopy.Quest
         /// A turn opens at the pinch: the layout frame is taken now, and the console goes to its home in it, or the nearest
         /// spot clear of the objects shown, by fade if it moves. Until the turn closes only the reply's own objects move it.
         /// </summary>
-        public void OpenTurn(ContextConsole controls)
+        public void OpenTurn(ContextConsole controls, Vector3? booped = null)
         {
             console = controls;
             if (head == null) return;
@@ -132,12 +139,29 @@ namespace Boopy.Quest
             if (renderedView != null) ProtectObjects(renderedView);
             turnOpen = true;
             ConsolePlaced = true;
-            var place = HomeFor(head, controls);
+            var place = booped is Vector3 point && picture != null && picture.Showing ? BesidePicture(head, controls, picture.Plane, point) : HomeFor(head, controls);
             if (!FollowFootprintClear(controls, place))
                 foreach (var bounds in new[] { ViewBounds, Expanded() })
                     if (TryPlaceElement(controls.LayoutSize, ConsoleHome, new List<LabelRect>(), bounds, out var spot, out _)
                         && FollowFootprintClear(controls, ConsoleAnchor(spot))) { place = ConsoleAnchor(spot); break; }
             controls.Relocate(place);
+        }
+
+        /// <summary>
+        /// A turn about a recorded picture docks the console just outside the picture's right edge (DESIGN): its near edge
+        /// about 2 degrees right of the frame as seen from the eyes, its top level with the booped point, at its 1 m distance,
+        /// so it never covers the picture.
+        /// </summary>
+        public static Vector3 BesidePicture(Transform head, ContextConsole controls, PicturePlane plane, Vector3 booped)
+        {
+            var center = new Vector3(plane.Center.X, plane.Center.Y, plane.Center.Z);
+            var right = new Vector3(plane.Right.X, plane.Right.Y, plane.Right.Z); var up = new Vector3(plane.Up.X, plane.Up.Y, plane.Up.Z);
+            var edge = center + right * (plane.Width / 2f) + up * Vector3.Dot(booped - center, up);
+            var half = controls.LayoutSize * .5f;
+            var turn = 2f + Mathf.Atan(half.x / LabelDistance) * Mathf.Rad2Deg;
+            var toward = Quaternion.AngleAxis(turn, Vector3.up) * (edge - head.position).normalized;
+            var place = head.position + toward * LabelDistance - Vector3.up * half.y;
+            return Anchor(head, place, controls.LayoutCenterOffset);
         }
 
         /// <summary>The turn closes once its answer has shown: from then on the console stays where it is in the room.</summary>
@@ -307,15 +331,24 @@ namespace Boopy.Quest
             var selectedId = task != null ? PresentedSubject(view) : focusedItemId ?? PresentedSubject(view);
             var worldItems = view.Items.Where(item => item.Id == selectedId && groundedItems.Contains(item.Id)).Take(1).ToList();
             accents.Synchronize(worldItems.Select(item => item.Id).ToArray());
+            var outlined = worldItems;
+            // A subject on a recorded picture gets its word; any other gets its chip.
+            var onPicture = worldItems.Where(item => PictureOf(item) != null).ToList();
+            foreach (var gone in words.Keys.Where(id => onPicture.All(item => item.Id != id)).ToList())
+            {
+                Discard(words[gone].gameObject); words.Remove(gone);
+            }
+            worldItems = worldItems.Where(item => PictureOf(item) == null).ToList();
             foreach (var gone in chips.Keys.Where(id => worldItems.All(item => item.Id != id)).ToList())
             {
                 chips[gone].gameObject.SetActive(false);
                 Discard(chips[gone].gameObject);
                 chips.Remove(gone);
             }
-            var referent = worldItems.FirstOrDefault();
+            var referent = outlined.FirstOrDefault();
             referentPoint = referent == null ? null : AnchorOf(referent);
-            DrawOutlines(worldItems, view.ReferentId);
+            DrawOutlines(outlined, view.ReferentId);
+            foreach (var item in onPicture) ShowWord(item);
             EnsureLayoutFrame();
             if (!layoutReady) return;
             ProtectObjects(view);
@@ -356,7 +389,7 @@ namespace Boopy.Quest
                     waiting.Add(item);
                 }
             }
-            var overflow = view.Items.Count(item => item.Id != view.IntentId) - worldItems.Count;
+            var overflow = view.Items.Count(item => item.Id != view.IntentId) - worldItems.Count - onPicture.Count;
             foreach (var item in waiting)
             {
                 var chip = chips[item.Id];
@@ -398,6 +431,96 @@ namespace Boopy.Quest
             return room.Place(image.Value, snapshot);
         }
 
+        // The picture an item's still is shown on, when its observation came from a recorded picture.
+        private PicturePlane? PictureOf(Item item) => item.Grounding.ObservationId != null
+            && snapshots.TryGetValue(item.Grounding.ObservationId, out var snapshot) ? snapshot.Picture : null;
+
+        /// <summary>
+        /// The word on a subject in a recorded picture (DESIGN): in the picture's plane, one gap above the subject's outline,
+        /// else below, right or left of it, inside the picture and never over the subject; its ink read from the still under
+        /// it. With a task the word is the task's outside term and Boopy's guess and their source; without one, the guess.
+        /// </summary>
+        private void ShowWord(Item item)
+        {
+            if (head == null || PictureOf(item) is not PicturePlane plane) return;
+            if (!words.TryGetValue(item.Id, out var word)) { word = WordBlock.Create(transform); words[item.Id] = word; }
+            var shown = Shown(item);
+            var term = task?.Term;
+            var remember = term != null && term.NotHeardLastTime && !task!.RepliesToAnswer;
+            var eyes = head.position;
+            var center = new Vector3(plane.Center.X, plane.Center.Y, plane.Center.Z);
+            word.Show(term?.Text, shown.Label, term != null ? task!.Detail : null, remember, Vector3.Distance(eyes, center), reducedMotion);
+            var outline = Geometry.Outline(item.Grounding);
+            if (outline.Length == 0) { word.Hide(); return; }
+            float x0 = outline.Min(point => point.X), x1 = outline.Max(point => point.X), y0 = outline.Min(point => point.Y), y1 = outline.Max(point => point.Y);
+            var w = word.Size.x / plane.Width; var h = word.Size.y / plane.Height;
+            var gap = SpatialTheme.Gap * Vector3.Distance(eyes, center) / plane.Height;
+            var middle = (x0 + x1) / 2f; var level = (y0 + y1) / 2f;
+            // Above the subject first, climbing a gap at a time; then below, right and left of it.
+            var spots = new List<N.Vector2>();
+            for (var step = 0; step < 16; step++) spots.Add(new N.Vector2(middle, y0 - gap - h / 2f - step * gap));
+            spots.Add(new N.Vector2(middle, y1 + gap + h / 2f));
+            spots.Add(new N.Vector2(x1 + gap + w / 2f, level)); spots.Add(new N.Vector2(x0 - gap - w / 2f, level));
+            var inside = spots.Where(at => at.X - w / 2f >= 0f && at.X + w / 2f <= 1f && at.Y - h / 2f >= 0f && at.Y + h / 2f <= 1f).ToList();
+            // Each line sits on calm pixels, never across busy detail such as a rider's arm or head (DESIGN): the first spot
+            // where every line is calm, else the calmest; with no spot inside the picture, above the subject, kept inside.
+            var spot = inside.FirstOrDefault(at => Busiest(word, plane, at) <= CalmSpread);
+            if (spot == default && inside.Count > 0) spot = inside.OrderBy(at => Busiest(word, plane, at)).First();
+            if (spot == default) spot = new N.Vector2(Mathf.Clamp(middle, w / 2f, 1f - w / 2f), Mathf.Max(h / 2f, y0 - gap - h / 2f));
+            var away = N.Vector3.Normalize(N.Vector3.Cross(plane.Right, plane.Up));
+            var at = plane.At(spot.X, spot.Y, -away, .002f);
+            var right = new Vector3(plane.Right.X, plane.Right.Y, plane.Right.Z); var up = new Vector3(plane.Up.X, plane.Up.Y, plane.Up.Z);
+            word.transform.SetPositionAndRotation(new Vector3(at.X, at.Y, at.Z), Quaternion.LookRotation(Vector3.Cross(right, up), up));
+            if (picture != null && picture.Showing)
+            {
+                var (darkest, brightest) = picture.LuminanceRange(spot.X - w / 2f, spot.Y - h / 2f, spot.X + w / 2f, spot.Y + h / 2f);
+                word.Read(darkest, brightest);
+            }
+        }
+
+        // A line is calm when the still under it spans at most this much luminance (5th to 95th percentile): sky or sand
+        // gradients pass, an arm or a head against the sky does not.
+        public const float CalmSpread = .25f;
+
+        // The busiest of a word's lines at an image spot; 0 when there is no still to read. Each line's box is padded by half
+        // its height above and below, so detail that only touches a glyph (a raised camera under a letter) counts too.
+        private float Busiest(WordBlock word, PicturePlane plane, N.Vector2 at)
+        {
+            if (picture == null || !picture.Showing) return 0f;
+            var busiest = 0f;
+            foreach (var line in word.Lines)
+            {
+                var pad = line.height / 2f / plane.Height;
+                float x0 = at.X + line.xMin / plane.Width, x1 = at.X + line.xMax / plane.Width;
+                float y0 = at.Y - line.yMax / plane.Height - pad, y1 = at.Y - line.yMin / plane.Height + pad;
+                busiest = Mathf.Max(busiest, picture.Spread(x0, y0, x1, y1));
+            }
+            return busiest;
+        }
+
+        /// <summary>
+        /// What Boopy heard in the person's answer, on the subject (DESIGN): heard brightens the word and the outline once,
+        /// not-heard the word, unclear nothing. False when no word shows.
+        /// </summary>
+        public bool Assess(string heard)
+        {
+            var id = renderedView != null ? (task != null ? PresentedSubject(renderedView) : focusedItemId ?? PresentedSubject(renderedView)) : null;
+            if (id == null || !words.TryGetValue(id, out var word) || !word.gameObject.activeSelf) return false;
+            if (heard == "heard") { word.Brighten(); if (overlays.TryGetValue(id, out var overlay)) overlay.Brighten(); }
+            else if (heard == "not-heard") word.Brighten();
+            return true;
+        }
+
+        /// <summary>Where the presented subject's word is, for Boopy to point at.</summary>
+        public bool TryGetWord(out Vector3 position)
+        {
+            position = default;
+            var id = renderedView != null ? (task != null ? PresentedSubject(renderedView) : focusedItemId ?? PresentedSubject(renderedView)) : null;
+            if (id == null || !words.TryGetValue(id, out var word) || !word.gameObject.activeSelf) return false;
+            position = word.WordPosition;
+            return true;
+        }
+
         /// <summary>The available contour, or box, with each point placed from its own coarse depth sample.</summary>
         private void DrawOutlines(List<Item> worldItems, string? referentId)
         {
@@ -419,6 +542,7 @@ namespace Boopy.Quest
                 var positions = room.PlaceBoundary(item.Grounding, snapshot, out var capturedDepth);
                 overlay.SetFocus(item.Id == focusedItemId, focusedItemId != null);
                 var appeared = overlay.Show(item.Grounding, positions, capturedDepth, item.Id == referentId, head != null ? head.position : (Vector3?)null);
+                overlay.SetFootage(snapshot.Picture != null);
                 if (head != null) overlay.SetViewer(head.position);
                 // An outline that first appears gets one sweep, from Boopy's side.
                 if (appeared) overlay.Sweep(console != null ? console.transform.position : head != null ? head.position : transform.position);
@@ -787,6 +911,8 @@ namespace Boopy.Quest
             referentPoint = null;
             foreach (var overlay in overlays.Values) { overlay.gameObject.SetActive(false); if (Application.isPlaying) Destroy(overlay.gameObject); else DestroyImmediate(overlay.gameObject); }
             overlays.Clear();
+            foreach (var word in words.Values) { word.gameObject.SetActive(false); Discard(word.gameObject); }
+            words.Clear();
             accents.Clear(); focusedItemId = null; renderedView = null; renderedSessionId = null; renderedReferentId = null; groundedItems.Clear();
             task = null;
         }

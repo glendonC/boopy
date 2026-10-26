@@ -16,6 +16,13 @@ namespace Boopy.Quest
     {
         private const float SweepSeconds = .6f;
         private LineRenderer? outline, rim, band;
+        // On recorded footage the Ember edge matches sand and pale sky, so a Graphite halo runs outside it (DESIGN, measured).
+        private LineRenderer? halo;
+        private float brightenAge = float.PositiveInfinity;
+        private const float BrightenSeconds = .4f;
+        public bool Haloed => halo != null && halo.enabled;
+        /// <summary>How bright the edge is over its color, 0 at rest, up to 1 at the height of a brighten.</summary>
+        public float Brightness => brightenAge < BrightenSeconds ? Mathf.Sin(brightenAge / BrightenSeconds * Mathf.PI) : 0f;
         private MeshRenderer? fill;
         private bool attended;
         private float sweepClock = float.PositiveInfinity;
@@ -168,13 +175,35 @@ namespace Boopy.Quest
             viewerDistance = distance; ApplyEmphasis();
         }
 
+        /// <summary>Draws a Graphite halo outside the edge, for an outline on recorded footage.</summary>
+        public void SetFootage(bool on)
+        {
+            if (on && halo == null && outline != null)
+            {
+                halo = Visuals.Line(new GameObject("Footage halo"), 0.0018f, true, Visuals.Solid);
+                halo.transform.SetParent(transform, false);
+                halo.sortingOrder = -1;
+                Visuals.Tint(halo, new Color(20f / 255f, 27f / 255f, 33f / 255f, .7f));
+            }
+            if (halo != null) halo.enabled = on;
+            // On footage the Ember core is drawn solid: a soft edge lets the dark halo show through it and it reads grey.
+            if (outline != null && attended) outline.sharedMaterial = on ? Visuals.Solid : Visuals.SoftEdge;
+            ApplyEmphasis(); ApplyTrace();
+        }
+
+        /// <summary>The edge brightens once, about 400 ms, when Boopy heard the word; reduced motion shows no change.</summary>
+        public void Brighten() { if (!reducedMotion) { brightenAge = 0f; ApplyEmphasis(); } }
+
         private void ApplyEmphasis()
         {
             if (outline == null) return;
-            Visuals.Tint(outline, new Color(color.r, color.g, color.b, ambient ? (focused ? .68f : .28f) : ObjectAccents.OutlineOpacity(focused, anyFocused, primary)));
+            var lit = Color.Lerp(color, Color.white, .6f * Brightness);
+            Visuals.Tint(outline, new Color(lit.r, lit.g, lit.b, ambient ? (focused ? .68f : .28f) : ObjectAccents.OutlineOpacity(focused, anyFocused, primary)));
             // A soft edge fades toward its sides, so the attended subject's line is wider than the base 1.8 mrad.
             outline.widthMultiplier = ambient ? ambientDistance * (focused ? .0026f : .0018f)
                 : viewerDistance * (attended ? (focused ? .0034f : .0028f) : focused ? .0024f : .0018f);
+            // About two device pixels of halo on each side (a Quest 3 pixel is about 0.7 mrad).
+            if (halo != null) halo.widthMultiplier = outline.widthMultiplier + viewerDistance * .0028f;
             ApplyRim();
         }
 
@@ -194,6 +223,7 @@ namespace Boopy.Quest
             if (!ambient && !reducedMotion && elapsed > 0f) clock += elapsed;
             if (!ambient && !reducedMotion && revealClock < 0.75f && elapsed > 0f) { revealClock += elapsed; ApplyTrace(); }
             if (attended && sweepClock < SweepSeconds && elapsed > 0f) { sweepClock += elapsed; ApplySweep(); }
+            if (brightenAge < BrightenSeconds && elapsed > 0f) { brightenAge += elapsed; ApplyEmphasis(); }
             ApplyTint();
         }
 
@@ -343,12 +373,20 @@ namespace Boopy.Quest
         {
             if (outline == null) return;
             outline.loop = ambient || !traced;
-            if (ambient || !traced) { outline.positionCount = shape.Length; outline.SetPositions(shape); return; }
-            var points = new System.Numerics.Vector3[shape.Length];
-            for (var i = 0; i < shape.Length; i++) points[i] = new System.Numerics.Vector3(shape[i].x, shape[i].y, shape[i].z);
-            var trace = SurfaceGeometry.TraceBoundary(points, revealClock / 0.45f);
-            outline.positionCount = trace.Length;
-            for (var i = 0; i < trace.Length; i++) outline.SetPosition(i, new Vector3(trace[i].X, trace[i].Y, trace[i].Z));
+            if (ambient || !traced) { outline.positionCount = shape.Length; outline.SetPositions(shape); }
+            else
+            {
+                var points = new System.Numerics.Vector3[shape.Length];
+                for (var i = 0; i < shape.Length; i++) points[i] = new System.Numerics.Vector3(shape[i].x, shape[i].y, shape[i].z);
+                var trace = SurfaceGeometry.TraceBoundary(points, revealClock / 0.45f);
+                outline.positionCount = trace.Length;
+                for (var i = 0; i < trace.Length; i++) outline.SetPosition(i, new Vector3(trace[i].X, trace[i].Y, trace[i].Z));
+            }
+            // The halo follows the edge exactly, behind it.
+            if (halo == null || !halo.enabled) return;
+            halo.loop = outline.loop;
+            halo.positionCount = outline.positionCount;
+            for (var i = 0; i < outline.positionCount; i++) halo.SetPosition(i, outline.GetPosition(i));
         }
         private void ApplyTint()
         {

@@ -114,6 +114,8 @@ namespace Boopy.Quest
         private InteractionPresentation? task;
         // Only the current session's task is ever drawn or answered.
         private InteractionPresentation? PresentedTask => task != null && session != null && task.SessionId == session.Id ? task : null;
+        // The newest answer whose heard result Boopy has shown, so each answer's moment plays once.
+        private string? assessedEventId;
         // One task per session. Its open ids are made once, so asking again is the same open.
         private string? taskSessionId, taskOpenEventId, taskOpenId;
         private CancellationTokenSource? taskOpen;
@@ -157,7 +159,11 @@ namespace Boopy.Quest
         {
             if (console == null || scene == null) return;
             turnOpen = true; turnAnswered = false;
-            scene.OpenTurn(console);
+            // A turn about the recorded picture docks the console beside it, level with where the eyes booped.
+            Vector3? booped = null;
+            if (recorded != null && recorded.Showing && head != null && gaze != null
+                && recorded.TryHit(new Ray(head.position, gaze.Point - head.position), out var onPicture, out _)) booped = onPicture;
+            scene.OpenTurn(console, booped);
         }
 
         private void CloseTurn()
@@ -196,6 +202,7 @@ namespace Boopy.Quest
             liveHud = LiveSceneHud.Create(transform, head, room);
             captureScan = CaptureScanCue.Create(transform);
             recorded = RecordedPicture.Create(transform);
+            scene.SetPicture(recorded);
             liveScenePaused=PlayerPrefs.GetInt("Boopy.LiveScenePaused",0)==1;
             feedback = InteractionAudio.Create(console.transform);
             feedback.SetEnabled(console.SoundEnabled);
@@ -1163,6 +1170,13 @@ namespace Boopy.Quest
             dialogue?.SetComfort(console?.ComfortScale ?? 1f, console?.ReducedMotion ?? false);
             dialogue?.ShowTask(shown.SpeakerLine, shown.Caption);
             console?.ShowTask(shown.AnswerLabel);
+            // Boopy's reply to a new answer shows what it heard, on the word and on Boopy, once.
+            if (shown.RepliesToAnswer && shown.LastAttempt is TaskAttempt attempt && attempt.Heard is string heard && attempt.EventId != assessedEventId)
+            {
+                assessedEventId = attempt.EventId;
+                scene?.Assess(heard);
+                console?.React(heard, scene != null && scene.TryGetWord(out var word) ? word : (Vector3?)null);
+            }
             if (console?.Relocating != true) dialogue?.SetFallback(scene != null && !scene.ConsolePlaced);
         }
 

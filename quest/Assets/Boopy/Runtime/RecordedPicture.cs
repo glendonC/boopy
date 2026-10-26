@@ -9,9 +9,9 @@ namespace Boopy.Quest
     /// The recorded scene the Mac shows, as one flat picture in the room: world-fixed, placed once in front of the person
     /// when it first appears, upright and facing them. A 2D source has no depth, so the picture's plane is where its
     /// subjects lie. No words sit on it. A clip's still has a player's thin bar along its bottom edge, its width, filled to
-    /// where the still is in the clip, with the play triangle under the bar's left end, as any player shows a stopped video
-    /// (two bars would be the privacy Pause). A photo has nothing. Its still stays in memory only, never on the headset's
-    /// storage.
+    /// where the still is in the clip, with the play triangle just left of the bar, as any player shows a stopped video (two
+    /// bars would be the privacy Pause). A photo has nothing. Its still stays in memory only, never on the headset's storage;
+    /// a coarse grid of its luminance stays with it so words on it can choose their ink.
     /// </summary>
     public sealed class RecordedPicture : MonoBehaviour
     {
@@ -20,8 +20,11 @@ namespace Boopy.Quest
 
         private Transform? frame;
         private MeshRenderer? surface;
+        // The still's relative luminance on a coarse grid, top row first, kept so words on it can choose their ink.
+        private float[] luminance = System.Array.Empty<float>();
+        private int columns, rows;
         private LineRenderer? track, played;
-        private SpatialActionIcon? stopped;
+        private MeshRenderer? stopped;
         private Texture2D? texture;
         private byte[]? still;
 
@@ -58,12 +61,13 @@ namespace Boopy.Quest
             picture.surface.sortingOrder = -10;
             picture.surface.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             picture.surface.receiveShadows = false;
-            // A clip's player bar, sized at the picture's distance as the controls are at 1 m: the track, the part played up to
-            // the held still, and the play triangle (the Resume glyph) of a stopped player.
-            picture.stopped = SpatialActionIcon.Create(go.transform);
-            picture.stopped.Configure(ConsoleAction.PauseScene, "Resume");
-            picture.stopped.Tint(SpatialTheme.TextColor);
-            picture.stopped.transform.localScale = Vector3.one * Distance;
+            // A clip's player bar: the track, the part played up to the held still, and the play triangle of a stopped player.
+            var triangle = new GameObject("Play triangle"); triangle.transform.SetParent(go.transform, false);
+            var mesh = new Mesh { name = "Play triangle", vertices = new[] { new Vector3(-.5f, -.5f, 0f), new Vector3(-.5f, .5f, 0f), new Vector3(.5f, 0f, 0f) },
+                triangles = new[] { 0, 1, 2 } };
+            triangle.AddComponent<MeshFilter>().sharedMesh = mesh;
+            picture.stopped = triangle.AddComponent<MeshRenderer>(); picture.stopped.sharedMaterial = Visuals.Solid; picture.stopped.sortingOrder = 4;
+            var frost = new MaterialPropertyBlock(); frost.SetColor("_Color", WordBlock.Frost); picture.stopped.SetPropertyBlock(frost);
             picture.track = picture.Bar("Player track", new Color(SpatialTheme.Smoke.r, SpatialTheme.Smoke.g, SpatialTheme.Smoke.b, .45f), 3);
             picture.played = picture.Bar("Player played", SpatialTheme.TextColor, 4);
             picture.ShowBar(null, 1f, 1f);
@@ -79,11 +83,14 @@ namespace Boopy.Quest
         {
             if (surface == null) return false;
             var decoded = new Texture2D(2, 2, TextureFormat.RGBA32, true) { name = "Recorded still", wrapMode = TextureWrapMode.Clamp };
-            if (!decoded.LoadImage(jpeg, true) || decoded.width != scene.Width || decoded.height != scene.Height)
+            if (!decoded.LoadImage(jpeg, false) || decoded.width != scene.Width || decoded.height != scene.Height)
             {
                 Discard(decoded);
                 return false;
             }
+            Measure(decoded);
+            // The pixels themselves go to the GPU only; the coarse grid stays.
+            decoded.Apply(false, true);
             var first = !Showing;
             if (texture != null) Discard(texture);
             texture = decoded; still = jpeg; Scene = scene;
@@ -109,7 +116,7 @@ namespace Boopy.Quest
             gameObject.SetActive(false);
             if (surface != null) surface.sharedMaterial.mainTexture = null;
             if (texture != null) Discard(texture);
-            texture = null; still = null; Scene = null; Held = null;
+            texture = null; still = null; Scene = null; Held = null; luminance = System.Array.Empty<float>();
         }
 
         private LineRenderer Bar(string name, Color color, int order)
@@ -122,8 +129,46 @@ namespace Boopy.Quest
             return line;
         }
 
-        // The bar runs the picture's width just under its bottom edge; the play triangle sits under the bar's left end.
-        private const float BarWidth = .003f, Symbol = .014f;
+        private void Measure(Texture2D image)
+        {
+            columns = 96; rows = Mathf.Max(1, Mathf.RoundToInt(columns * (float)image.height / image.width));
+            luminance = new float[columns * rows];
+            for (var row = 0; row < rows; row++)
+                for (var column = 0; column < columns; column++)
+                    // Texture rows run from the bottom; the grid's from the top, as image points do.
+                    luminance[row * columns + column] = WordBlock.Luminance(image.GetPixelBilinear((column + .5f) / columns, 1f - (row + .5f) / rows));
+        }
+
+        /// <summary>
+        /// The darkest and brightest luminance (5th and 95th percentile) of the still inside an image rectangle (0 to 1,
+        /// origin top-left), for words placed on it; (0, 1) when nothing is measured there.
+        /// </summary>
+        public (float Darkest, float Brightest) LuminanceRange(float x0, float y0, float x1, float y1)
+        {
+            var inside = new System.Collections.Generic.List<float>();
+            for (var row = 0; row < rows; row++)
+                for (var column = 0; column < columns; column++)
+                {
+                    var x = (column + .5f) / columns; var y = (row + .5f) / rows;
+                    if (x >= x0 && x <= x1 && y >= y0 && y <= y1) inside.Add(luminance[row * columns + column]);
+                }
+            if (inside.Count == 0) return (0f, 1f);
+            inside.Sort();
+            return (inside[(int)(.05f * (inside.Count - 1))], inside[(int)(.95f * (inside.Count - 1))]);
+        }
+
+        /// <summary>How busy the still is inside an image rectangle: the spread from its 5th to its 95th percentile luminance.</summary>
+        public float Spread(float x0, float y0, float x1, float y1)
+        {
+            var (darkest, brightest) = LuminanceRange(x0, y0, x1, y1);
+            return brightest - darkest;
+        }
+
+        // The bar runs the picture's width just under its bottom edge. The play triangle of a stopped player, about 1.5
+        // degrees tall at the picture's distance, sits just left of the bar's left end, outside the picture's corner and
+        // centered on the bar (DESIGN, on Chrome's player in one line); it is not a control.
+        public const float Triangle = .047f;
+        private const float BarWidth = .003f;
         private void ShowBar(float? held, float width, float height)
         {
             Held = held;
@@ -134,7 +179,9 @@ namespace Boopy.Quest
             var y = -height / 2f - BarWidth * Distance;
             track.SetPosition(0, new Vector3(-width / 2f, y, -.003f)); track.SetPosition(1, new Vector3(width / 2f, y, -.003f));
             played.SetPosition(0, new Vector3(-width / 2f, y, -.004f)); played.SetPosition(1, new Vector3(-width / 2f + width * along, y, -.004f));
-            stopped.transform.localPosition = new Vector3(-width / 2f + Symbol * Distance / 2f, y - (SpatialTheme.Gap + Symbol / 2f) * Distance, -.003f);
+            // As tall as it is long, pointing right; its point ends one gap short of the bar.
+            stopped.transform.localScale = new Vector3(Triangle * .87f, Triangle, 1f);
+            stopped.transform.localPosition = new Vector3(-width / 2f - SpatialTheme.Gap * Distance - Triangle * .87f / 2f, y, -.003f);
         }
 
         /// <summary>Where a ray meets the picture: the room point and the still's image point (0 to 1, origin top-left).</summary>
