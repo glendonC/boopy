@@ -71,10 +71,16 @@ headset shows it as a large flat picture ahead and a little below the eyes, fixe
 takes it away when the Mac clears it. No words sit on it: a still from a clip has a player's thin
 bar along its bottom edge, stopped where the still is, with the play triangle; a photo has nothing.
 While it shows, every Talk turn is about that still: the turn names the still and the point the
-eyes were on, never sends a frame of the room, and the room's live outlines are off. The reply's outline lies on the picture, and the chip, Boopy's line and the
-controls work as on any turn. Another still from the Mac replaces the picture between turns and
-takes the old still's outline and chip with it. A recorded still is never the room as it is now,
-and the headset keeps it in memory only.
+eyes were on, never sends a frame of the room, and the room's live outlines are off. Boopy's line
+and the controls sit just right of the picture. The reply's outline lies on the picture, with a
+dark edge so it reads on bright sand and sky, and the subject's word sits on the picture right above
+it, with no box: in a practice task the outside word, Boopy's guess under it, and where the word
+came from. When the person answers, Boopy shows what it heard: the word lights up once and Boopy
+hops when it heard the word, the word lights up and Boopy points at it when it did not catch it,
+and Boopy tilts toward the person when it heard none of that language. On a later turn the word
+says "Didn't hear it last time" under it. Another still from the Mac replaces the picture between
+turns and takes the old still's outline and word with it. A recorded still is never the room as it
+is now, and the headset keeps it in memory only.
 
 Arrange-and-sequence activities have service support and no scene renderer. Do not add a tray
 or a stack of cards for them.

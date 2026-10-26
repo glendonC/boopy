@@ -30,12 +30,12 @@ namespace Boopy.Quest.Editor
     {
         private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
         private const string Health = "{\"ok\":true,\"service\":\"boopy\",\"interpreter\":{\"provider\":\"fixture\",\"model\":\"synthetic\"}}";
-        private const string RecordingId = "rec_0123456789abcdef0123456789abcdef";
-        private const string FrameA = "rfr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FrameB = "rfr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        private const string SessionId = "ses_synthetic_recorded", ObservationId = "obs_synthetic_recorded";
-        private const int Width = 640, Height = 480;
+        internal const string RecordingId = "rec_0123456789abcdef0123456789abcdef";
+        internal const string FrameA = "rfr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FrameB = "rfr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        internal const string SessionId = "ses_synthetic_recorded", ObservationId = "obs_synthetic_recorded";
+        internal const int Width = 640, Height = 480;
         // The subject's box and its mask on the synthetic still, in image coordinates (0 to 1, origin top-left).
-        private static readonly Box2 SubjectBox = new Box2 { X0 = .30f, Y0 = .45f, X1 = .55f, Y1 = .80f };
+        internal static readonly Box2 SubjectBox = new Box2 { X0 = .30f, Y0 = .45f, X1 = .55f, Y1 = .80f };
         private static readonly (float X, float Y)[] SubjectMask = { (.32f, .78f), (.36f, .50f), (.47f, .46f), (.54f, .62f), (.50f, .79f) };
         // A recorded still is never the room as it is now: no visible words may say so while it shows (X13, QP-1).
         private static readonly Regex NotRecorded = new Regex(@"\b(here|now|live)\b|in front of you|in your room", RegexOptions.IgnoreCase);
@@ -128,10 +128,11 @@ namespace Boopy.Quest.Editor
                 Require(image.x >= SubjectBox.X0 - .05f && image.x <= SubjectBox.X1 + .05f && image.y >= SubjectBox.Y0 - .05f && image.y <= SubjectBox.Y1 + .05f,
                     $"The box outline is not around the subject on the still: {image.x:0.000}, {image.y:0.000}.");
             }
-            var chip = f.Scene.GetComponentsInChildren<Chip>(true).Single(candidate => candidate.gameObject.activeInHierarchy);
-            Require(chip.Anchor is Vector3 anchor && OffPlane(plane, anchor) <= .0015f
+            // The subject's anchor, where Boopy goes and its word sits by, is on the subject on the still; it gets no chip.
+            Require(f.Scene.TryGetActiveAnchor(out var anchor) && OffPlane(plane, anchor) <= .0015f
                 && Vector2.Distance(ImageOf(plane, anchor), new Vector2((SubjectBox.X0 + SubjectBox.X1) / 2f, (SubjectBox.Y0 + SubjectBox.Y1) / 2f)) < .002f,
-                "The chip's anchor is not on the subject on the still.");
+                "The subject's anchor is not on the subject on the still.");
+            Require(f.Scene.GetComponentsInChildren<Chip>(true).All(candidate => !candidate.gameObject.activeInHierarchy), "A subject on the picture has a chip.");
             f.Apply(f.Reply("mask"));
             var mask = SingleOverlay(f);
             Require(mask.Boundary.Count == SubjectMask.Length, "The mask outline has " + mask.Boundary.Count + " points, not its own " + SubjectMask.Length + ".");
@@ -164,8 +165,9 @@ namespace Boopy.Quest.Editor
             f.Mac.Stills[FrameB] = f.StillB;
             f.ReadScene();
             Require(f.Picture.Scene!.FrameId == FrameB, "A new still from the Mac is not shown.");
-            Require(Overlays(f) == 0 && f.Scene.GetComponentsInChildren<Chip>(true).All(candidate => !candidate.gameObject.activeInHierarchy),
-                "The old still's outline or chip stays on the new still.");
+            Require(Overlays(f) == 0 && f.Scene.GetComponentsInChildren<Chip>(true).All(candidate => !candidate.gameObject.activeInHierarchy)
+                && f.Scene.GetComponentsInChildren<WordBlock>(true).All(candidate => !candidate.gameObject.activeInHierarchy),
+                "The old still's outline, chip or word stays on the new still.");
             // A clip's still has a player's thin bar along the picture's bottom edge, its width, filled to where the still is in
             // the clip, with the play triangle of a stopped player under its left end; never the Pause bars, never words.
             f.Mac.Scene = SceneJson(FrameA, f.StillA, kind: "video", at: 4.2f, duration: 12.232f);
@@ -178,10 +180,16 @@ namespace Boopy.Quest.Editor
             Require(track.gameObject.activeInHierarchy && played.gameObject.activeInHierarchy && Mathf.Abs(start.x) < .001f && Mathf.Abs(end.x - 1f) < .001f
                 && start.y > 1f && start.y < 1.02f && Mathf.Abs(reached.x - 4.2f / 12.232f) < .002f,
                 $"The player bar is not the picture's width along its bottom edge, or not filled to the held still: {start}, {end}, {reached}.");
-            var symbol = f.Picture.GetComponentsInChildren<SpatialActionIcon>(true).Single();
-            var under = ImageOf(f.Picture.Plane, symbol.transform.position);
-            Require(symbol.gameObject.activeInHierarchy && symbol.Kind == "resume" && under.x < .05f && under.y > start.y,
-                "A held clip's bar has no play triangle under its left end (" + symbol.Kind + ").");
+            // The play triangle of a stopped player, about 1.5 degrees tall, just left of the bar, outside the picture's corner,
+            // centered on the bar (DESIGN): never the Pause bars.
+            var triangle = f.Picture.GetComponentsInChildren<MeshRenderer>(true).Single(renderer => renderer.name == "Play triangle");
+            var bounds = triangle.bounds;
+            var at = ImageOf(f.Picture.Plane, bounds.center);
+            var tall = 2f * Mathf.Atan(bounds.size.y / 2f / Vector3.Distance(f.Eyes.position, bounds.center)) * Mathf.Rad2Deg;
+            Require(triangle.gameObject.activeInHierarchy && at.x < 0f && Mathf.Abs(at.y - start.y) < .01f && tall > 1.3f && tall < 1.7f
+                && ImageOf(f.Picture.Plane, bounds.max).x < start.x,
+                $"A held clip's play triangle is not 1.5 degrees tall just left of the bar: at {at}, {tall:0.00} degrees.");
+            Require(f.Picture.GetComponentsInChildren<SpatialActionIcon>(true).Length == 0, "The held clip shows a control glyph.");
             Require(f.Picture.GetComponentsInChildren<TextMeshPro>(true).Length == 0, "Words sit on the clip's picture.");
 
             // No scene takes the picture away, and the live room scene may come back.
@@ -279,7 +287,7 @@ namespace Boopy.Quest.Editor
             finally { SynchronizationContext.SetSynchronizationContext(context); }
         }
 
-        private static void Capture(Fixture f, string path)
+        internal static void Capture(Fixture f, string path)
         {
             const int width = 1600, height = 1000;
             Settle(f);
@@ -303,7 +311,7 @@ namespace Boopy.Quest.Editor
             }
         }
 
-        private sealed class Fixture : IDisposable
+        internal sealed class Fixture : IDisposable
         {
             public readonly GameObject Root;
             public readonly Transform Eyes;
@@ -336,6 +344,7 @@ namespace Boopy.Quest.Editor
                 Set(App, "room", room); Set(App, "head", Eyes); Set(App, "status", StatusLine.Create(Root.transform, Eyes, Visuals.Quad()));
                 Set(App, "gaze", Reticle.Create("Synthetic gaze", Root.transform, Eyes));
                 Set(App, "recorded", Picture);
+                Scene.SetPicture(Picture);
                 Set(App, "recoveryStore", new CaptureRecoveryStore(Path.Combine(directory, "pending-id")));
                 Set(App, "handoffRecoveryStore", new HandoffRecoveryStore(Path.Combine(directory, "preparation-identity")));
             }
@@ -396,7 +405,7 @@ namespace Boopy.Quest.Editor
         }
 
         /// <summary>The Mac as the headset sees it: the recorded scene, its stills, and the turn.</summary>
-        private sealed class Mac : HttpMessageHandler
+        internal sealed class Mac : HttpMessageHandler
         {
             public string Scene = "{\"scene\":null}";
             public readonly Dictionary<string, byte[]> Stills = new Dictionary<string, byte[]>();
@@ -420,8 +429,11 @@ namespace Boopy.Quest.Editor
                     content.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
                 }
-                if (request.Method == HttpMethod.Post && path == "/v1/sessions/" + SessionId + "/task") return Json(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"no_task\",\"message\":\"Synthetic.\"}}");
-                if (request.Method == HttpMethod.Post && (path == "/v1/sessions" || path == "/v1/sessions/" + SessionId + "/utterances"))
+                // Any session's turn and task open: the render replays captured views of other sessions through the same Mac.
+                if (request.Method == HttpMethod.Post && path.StartsWith("/v1/sessions/", StringComparison.Ordinal) && path.EndsWith("/task", StringComparison.Ordinal))
+                    return Json(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"no_task\",\"message\":\"Synthetic.\"}}");
+                if (request.Method == HttpMethod.Post && (path == "/v1/sessions"
+                    || (path.StartsWith("/v1/sessions/", StringComparison.Ordinal) && path.EndsWith("/utterances", StringComparison.Ordinal))))
                 {
                     Posts.Add((path, request.Content!.ReadAsStringAsync().GetAwaiter().GetResult()));
                     OnTurn?.Invoke();
@@ -440,7 +452,7 @@ namespace Boopy.Quest.Editor
                 Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") });
         }
 
-        private static string SceneJson(string frameId, byte[] still, string? sha = null, int width = Width, int height = Height,
+        internal static string SceneJson(string frameId, byte[] still, string? sha = null, int width = Width, int height = Height,
             string kind = "photo", float? at = null, float? duration = null)
         {
             var digest = sha ?? Sha(still);
@@ -474,10 +486,10 @@ namespace Boopy.Quest.Editor
             finally { UnityEngine.Object.DestroyImmediate(texture); }
         }
 
-        private static void Look(Fixture f, System.Numerics.Vector3 at) =>
+        internal static void Look(Fixture f, System.Numerics.Vector3 at) =>
             typeof(Reticle).GetProperty("Point")!.SetValue(Get(f.App, "gaze"), Unity(at));
 
-        private static GroundedOverlay SingleOverlay(Fixture f)
+        internal static GroundedOverlay SingleOverlay(Fixture f)
         {
             var shown = f.Scene.GetComponentsInChildren<GroundedOverlay>(true).Where(overlay => overlay.gameObject.activeInHierarchy).ToArray();
             Require(shown.Length == 1, "Expected the reply's one outline, found " + shown.Length + ".");
@@ -489,7 +501,7 @@ namespace Boopy.Quest.Editor
         private static TextMeshPro[] Visible(Fixture f) =>
             f.Root.GetComponentsInChildren<TextMeshPro>().Where(text => text.gameObject.activeInHierarchy && text.enabled && !string.IsNullOrWhiteSpace(text.text)).ToArray();
 
-        private static void NeverNow(Fixture f, string when)
+        internal static void NeverNow(Fixture f, string when)
         {
             foreach (var text in Visible(f))
                 Require(!NotRecorded.IsMatch(text.text), $"A visible line says the recorded scene is the room now, {when}: \"{text.text}\".");
@@ -497,19 +509,19 @@ namespace Boopy.Quest.Editor
 
         private static int Overlays(Fixture f) => f.Scene.GetComponentsInChildren<GroundedOverlay>(true).Count(overlay => overlay.gameObject.activeInHierarchy);
 
-        private static float OffPlane(PicturePlane plane, Vector3 point)
+        internal static float OffPlane(PicturePlane plane, Vector3 point)
         {
             var normal = Vector3.Cross(Unity(plane.Right), Unity(plane.Up)).normalized;
             return Mathf.Abs(Vector3.Dot(point - Unity(plane.Center), normal));
         }
 
-        private static Vector2 ImageOf(PicturePlane plane, Vector3 point)
+        internal static Vector2 ImageOf(PicturePlane plane, Vector3 point)
         {
             var local = point - Unity(plane.Center);
             return new Vector2(Vector3.Dot(local, Unity(plane.Right)) / plane.Width + .5f, .5f - Vector3.Dot(local, Unity(plane.Up)) / plane.Height);
         }
 
-        private static void Settle(Fixture f)
+        internal static void Settle(Fixture f)
         {
             foreach (var text in f.Root.GetComponentsInChildren<TextMeshPro>()) text.ForceMeshUpdate(true, true);
             foreach (var chip in f.Scene.GetComponentsInChildren<Chip>()) chip.Face(f.Eyes);
@@ -517,23 +529,23 @@ namespace Boopy.Quest.Editor
             Physics.SyncTransforms();
         }
 
-        private static string Sha(byte[] bytes)
+        internal static string Sha(byte[] bytes)
         {
             using var sha = SHA256.Create();
             return string.Concat(sha.ComputeHash(bytes).Select(value => value.ToString("x2")));
         }
 
         private static Vector3 Unity(System.Numerics.Vector3 value) => new Vector3(value.X, value.Y, value.Z);
-        private static object? Invoke(object target, string name, params object?[] args)
+        internal static object? Invoke(object target, string name, params object?[] args)
         {
             var method = target.GetType().GetMethod(name, Flags) ?? throw new InvalidOperationException("BoopyApp has no " + name + ".");
             return method.Invoke(target, args);
         }
         private static object? Prop(object target, string name) =>
             (target.GetType().GetProperty(name, Flags) ?? throw new InvalidOperationException("BoopyApp has no " + name + ".")).GetValue(target);
-        private static void Set(object target, string name, object? value) =>
+        internal static void Set(object target, string name, object? value) =>
             (target.GetType().GetField(name, Flags) ?? throw new InvalidOperationException(target.GetType().Name + " keeps no " + name + ".")).SetValue(target, value);
-        private static object? Get(object target, string name) =>
+        internal static object? Get(object target, string name) =>
             (target.GetType().GetField(name, Flags) ?? throw new InvalidOperationException(target.GetType().Name + " keeps no " + name + ".")).GetValue(target);
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     }

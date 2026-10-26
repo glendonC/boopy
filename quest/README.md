@@ -125,6 +125,10 @@ outline is drawn on the picture. The still stays in the headset's memory only: n
 the headset or in the APK. In the editor, `Boopy.Quest.Editor.RecordedSceneValidation.Render` writes
 stills of a synthetic picture; with `BOOPY_RECORDED_FRAME` set to the absolute path of a JPEG still and
 `BOOPY_RENDER_DIR` to a private folder, it also renders that still, with no outline on it.
+`Boopy.Quest.Editor.RecordedLookRender.Render` draws four frames of the look on a subject (first
+result, a missed answer, a later turn, a clip's still) through the app's own path from replies the
+service captured in a rehearsal: `BOOPY_RECORDED_VIEWS` names their folder, `BOOPY_RECORDED_FRAME` and
+`BOOPY_RECORDED_FRAME_D` the two stills, and `BOOPY_RENDER_DIR` an existing private folder.
 
 ## Check first on the headset
 
