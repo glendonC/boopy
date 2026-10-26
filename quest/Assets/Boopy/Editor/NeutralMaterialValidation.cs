@@ -12,7 +12,7 @@ namespace Boopy.Quest.Editor
     {
         public static void ValidateAndRender()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);ScriptCoverage.Install();
             foreach(var reduced in new[]{false,true})foreach(var large in new[]{false,true})foreach(var bright in new[]{false,true})
             {
                 var root=new GameObject("Synthetic neutral material state matrix");

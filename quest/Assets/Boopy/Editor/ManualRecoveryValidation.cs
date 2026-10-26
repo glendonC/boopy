@@ -20,7 +20,7 @@ namespace Boopy.Quest.Editor
         public static void Validate()
         {
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            HangulFont.Install();
+            ScriptCoverage.Install();
             var root = new GameObject("Synthetic manual recovery UI");
             try
             {

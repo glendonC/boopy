@@ -19,7 +19,7 @@ namespace Boopy.Quest.Editor
         public static void Validate()
         {
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            HangulFont.Install();
+            ScriptCoverage.Install();
             foreach (var outcome in new[] { "accepted", "cancelled", "focus-lost", "transport", "malformed" }) ValidateTurn(outcome);
             Debug.Log("Boopy contextual follow-up dispatch validation passed (synthetic HTTP, exact selected origin, no new capture/audio).");
         }

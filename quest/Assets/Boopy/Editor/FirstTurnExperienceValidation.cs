@@ -20,7 +20,7 @@ namespace Boopy.Quest.Editor
         private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
         public static void Validate()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single); HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single); ScriptCoverage.Install();
             var root = new GameObject("Synthetic first turn experience");
             var directory = Path.Combine(Path.GetTempPath(), "boopy-first-turn-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
             var hadVoicePreference = PlayerPrefs.HasKey("Boopy.Voice"); var savedVoicePreference = PlayerPrefs.GetInt("Boopy.Voice", 1);

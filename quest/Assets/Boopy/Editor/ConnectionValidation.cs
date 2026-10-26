@@ -120,7 +120,7 @@ namespace Boopy.Quest.Editor
         private const string Valid="{\"ok\":true,\"service\":\"boopy\",\"interpreter\":{\"provider\":\"meta-model-api\",\"model\":\"synthetic\"},\"speechOutputAvailable\":true}";
         private static void SettingsLayouts(GameObject root,Transform eyes,ContextConsole console)
         {
-            HangulFont.Install(); console.Place(new Vector3(0,-.08f,1.2f)); eyes.rotation=Quaternion.identity;
+            ScriptCoverage.Install(); console.Place(new Vector3(0,-.08f,1.2f)); eyes.rotation=Quaternion.identity;
             var camera=eyes.gameObject.AddComponent<Camera>();camera.fieldOfView=64;camera.aspect=1.6f;
             camera.nearClipPlane=.05f;camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=new Color(.15f,.17f,.19f);
             var target=new RenderTexture(1200,750,24);target.Create();var pixels=new Texture2D(1200,750,TextureFormat.RGB24,false);

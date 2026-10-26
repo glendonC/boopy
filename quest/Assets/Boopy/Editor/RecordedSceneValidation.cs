@@ -46,7 +46,7 @@ namespace Boopy.Quest.Editor
             try
             {
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-                HangulFont.Install();
+                ScriptCoverage.Install();
                 SynchronizationContext.SetSynchronizationContext(null);
                 using (var live = new Fixture()) ValidateLiveStaysInTheRoom(live);
                 using var f = new Fixture();
@@ -234,7 +234,7 @@ namespace Boopy.Quest.Editor
                 Require(string.IsNullOrEmpty(owner) || Directory.Exists(Environment.GetEnvironmentVariable("BOOPY_RENDER_DIR") ?? ""),
                     "A still of the owner's footage needs BOOPY_RENDER_DIR, an existing private folder (mode 700).");
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-                HangulFont.Install();
+                ScriptCoverage.Install();
                 SynchronizationContext.SetSynchronizationContext(null);
                 Directory.CreateDirectory(output);
                 using (var f = new Fixture())

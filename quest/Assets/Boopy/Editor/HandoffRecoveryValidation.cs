@@ -306,7 +306,7 @@ namespace Boopy.Quest.Editor
         }
         private static void RecoveryLayouts(string path)
         {
-            HangulFont.Install();new HandoffRecoveryStore(path).Save(Anchor());using var fixture=new Fixture(path);
+            ScriptCoverage.Install();new HandoffRecoveryStore(path).Save(Anchor());using var fixture=new Fixture(path);
             var current=View(false);current.Id="ses_current_render";Call(fixture.App,"Apply",current);Call(fixture.App,"RestoreHandoffRecovery");
             fixture.Console.Activate(ConsoleAction.Options);
             foreach(var large in new[] {false,true})

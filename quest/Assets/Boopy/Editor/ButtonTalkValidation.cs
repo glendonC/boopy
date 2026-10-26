@@ -153,7 +153,7 @@ namespace Boopy.Quest.Editor
 
         public static void ValidateProtectedContext()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);ScriptCoverage.Install();
             var root=new GameObject("Synthetic protected Context release");
             try
             {

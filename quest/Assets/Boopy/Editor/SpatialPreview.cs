@@ -31,7 +31,7 @@ namespace Boopy.Quest.Editor
                 camera.backgroundColor = new Color(0.69f, 0.72f, 0.73f);
                 camera.allowHDR = false;
                 camera.allowMSAA = false;
-                HangulFont.Install();
+                ScriptCoverage.Install();
                 ModularUiValidation.Validate();
                 var quad = Visuals.Quad();
                 Surface(root, "Synthetic wall", new Vector3(0f, 1.55f, 2f), new Vector2(4f, 2.4f),

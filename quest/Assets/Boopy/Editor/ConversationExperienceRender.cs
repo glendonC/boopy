@@ -21,7 +21,7 @@ namespace Boopy.Quest.Editor
         private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
         public static void Render()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single); HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single); ScriptCoverage.Install();
             Directory.CreateDirectory(Output); Directory.CreateDirectory(Path.Combine(Output, "sequence"));
             var root = new GameObject("Synthetic conversation production render");
             var privateDirectory = Path.Combine(Path.GetTempPath(), "boopy-render-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(privateDirectory);

@@ -14,7 +14,7 @@ namespace Boopy.Quest.Editor
     {
         public static void Validate()
         {
-            HangulFont.Install();
+            ScriptCoverage.Install();
             var root = new GameObject("Synthetic modular UI validation");
             try
             {
@@ -72,11 +72,15 @@ namespace Boopy.Quest.Editor
                     "Hover or refresh changed the open reader's selection/page.");
                 var exact = new StringBuilder();
                 var pages = 0;
+                var probe = SpatialTheme.Text(console.transform, "SYNTHETIC page probe", SpatialTheme.Body, SpatialTheme.Ivory);
+                probe.gameObject.SetActive(false);
                 do
                 {
                     Ready(console);
                     Geometry(console);
                     exact.Append(Reader(console));
+                    // Each page fits the height it was measured for, as drawn (a run no face can show is a longer line).
+                    Require(SpatialTheme.Height(probe, Reader(console), SpatialTheme.ShelfWidth) <= .111f, "A reader page is taller than its measure as drawn.");
                     Require(++pages <= 256, "Synthetic reader navigation did not reach its bounded end.");
                     var (index, count) = SourcePage(console);
                     if (index == count - 1) break;
@@ -85,8 +89,10 @@ namespace Boopy.Quest.Editor
                     console.NextPage();
                 } while (true);
                 Require(pages > 1, "Long synthetic evidence did not exercise text paging.");
-                Require(exact.ToString() == ExpectedSources(view, selected),
+                // The pages keep every character of the words as drawn; the item's own words are untouched.
+                Require(exact.ToString() == ScriptCoverage.Prepare(ExpectedSources(view, selected)),
                     "Measured reader pages lost or rewrote source text.");
+                Require(ContextReview.Evidence(selected).Contains("👩🏽‍🚀"), "Preparing the drawn words changed the item's own words.");
                 Actions(console, ConsoleAction.Confirm);
                 console.NextPage();
                 Require(Reader(console) == firstPage, "Text paging did not wrap to the first page.");

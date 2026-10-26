@@ -19,7 +19,7 @@ namespace Boopy.Quest.Editor
         public static void Validate()
         {
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            HangulFont.Install();
+            ScriptCoverage.Install();
             foreach (var spoken in new[] { false, true }) ValidateTurn(spoken);
             Debug.Log("Boopy keyed start recovery validation passed (synthetic; no wearer/device test).");
         }

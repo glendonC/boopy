@@ -13,7 +13,7 @@ namespace Boopy.Quest.Editor
     {
         public static void ValidateAndRender()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single); HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single); ScriptCoverage.Install();
             ValidateDispatch();
             foreach(var large in new[]{false,true}) foreach(var selected in new[]{false,true}) foreach(var reduced in new[]{false,true})
             {
@@ -88,7 +88,7 @@ namespace Boopy.Quest.Editor
             var source=Environment.GetEnvironmentVariable("BOOPY_CHOICE_PREVIEW_PATH");
             if(string.IsNullOrWhiteSpace(source))throw new InvalidOperationException("Explicit fictional provider artifact required.");
             var artifact=Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(source));
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);ScriptCoverage.Install();
             foreach(var state in new[]{"initialSessionView","selectedSessionView","finalSessionView","cancelledSelected","restoredSelected"}) foreach(var large in new[]{false,true})
             {
                 var noticeCase=state=="cancelledSelected"||state=="restoredSelected";

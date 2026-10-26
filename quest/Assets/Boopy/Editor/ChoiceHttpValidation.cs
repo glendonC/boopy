@@ -47,7 +47,7 @@ namespace Boopy.Quest.Editor
             var initial=Wire.Read<SessionView>(metadata["initialSessionView"]!.ToString());
             if(initial.Dialogue?.Choice?.Supported!=true||initial.Dialogue.Text.Trim()!=initial.Dialogue.Choice.Prompt.Trim())
                 throw new InvalidOperationException("Actual fictional provider card must satisfy the current native contract.");
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);ScriptCoverage.Install();
             var output=Path.Combine(Path.GetTempPath(),"boopy-unified-real-http");Directory.CreateDirectory(output);
             var root=new GameObject("Fictional local model · actual HTTP production dispatch");
             var target=new RenderTexture(1600,1000,24);target.Create();var pixels=new Texture2D(1600,1000,TextureFormat.RGB24,false);var old=RenderTexture.active;

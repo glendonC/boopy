@@ -46,7 +46,7 @@ namespace Boopy.Quest.Editor
             try
             {
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-                HangulFont.Install();
+                ScriptCoverage.Install();
                 SynchronizationContext.SetSynchronizationContext(null);
                 Directory.CreateDirectory(output);
                 var owner = new List<Color32[]>();

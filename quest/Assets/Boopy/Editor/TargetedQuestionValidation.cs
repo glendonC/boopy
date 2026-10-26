@@ -19,7 +19,7 @@ namespace Boopy.Quest.Editor
         public static void Validate()
         {
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            HangulFont.Install();
+            ScriptCoverage.Install();
             foreach (var cancelled in new[] { false, true }) ValidateTurn(cancelled);
             ValidateTurn(false, "transport");
             ValidateTurn(false, "malformed");

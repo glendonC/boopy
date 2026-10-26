@@ -14,7 +14,7 @@ namespace Boopy.Quest.Editor
         public static void Validate()
         {
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            HangulFont.Install();
+            ScriptCoverage.Install();
             ValidateConnectionAndRecording();
             ValidateDialoguePresentation();
             var root = new GameObject("Synthetic unified control bar");
@@ -182,7 +182,7 @@ namespace Boopy.Quest.Editor
 
         public static void Render()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single); HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single); ScriptCoverage.Install();
             var root = new GameObject("Synthetic control bar preview");
             var eyes = new GameObject("Synthetic viewer").transform; eyes.SetParent(root.transform);
             var camera = eyes.gameObject.AddComponent<Camera>(); camera.fieldOfView=64; camera.nearClipPlane=.05f; camera.clearFlags=CameraClearFlags.SolidColor; camera.backgroundColor=new Color(.15f,.17f,.19f);

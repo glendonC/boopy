@@ -18,7 +18,7 @@ namespace Boopy.Quest.Editor
         public static void Render()
         {
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
-            HangulFont.Install();Directory.CreateDirectory(Output);
+            ScriptCoverage.Install();Directory.CreateDirectory(Output);
             foreach(var large in new[]{false,true})
                 foreach(var state in new[]{"checking","connected","unavailable","listening","thinking","response","settings","context","fallback","fallback-settings"})
                     RenderState(state,large);
@@ -30,7 +30,7 @@ namespace Boopy.Quest.Editor
         }
         public static void RenderMotion()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);ScriptCoverage.Install();
             var output=Path.Combine(Output,"motion");Directory.CreateDirectory(output);
             var root=new GameObject("Synthetic production HUD motion");
             RenderTexture? target=null;Texture2D? pixels=null;var prior=RenderTexture.active;

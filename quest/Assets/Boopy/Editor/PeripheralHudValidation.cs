@@ -16,7 +16,7 @@ namespace Boopy.Quest.Editor
     {
         public static void Validate()
         {
-            HangulFont.Install();
+            ScriptCoverage.Install();
             var root = new GameObject("Synthetic unified HUD validation");
             try
             {
@@ -159,7 +159,7 @@ namespace Boopy.Quest.Editor
         {
             Validate();
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            HangulFont.Install();
+            ScriptCoverage.Install();
             var root = new GameObject("Synthetic HUD render");
             var camera = new GameObject("Synthetic camera").AddComponent<Camera>(); camera.transform.SetParent(root.transform);
             camera.fieldOfView = 58; camera.nearClipPlane = .05f; camera.clearFlags = CameraClearFlags.SolidColor;

@@ -54,7 +54,7 @@ namespace Boopy.Quest.Editor
             try
             {
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-                HangulFont.Install();
+                ScriptCoverage.Install();
                 // Synthetic transport completes inline; production continuations then run on this thread.
                 SynchronizationContext.SetSynchronizationContext(null);
                 foreach (var large in new[] { false, true }) Validate(large);

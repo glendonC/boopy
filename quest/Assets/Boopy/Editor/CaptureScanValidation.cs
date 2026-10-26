@@ -87,7 +87,7 @@ namespace Boopy.Quest.Editor
         public static void RenderLandscapeReference()=>RenderPreview(true);
         private static void RenderPreview(bool landscape)
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);ScriptCoverage.Install();
             var output=Path.Combine(Path.GetTempPath(),landscape?"boopy-desert-landscape-reference-sequence":"boopy-desert-capture-sequence");Directory.CreateDirectory(output);
             var root=new GameObject("Disclosed synthetic desert HUD");
             var eyes=new GameObject("Synthetic viewer").transform;eyes.SetParent(root.transform,false);

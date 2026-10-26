@@ -20,7 +20,7 @@ namespace Boopy.Quest.Editor
         public static void Validate()
         {
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            HangulFont.Install();
+            ScriptCoverage.Install();
             foreach (var outcome in new[] { "pending", "succeeded", "dismiss", "corrupt", "clear-failed", "save-failed", "null-store" }) ValidateCase(outcome);
             Debug.Log("Boopy restart recovery validation passed (synthetic private UUID; no replay, pixels, microphone or device result).");
         }

@@ -98,7 +98,7 @@ namespace Boopy.Quest.Editor
         public static void RenderPreview()=>RenderFrames(2,true);
         private static void RenderFrames(int frames,bool paused)
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single); HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single); ScriptCoverage.Install();
             Directory.CreateDirectory(Output); Directory.CreateDirectory(Path.Combine(Output,"sequence"));
             var root=new GameObject("Synthetic production HUD motion");
             var head=new GameObject("Fixed synthetic viewer").transform;head.SetParent(root.transform,false);

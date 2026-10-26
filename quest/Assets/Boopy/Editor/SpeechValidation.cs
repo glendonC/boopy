@@ -163,7 +163,7 @@ namespace Boopy.Quest.Editor
         }
         public static void Render()
         {
-            Validate(); HangulFont.Install();
+            Validate(); ScriptCoverage.Install();
             var root = new GameObject("Synthetic voice options");
             var camera = new GameObject("Synthetic eyes").AddComponent<Camera>(); camera.transform.SetParent(root.transform, false);
             camera.fieldOfView = 58; camera.clearFlags = CameraClearFlags.SolidColor;

@@ -14,7 +14,7 @@ namespace Boopy.Quest.Editor
         [MenuItem("Boopy/Validate Dialogue Strip")]
         public static void Validate()
         {
-            HangulFont.Install();
+            ScriptCoverage.Install();
             var root = new GameObject("Synthetic dialogue validation");
             try
             {

@@ -15,7 +15,7 @@ namespace Boopy.Quest.Editor
         private const BindingFlags Flags = BindingFlags.NonPublic | BindingFlags.Instance;
         public static void Validate()
         {
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single); HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single); ScriptCoverage.Install();
             foreach(var pitch in new[] {-42f,42f}) foreach(var reader in new[] {false,true}) Check(pitch,reader);
             Debug.Log("Boopy console footprint validation passed: pitched actual corners, expanded actions/reader, large comfort, disjoint chip placements (synthetic).");
         }

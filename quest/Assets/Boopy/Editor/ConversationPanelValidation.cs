@@ -21,7 +21,7 @@ namespace Boopy.Quest.Editor
         public static void ValidateAndRender()
         {
             ContextualFollowUpValidation.Validate();
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);HangulFont.Install();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);ScriptCoverage.Install();
             foreach(var large in new[]{false,true})foreach(var longAnswer in new[]{false,true})foreach(var reduced in new[]{false,true})
             {
                 var root=new GameObject("Synthetic shared answer and follow-up panel");

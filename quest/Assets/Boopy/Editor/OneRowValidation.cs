@@ -43,7 +43,7 @@ namespace Boopy.Quest.Editor
             try
             {
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-                HangulFont.Install();
+                ScriptCoverage.Install();
                 SynchronizationContext.SetSynchronizationContext(null);
                 Directory.CreateDirectory(output);
                 foreach (var large in new[] { false, true }) { size = large ? "large" : "standard"; Validate(large); }

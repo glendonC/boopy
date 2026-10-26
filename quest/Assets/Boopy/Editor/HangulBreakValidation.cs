@@ -37,7 +37,7 @@ namespace Boopy.Quest.Editor
         public static void ValidateAndRender()
         {
             StatusLineStartsInPlex();
-            HangulFont.Install();
+            ScriptCoverage.Install();
             var project = TMP_Settings.useModernHangulLineBreakingRules;
             Require(project, "TMP Settings do not break Korean at word spaces (m_UseModernHangulLineBreakingRules is 0).");
             var root = new GameObject("SYNTHETIC Korean caption");

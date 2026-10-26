@@ -9,16 +9,20 @@ namespace Boopy.Quest.Editor
 {
     public static class FontLifecycleValidation
     {
+        private const string Sample = "여행 메모와 한국어 표현";
+
         public static void Validate()
         {
-            var installed = HangulFont.Install();
-            Debug.Log("Boopy font probe install=" + (installed != null));
+            ScriptCoverage.Install();
+            var installed = ScriptCoverage.Prepare(Sample) == Sample;
+            Debug.Log("Boopy font probe install=" + installed);
             var regular = BoopyTypography.Load(); var medium = BoopyTypography.Medium;
             Inspect("before", regular, medium);
             Glyphs(regular, "before regular"); Glyphs(medium, "before medium");
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             Inspect("after stored", regular, medium);
-            if (HangulFont.Install() == null) throw new InvalidOperationException("System CJK font unavailable after scene reset.");
+            ScriptCoverage.Install();
+            if (ScriptCoverage.Prepare(Sample) != Sample) throw new InvalidOperationException("No face draws Hangul after scene reset.");
             var reloaded = BoopyTypography.Load();
             Inspect("after Load", reloaded, BoopyTypography.Medium);
             Glyphs(reloaded, "after regular"); Glyphs(BoopyTypography.Medium, "after medium");
@@ -31,7 +35,7 @@ namespace Boopy.Quest.Editor
         private static string Describe(TMP_FontAsset? asset) => asset == null ? "null" : asset.GetInstanceID() + ":" + asset.name + " fallback=[" + string.Join(",", asset.fallbackFontAssetTable?.Select(f => f == null ? "null" : f.GetInstanceID() + ":" + f.name) ?? Enumerable.Empty<string>()) + "]";
         private static void Glyphs(TMP_FontAsset asset, string stage)
         {
-            const string sample = "여행 메모와 한국어 표현";
+            var sample = Sample;
             var supported = asset.HasCharacters(sample, out uint[] missing, true, true);
             var go = new GameObject("Synthetic Korean glyph probe");
             try
