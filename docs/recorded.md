@@ -54,6 +54,33 @@ makes them for a recording imported earlier. The headset is served the rendition
 gives its size and digest; the interpreter, the gaze crop and the outlines keep the 1280 stills.
 Normalized points mean the same place in both, since a rendition keeps its still's shape.
 
+For playback, every clip also gets its video once (at import, or by `replay display` for a
+recording imported earlier): the video track alone, re-encoded by the helper as H.264 in standard
+range with every frame at its own time on the original timeline, then copied by ffmpeg with no tag
+at all and its index first. A tag left beyond the container's own refuses it. It is stored 0600 under
+the store, named by its SHA-256, and journaled as `recorded.video.made` with the digest only.
+`GET /v1/recorded/{recordingId}/video` serves it for the shown recording, with byte ranges (206).
+Each frame's `seconds` in the scene is its time in that video.
+
+The scene's `projection` says where the picture's edges were from the capturing camera's forward
+axis: `tanLeft`, `tanRight`, `tanUp` and `tanDown`, the positive tangents of the angles to each edge
+(a rectilinear picture), so the headset can place it exactly as the camera saw it. It comes from the
+35 mm-equivalent focal length a phone writes (the QuickTime camera tag on video, EXIF
+`FocalLenIn35mmFilm` on a photo; nothing else is read), as `source: lens-tag` with `centring:
+assumed`, since a lens tag gives no optical centre. Or it comes from a profile measured for the
+recording device, set with `pnpm replay projection --recording ID --tan-left T --tan-right T
+--tan-up T --tan-down T --profile NAME --centring measured|inferred [--reference NAME:L,R,U,D]`, as
+`source: measured-device-profile`, with the profile's other measured shape kept beside it in the
+journal. Without either it is null, and the headset says so rather than guessing.
+
+The owner's Quest clip uses the profile `quest3-capture-16x9`, measured on 10-26 from a Quest
+screenshot of the calibration grid (1440 by 1440, focal 858 pixels on both axes): its horizontal
+edges are the square capture's (left 0.8424, right 0.8359), and its vertical edges (0.4720 up and
+down) assume the 16:9 crop is centred on the forward axis. That centring is inferred, not measured,
+because a headset recording could not be started over adb to measure it; the profile says
+`centring: inferred`. The square capture's edges (up 0.7334, down 0.9449) are kept beside it as
+`quest3-capture-square`.
+
 Nothing the commands print carries a file name, a path, a capture time or any other metadata value.
 
 ## What the journal keeps
@@ -130,6 +157,12 @@ A service that shows recordings takes recorded frames only: a room frame there i
 `recorded_only`, so its journal never mixes the room with a recording. A service without recordings
 refuses a recorded frame with 404 `recorded_unavailable`. Session views and saved context show
 `capturedAt` as null when it is unknown, and mark the observation `recorded`.
+
+A boop on a recorded frame needs no words. `"speech": {"gesture": "tap"}` sends a quick tap, and a
+held boop whose recording has no words counts the same way. Boopy answers as it does for "What is
+this?" about the subject at the gaze point. The journal keeps that nothing was said: the utterance
+has empty text and source `pointing` for a tap, or `speech` with the audio's digest. A tap without a
+recorded frame is refused (400), and a live turn with no words is still refused with 422 `no_words`.
 
 ## Outlines over a recording
 

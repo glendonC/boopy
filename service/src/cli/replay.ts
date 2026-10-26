@@ -7,8 +7,11 @@
  *   show    --data-dir DIR --recording ID [--frame ID | --at S]
  *   clear   --data-dir DIR
  *   outline --data-dir DIR --recording ID     outlines for every kept frame, journaled when done
- *   display --data-dir DIR --recording ID     the headset's sharper stills, for a recording imported
- *                                             before they were made at import
+ *   display --data-dir DIR --recording ID     the headset's sharper stills, the playback video and a
+ *                                             lens projection, for a recording imported before
+ *   projection --data-dir DIR --recording ID --tan-left T --tan-right T --tan-up T --tan-down T
+ *              --profile NAME --centring measured|inferred [--reference NAME:L,R,U,D]
+ *                                             a projection measured for the device that recorded it
  *
  * Import copies the chosen file into DIR/recorded under its SHA-256 (private, never moving or
  * changing the original), then asks the running service through the authenticated local connector.
@@ -140,6 +143,13 @@ function operator(command: string, rest: string[]): ((call: Call) => Promise<str
           'duration',
           'recording',
           'frame',
+          'tan-left',
+          'tan-right',
+          'tan-up',
+          'tan-down',
+          'profile',
+          'centring',
+          'reference',
         ].map((name) => [name, { type: 'string' as const }]),
       ),
     }).values as Record<string, string | undefined>;
@@ -214,6 +224,65 @@ function operator(command: string, rest: string[]): ((call: Call) => Promise<str
       if (scene === null) throw new Refusal('No recording is shown.');
       return [
         `recorded: showing; recording=${scene.recordingId}; frame=${scene.frameId}; frames=${scene.frames.length}`,
+      ];
+    };
+  }
+  if (command === 'projection') {
+    const { recording, profile, centring, reference } = values;
+    const tangents = ['tan-left', 'tan-right', 'tan-up', 'tan-down'].map((name) => values[name]);
+    const referenced =
+      reference === undefined ? null : /^([a-z0-9][a-z0-9-]{0,63}):(.+)$/.exec(reference);
+    const referenceTangents = referenced?.[2]?.split(',') ?? [];
+    if (
+      !allowed([
+        'data-dir',
+        'port',
+        'recording',
+        'tan-left',
+        'tan-right',
+        'tan-up',
+        'tan-down',
+        'profile',
+        'centring',
+        'reference',
+      ]) ||
+      recording === undefined ||
+      !/^rec_[a-f0-9]{32}$/.test(recording) ||
+      profile === undefined ||
+      (centring !== 'measured' && centring !== 'inferred') ||
+      !tangents.every((value) => value !== undefined && NUMBER.test(value)) ||
+      (reference !== undefined &&
+        (referenced === null ||
+          referenceTangents.length !== 4 ||
+          !referenceTangents.every((value) => NUMBER.test(value))))
+    )
+      return null;
+    const [tanLeft, tanRight, tanUp, tanDown] = tangents.map(Number);
+    return async (call) => {
+      const answer = Recording.parse(
+        await call(connection, '/v1/local-recorded/projection', {
+          recordingId: recording,
+          tanLeft,
+          tanRight,
+          tanUp,
+          tanDown,
+          profile,
+          centring,
+          ...(referenced === null
+            ? {}
+            : {
+                reference: {
+                  profile: referenced[1],
+                  tanLeft: Number(referenceTangents[0]),
+                  tanRight: Number(referenceTangents[1]),
+                  tanUp: Number(referenceTangents[2]),
+                  tanDown: Number(referenceTangents[3]),
+                },
+              }),
+        }),
+      );
+      return [
+        `recorded: projection set; recording=${answer.recordingId}; source=measured-device-profile`,
       ];
     };
   }

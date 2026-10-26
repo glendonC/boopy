@@ -11,7 +11,7 @@ import { HandoffPreparation } from '../handoff-preparation.ts';
 import { TaskStore } from '../interaction/tasks.ts';
 import { FixtureInterpreter } from '../interpret/fixture.ts';
 import type { Interpreter, InterpretInput } from '../interpret/interpreter.ts';
-import { RecordedScenes } from '../recorded-source.ts';
+import { lensProjection, RecordedScenes } from '../recorded-source.ts';
 import { startRequest, testBoopy } from '../testing.ts';
 import { connectorApp } from './connector.ts';
 import { headsetApp } from './headset.ts';
@@ -154,7 +154,7 @@ async function setup(outline: boolean | typeof namingScene = false) {
       headers: { ...HOST, authorization: `Bearer ${TOKEN}`, ...headers },
       ...(payload === undefined ? {} : { payload: payload as object }),
     });
-  return { ...test, interpreter, scenes, boopy, headset, connector, local, sha256 };
+  return { ...test, interpreter, scenes, boopy, headset, connector, local, sha256, data };
 }
 
 /** Imports the clip twice (two recordings) through the operator route, and shows the first. */
@@ -241,8 +241,10 @@ describe('recorded scene routes', () => {
       'height',
       'kind',
       'outlines',
+      'projection',
       'recordingId',
       'reused',
+      'video',
       'width',
     ]);
     await local('POST', '/v1/local-recorded/scene', { recordingId: imported.json().recordingId });
@@ -375,6 +377,116 @@ describe('outlines for a recording', () => {
     // Only nouns the interpreter proposed for this recording are served; the general list's are not.
     assert.ok(samples.every((sample: { objects: unknown[] }) => sample.objects.length === 1));
     assert.deepEqual(scenes.recordings()[0]?.outlines, { running: false, frames: 4 });
+  });
+});
+
+describe('playback of a recorded clip', () => {
+  it('serves the shown clip as captured, by range, with no tag, and with its lens field of view', async (context) => {
+    if (missing) return context.skip(missing);
+    // Planted only to prove they never come out of the served video.
+    const tagged = join(directory, 'tagged.mov');
+    const made = spawnSync(FFMPEG, [
+      ...['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=10'],
+      ...['-f', 'lavfi', '-i', 'sine', '-t', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p'],
+      ...['-c:a', 'aac', '-movflags', 'use_metadata_tags'],
+      ...['-metadata', 'com.apple.quicktime.camera.focal_length.35mm_equivalent=26'],
+      ...['-metadata', 'com.apple.quicktime.location.ISO6709=+12.3456-065.4321/', tagged],
+    ]);
+    assert.equal(made.status, 0, made.stderr?.toString().slice(0, 400));
+    const { headset, local, scenes, data } = await setup();
+    const sha256 = createHash('sha256')
+      .update(await readFile(tagged))
+      .digest('hex');
+    await copyFile(tagged, join(data, 'recorded', `${sha256}.mov`));
+    const imported = await local('POST', '/v1/local-recorded/imports', {
+      sha256,
+      extension: 'mov',
+      sampling: { mode: 'stills', count: 4 },
+    });
+    assert.equal(imported.json().video, true);
+    await local('POST', '/v1/local-recorded/scene', { recordingId: imported.json().recordingId });
+    const scene = scenes.scene();
+    assert.ok(scene?.video);
+    const whole = await headset.inject({ method: 'GET', url: scene.video.url, headers: HOST });
+    assert.equal(whole.statusCode, 200);
+    assert.equal(whole.headers['content-type'], 'video/mp4');
+    assert.equal(createHash('sha256').update(whole.rawPayload).digest('hex'), scene.video.sha256);
+    const text = whole.rawPayload.toString('latin1');
+    for (const planted of ['12.3456', '065.4321', 'ISO6709', 'focal_length', 'quicktime'])
+      assert.equal(text.includes(planted), false, planted);
+    const part = await headset.inject({
+      method: 'GET',
+      url: scene.video.url,
+      headers: { ...HOST, range: 'bytes=0-99' },
+    });
+    assert.equal(part.statusCode, 206);
+    assert.equal(part.headers['content-range'], `bytes 0-99/${whole.rawPayload.length}`);
+    assert.deepEqual(part.rawPayload, whole.rawPayload.subarray(0, 100));
+    // Every kept frame's time is a frame time in the served video, which has no audio.
+    const served = join(directory, 'served.mp4');
+    await writeFile(served, whole.rawPayload);
+    const probe = spawnSync('/opt/homebrew/bin/ffprobe', [
+      ...[
+        '-v',
+        'error',
+        '-show_entries',
+        'stream=codec_type:frame=pts_time',
+        '-of',
+        'json',
+        served,
+      ],
+    ]);
+    const info = JSON.parse(probe.stdout.toString()) as {
+      streams: { codec_type: string }[];
+      frames: { pts_time: string }[];
+    };
+    assert.deepEqual(
+      info.streams.map((stream) => stream.codec_type),
+      ['video'],
+    );
+    const times = info.frames.map((frame) => Number(frame.pts_time));
+    for (const frame of scene.frames)
+      assert.ok(
+        times.some((time) => Math.abs(time - (frame.seconds ?? -1)) < 0.001),
+        `frame at ${frame.seconds}`,
+      );
+    assert.ok((scene.video.frameRate ?? 0) > 3 && (scene.video.frameRate ?? 0) <= 10);
+    // The lens tag gives a centred projection; a measured device profile replaces it.
+    assert.deepEqual(scene.projection, {
+      ...lensProjection(26, 320, 240),
+      source: 'lens-tag',
+      profile: null,
+      centring: 'assumed',
+    });
+    // 26 mm equivalent on a 4:3 picture is about 67 degrees across.
+    const across = (2 * Math.atan(scene.projection?.tanLeft ?? 0) * 180) / Math.PI;
+    assert.ok(across > 60 && across < 75, String(across));
+    const measured = await local('POST', '/v1/local-recorded/projection', {
+      recordingId: scene.recordingId,
+      tanLeft: 0.8424,
+      tanRight: 0.8359,
+      tanUp: 0.472,
+      tanDown: 0.472,
+      profile: 'synthetic-capture',
+      centring: 'inferred',
+      reference: {
+        profile: 'synthetic-square',
+        tanLeft: 0.8424,
+        tanRight: 0.8359,
+        tanUp: 0.7334,
+        tanDown: 0.9449,
+      },
+    });
+    assert.equal(measured.json().projection, 'measured-device-profile');
+    assert.deepEqual(scenes.scene()?.projection, {
+      tanLeft: 0.8424,
+      tanRight: 0.8359,
+      tanUp: 0.472,
+      tanDown: 0.472,
+      source: 'measured-device-profile',
+      profile: 'synthetic-capture',
+      centring: 'inferred',
+    });
   });
 });
 
