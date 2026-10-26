@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { displayText } from '../activity-contract.ts';
-import { assessAnswer, languageName, practiceWords } from './practice.ts';
+import { assessAnswer, earlierPracticeLine, languageName, practiceWords } from './practice.ts';
 
 test('the term inside the recognized text is heard, whatever is around it', () => {
   assert.equal(assessAnswer('낙타', '낙타'), 'heard');
@@ -30,22 +30,27 @@ test('the language name comes from the runtime for any code, and stays the code 
   assert.equal(languageName('qqq', 'en'), 'qqq');
 });
 
-test("DESIGN's settled lines, filled in and kept within the display rules as they are", () => {
+test('the lines, filled in and kept within the display rules as they are', () => {
   const words = practiceWords({ language: 'Korean', guess: 'camel', term: '낙타' });
   const expected = {
-    first: 'My guess: camel. The Korean word for camel is 낙타. Can you say it?',
+    first: "Camel, I think. In Korean, that's 낙타. Can you say it?",
+    unsure: "Camel? I'm not sure. In Korean, that's 낙타. Can you say it?",
     heard: 'I heard 낙타.',
-    notHeard: "I didn't hear 낙타 in that. Once more?",
-    unclear: "I couldn't hear any Korean in that. Once more?",
-    again: "Last time I didn't hear 낙타 from you. Try it again?",
-    noMatch: "There's no Korean word for camel in the word list on your Mac.",
-    ambiguous: "I'm not sure which Korean word fits camel.",
-    notDisplayable: "I found a Korean word for camel, but I can't show its script yet.",
-    unavailable: "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
-    integrity:
-      "The word list on your Mac doesn't match what was imported, so there's no Korean word this time.",
+    notHeard: "I didn't catch 낙타 there. Try again?",
+    unclear: "I didn't hear any Korean there. Try again?",
+    again: "Last time 낙타 didn't come through. Want to try again?",
+    noMatch: "I don't have a Korean word for camel yet.",
+    ambiguous: 'Not sure which word fits this.',
+    notDisplayable: "I can't show that word's letters yet.",
+    unavailable: "Couldn't get the Korean word this time.",
+    integrity: "Couldn't get the Korean word this time.",
   };
   assert.deepEqual(words, expected);
   const line = displayText(200);
   for (const text of Object.values(words)) assert.equal(line.parse(text), text);
+  assert.equal(earlierPracticeLine('낙타', 'camel'), 'You tried 낙타 (camel) before.');
+  assert.match(
+    practiceWords({ language: 'Korean', guess: '낙타', term: '낙타' }).first,
+    /^낙타, I think/,
+  );
 });

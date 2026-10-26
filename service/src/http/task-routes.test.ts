@@ -1602,7 +1602,7 @@ describe('practice through the task routes', () => {
       assert.equal(task.delivery, 'not-sent');
       assert.equal(
         lineOf(task),
-        'My guess: Desert photo. The Korean word for Desert photo is 합성어. Can you say it?',
+        "Desert photo, I think. In Korean, that's 합성어. Can you say it?",
       );
       assert.equal(
         task.components.find((part: { type: string }) => part.type === 'term')?.text,
@@ -1638,7 +1638,7 @@ describe('practice through the task routes', () => {
           throw new ZetarisPracticeError('connect');
         },
         'connect',
-        "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
+        "Couldn't get the Korean word this time.",
       ],
       [
         ({ signal }) =>
@@ -1648,14 +1648,14 @@ describe('practice through the task routes', () => {
             ),
           ),
         'timeout',
-        "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
+        "Couldn't get the Korean word this time.",
       ],
       [
         () => {
           throw new ZetarisPracticeError('integrity');
         },
         'integrity',
-        "The word list on your Mac doesn't match what was imported, so there's no Korean word this time.",
+        "Couldn't get the Korean word this time.",
       ],
     ];
     for (const [answer, phase, words] of outcomes) {
@@ -1782,7 +1782,7 @@ describe('practice through the task routes', () => {
       ctx.speech.heard = { text: '사막이에요', language: 'ko' };
       const answered = (await ctx.post(ANSWERS, answer(session.id, task.revision))).json();
       assert.equal(answered.attempts[0].heard, 'not-heard');
-      assert.equal(lineOf(answered), "I didn't hear 합성어 in that. Once more?");
+      assert.equal(lineOf(answered), "I didn't catch 합성어 there. Try again?");
       await settled(ctx, 1);
       const later = await ctx.start();
       const response = await ctx.post(`/v1/sessions/${later.id}/task`, {
@@ -1798,7 +1798,7 @@ describe('practice through the task routes', () => {
       assert.deepEqual(request?.recalled, ['Q7375']);
       assert.equal(
         lineOf(response.json()),
-        "Last time I didn't hear 합성어 from you. Try it again?",
+        "Last time 합성어 didn't come through. Want to try again?",
       );
     } finally {
       await ctx.close();

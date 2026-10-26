@@ -61,25 +61,31 @@ export function practiceWords(input: {
   readonly term: string;
 }) {
   const { language, guess, term } = input;
+  // The guess opens the line, so its first letter is capitalized; a script without case is unchanged.
+  const [first = '', ...rest] = guess;
+  const opening = `${first.toUpperCase()}${rest.join('')}`;
+  const unavailable = `Couldn't get the ${language} word this time.`;
   return {
-    first: `My guess: ${guess}. The ${language} word for ${guess} is ${term}. Can you say it?`,
+    first: `${opening}, I think. In ${language}, that's ${term}. Can you say it?`,
+    unsure: `${opening}? I'm not sure. In ${language}, that's ${term}. Can you say it?`,
     heard: `I heard ${term}.`,
-    notHeard: `I didn't hear ${term} in that. Once more?`,
-    unclear: `I couldn't hear any ${language} in that. Once more?`,
-    again: `Last time I didn't hear ${term} from you. Try it again?`,
-    noMatch: `There's no ${language} word for ${guess} in the word list on your Mac.`,
-    ambiguous: `I'm not sure which ${language} word fits ${guess}.`,
-    notDisplayable: `I found a ${language} word for ${guess}, but I can't show its script yet.`,
-    unavailable: `Zetaris on your Mac didn't answer in time, so there's no ${language} word this time.`,
-    integrity: `The word list on your Mac doesn't match what was imported, so there's no ${language} word this time.`,
+    notHeard: `I didn't catch ${term} there. Try again?`,
+    unclear: `I didn't hear any ${language} there. Try again?`,
+    again: `Last time ${term} didn't come through. Want to try again?`,
+    noMatch: `I don't have a ${language} word for ${guess} yet.`,
+    ambiguous: 'Not sure which word fits this.',
+    notDisplayable: "I can't show that word's letters yet.",
+    // An outage, a timeout and rows that differ from the import read the same on screen; the
+    // journal and the trace keep which one it was.
+    unavailable,
+    integrity: unavailable,
   };
 }
 
-/** The Detail's lines: where the term came from, and earlier practice on another concept. */
-export function sourceLine(revision: string): string {
-  return `Wikidata label, revision ${revision}, via Zetaris on your Mac, not reviewed`;
-}
+/** The Detail: where the term came from. Its revision and review state stay in the journal. */
+export const SOURCE_LINE = 'Wikidata · Zetaris';
 
+/** The Detail's second line, for a concept recalled from earlier practice; never on the subject. */
 export function earlierPracticeLine(term: string, concept: string): string {
-  return `Earlier practice: ${term} (${concept}), not heard last time.`;
+  return `You tried ${term} (${concept}) before.`;
 }

@@ -145,7 +145,8 @@ export function registerTaskRoutes(
     if (existing !== undefined && existing.revision > 0) return existing;
     const ids = { eventId: body.eventId, taskId: existing?.taskId ?? body.taskId };
     const plan = standIn(sessionId, ids, facts);
-    const planned = plan === null ? null : await practised(sessionId, plan);
+    const planned =
+      plan === null ? null : await practised(sessionId, plan, facts.referent?.confidence ?? null);
     const outcome =
       planned === null
         ? undefined
@@ -175,10 +176,14 @@ export function registerTaskRoutes(
 
   // Opens for one session in flight share one pick, so two cannot decide differently.
   const picking = new Map<string, Promise<Planned>>();
-  const practised = (sessionId: string, plan: NonNullable<ReturnType<typeof standIn>>) => {
+  const practised = (
+    sessionId: string,
+    plan: NonNullable<ReturnType<typeof standIn>>,
+    confidence: number | null,
+  ) => {
     const running = picking.get(sessionId);
     if (running !== undefined) return running;
-    const planned = pickFor(plan).finally(() => picking.delete(sessionId));
+    const planned = pickFor(plan, confidence).finally(() => picking.delete(sessionId));
     picking.set(sessionId, planned);
     return planned;
   };
@@ -188,7 +193,10 @@ export function registerTaskRoutes(
    * journal through H-MEM, then one Zetaris pick, bounded; a result past the bound is never used.
    * Without a goal nothing changes and nothing is journaled.
    */
-  const pickFor = async (plan: NonNullable<ReturnType<typeof standIn>>): Promise<Planned> => {
+  const pickFor = async (
+    plan: NonNullable<ReturnType<typeof standIn>>,
+    confidence: number | null,
+  ): Promise<Planned> => {
     const goal = tasks.goal();
     if (goal === null) return plan;
     const annotation = plan.result.components.find((part) => part.type === 'annotation');
@@ -240,6 +248,7 @@ export function registerTaskRoutes(
       language: goal.language,
       languageName: languageName(goal.language, goal.personLanguage),
       pick,
+      confidence,
     });
     const retrieval = {
       retrievalId: `ret_${plan.open.taskId.slice(4)}`,

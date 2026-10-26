@@ -225,7 +225,7 @@ describe('the stand-in under a practice goal', () => {
   });
   const practise = (pick: PracticePick) => {
     assert.ok(plan);
-    return practiceResult(plan, { language: 'ko', languageName: 'Korean', pick });
+    return practiceResult(plan, { language: 'ko', languageName: 'Korean', pick, confidence: 0.85 });
   };
   const line = (result: { components: readonly { type: string; text?: string }[] }) =>
     result.components.find((part) => part.type === 'dialogue')?.text;
@@ -252,13 +252,13 @@ describe('the stand-in under a practice goal', () => {
       },
       {
         type: 'dialogue',
-        text: 'My guess: synthetic animal. The Korean word for synthetic animal is 합성어. Can you say it?',
+        text: "Synthetic animal, I think. In Korean, that's 합성어. Can you say it?",
         evidenceIds: ['int_4.photo', 'wikidata:Q7375.ko'],
       },
       { type: 'voice_reply', prompt: 'Answer.' },
       {
         type: 'detail',
-        text: 'Wikidata label, revision 101, via Zetaris on your Mac, not reviewed',
+        text: 'Wikidata · Zetaris',
       },
     ]);
     assert.deepEqual(practised.result.evidenceIds, ['int_4.photo', 'wikidata:Q7375.ko']);
@@ -271,7 +271,7 @@ describe('the stand-in under a practice goal', () => {
       status: 'passed',
       rows: [row({ attempts: 1, notHeard: 1, lastResult: 'not-heard', why: 'not-heard-before' })],
     });
-    assert.equal(line(again.result), "Last time I didn't hear 합성어 from you. Try it again?");
+    assert.equal(line(again.result), "Last time 합성어 didn't come through. Want to try again?");
     const marked = again.result.components.find((part) => part.type === 'term');
     assert.equal(marked?.type === 'term' && marked.notHeardLastTime, true);
     const vehicle = practise({
@@ -307,7 +307,7 @@ describe('the stand-in under a practice goal', () => {
     const detail = vehicle.result.components.find((part) => part.type === 'detail');
     assert.equal(
       detail?.type === 'detail' && detail.text,
-      'Wikidata label, revision 101, via Zetaris on your Mac, not reviewed\nEarlier practice: 합성언덕 (synthetic hill), not heard last time.',
+      'Wikidata · Zetaris\nYou tried 합성언덕 (synthetic hill) before.',
     );
   });
 
@@ -316,12 +316,12 @@ describe('the stand-in under a practice goal', () => {
       [
         { status: 'passed', rows: [] },
         'no-match',
-        "There's no Korean word for synthetic animal in the word list on your Mac.",
+        "I don't have a Korean word for synthetic animal yet.",
       ],
       [
         { status: 'passed', rows: [row({ term: null })] },
         'no-match',
-        "There's no Korean word for synthetic animal in the word list on your Mac.",
+        "I don't have a Korean word for synthetic animal yet.",
       ],
       [
         {
@@ -336,27 +336,27 @@ describe('the stand-in under a practice goal', () => {
           ],
         },
         'ambiguous',
-        "I'm not sure which Korean word fits synthetic animal.",
+        'Not sure which word fits this.',
       ],
       [
         { status: 'passed', rows: [row({ term: 'جمل' })] },
         'not-displayable',
-        "I found a Korean word for synthetic animal, but I can't show its script yet.",
+        "I can't show that word's letters yet.",
       ],
       [
         { status: 'failed', phase: 'timeout' },
         'unavailable',
-        "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
+        "Couldn't get the Korean word this time.",
       ],
       [
         { status: 'failed', phase: 'connect' },
         'unavailable',
-        "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
+        "Couldn't get the Korean word this time.",
       ],
       [
         { status: 'failed', phase: 'integrity' },
         'integrity',
-        "The word list on your Mac doesn't match what was imported, so there's no Korean word this time.",
+        "Couldn't get the Korean word this time.",
       ],
     ];
     for (const [pick, reason, words] of cases) {
@@ -381,6 +381,7 @@ describe('the stand-in under a practice goal', () => {
     const said = practiceResult(unlabelled, {
       language: 'ko',
       languageName: 'Korean',
+      confidence: 0.85,
       pick: { status: 'passed', rows: [row()] },
     });
     assert.equal(said.reason, 'no-guess');
@@ -398,8 +399,8 @@ describe('the stand-in under a practice goal', () => {
     } as unknown as TaskView;
     for (const [heard, words, asks] of [
       ['heard', 'I heard 합성어.', false],
-      ['not-heard', "I didn't hear 합성어 in that. Once more?", true],
-      ['unclear', "I couldn't hear any Korean in that. Once more?", true],
+      ['not-heard', "I didn't catch 합성어 there. Try again?", true],
+      ['unclear', "I didn't hear any Korean there. Try again?", true],
     ] as const) {
       const correction = correctionResult(task, {
         attemptEventId: 'evt_attempt',
@@ -423,6 +424,47 @@ describe('the stand-in under a practice goal', () => {
       const term = correction.components.find((part) => part.type === 'term');
       assert.equal(term?.type === 'term' && term.notHeardLastTime, heard === 'not-heard');
       assert.doesNotMatch(JSON.stringify(correction), /있어요/);
+    }
+  });
+});
+
+describe('an unsure guess', () => {
+  it('says so in the first line', () => {
+    const plan = standIn(SESSION, IDS, { ...facts, referent: { ...referent, label: 'camel' } });
+    assert.ok(plan);
+    const row: PickedRow = {
+      referenceId: 'Q7375',
+      matched: 'subject',
+      matchedText: 'camel',
+      term: '합성어',
+      gloss: null,
+      description: null,
+      referenceSourceId: 'wikidata:Q7375',
+      revisionId: '101',
+      modifiedAt: '1970-01-01T00:00:00Z',
+      retrievedAt: '1970-01-01T00:00:02.000Z',
+      referenceUrl: 'https://www.wikidata.org/wiki/Q7375',
+      license: 'CC0-1.0',
+      status: 'external-unreviewed',
+      attempts: 0,
+      notHeard: 0,
+      onSource: 0,
+      lastAt: null,
+      lastResult: null,
+      why: 'new',
+    };
+    for (const confidence of [null, 0.3]) {
+      const said = practiceResult(plan, {
+        language: 'ko',
+        languageName: 'Korean',
+        pick: { status: 'passed', rows: [row] },
+        confidence,
+      });
+      const line = said.result.components.find((part) => part.type === 'dialogue');
+      assert.equal(
+        line?.type === 'dialogue' && line.text,
+        "Camel? I'm not sure. In Korean, that's 합성어. Can you say it?",
+      );
     }
   });
 });

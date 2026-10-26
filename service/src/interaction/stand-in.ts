@@ -18,7 +18,7 @@ import {
   type RetrievalReason,
   type TaskView,
 } from './contract.ts';
-import { earlierPracticeLine, practiceWords, sourceLine } from './practice.ts';
+import { earlierPracticeLine, practiceWords, SOURCE_LINE } from './practice.ts';
 
 const ANSWER_PROMPT = 'Answer.';
 const LABEL = displayText(80);
@@ -128,7 +128,13 @@ export type PracticePick =
  */
 export function practiceResult(
   plan: { readonly open: OpenTask; readonly result: ProviderResult },
-  input: { readonly language: string; readonly languageName: string; readonly pick: PracticePick },
+  input: {
+    readonly language: string;
+    readonly languageName: string;
+    readonly pick: PracticePick;
+    /** The model's confidence in the subject; null, or under 0.5, is said as unsure. */
+    readonly confidence: number | null;
+  },
 ): {
   readonly result: ProviderResult;
   readonly reason: RetrievalReason;
@@ -198,18 +204,12 @@ export function practiceResult(
       ? input.pick.rows.find(
           (row) =>
             row.matched === 'recalled' &&
-            row.lastResult === 'not-heard' &&
+            row.attempts > 0 &&
             row.term !== null &&
             unchanged(LABEL, row.term) &&
             row.gloss !== null,
         )
       : undefined;
-  const detail = [
-    sourceLine(match.revisionId),
-    ...(earlier?.term != null && earlier.gloss !== null
-      ? [earlierPracticeLine(earlier.term, earlier.gloss)]
-      : []),
-  ].join('\n');
   const practised = ProviderResult.safeParse({
     ...result,
     evidenceIds: [...new Set([...result.evidenceIds, cited])],
@@ -231,11 +231,22 @@ export function practiceResult(
       },
       {
         type: 'dialogue',
-        text: match.why === 'not-heard-before' ? words.again : words.first,
+        text:
+          match.why === 'not-heard-before'
+            ? words.again
+            : input.confidence === null || input.confidence < 0.5
+              ? words.unsure
+              : words.first,
         evidenceIds: [...new Set([...line.evidenceIds, cited])],
       },
       { type: 'voice_reply', prompt: ANSWER_PROMPT },
-      { type: 'detail', text: detail },
+      {
+        type: 'detail',
+        text:
+          earlier?.term != null && earlier.gloss !== null
+            ? `${SOURCE_LINE}\n${earlierPracticeLine(earlier.term, earlier.gloss)}`
+            : SOURCE_LINE,
+      },
     ],
   });
   if (!practised.success) return unchangedPlan('not-displayable');

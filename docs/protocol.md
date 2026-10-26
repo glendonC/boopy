@@ -162,14 +162,17 @@ the Mac runs Zetaris with the practice account.
 - The annotation keeps Boopy's guess. A `term` part carries the source's word: `text`,
   `language`, `gloss`, `sourceId` (`wikidata:Q…`), `revision`, `retrievedAt`, `license`,
   `via: "zetaris-local"`, `reviewed: false` and `notHeardLastTime` (this subject's term was not
-  heard on the person's most recent attempt at it). A term shows only for exactly one item that matches
-  the guess, with a label in the target language that the display rules take as it is. The line
-  asks the person to say it, and a detail part says "Wikidata label, revision N, via Zetaris on your
-  Mac, not reviewed". Earlier practice on another item appears only in that detail, never on the
-  subject.
-- Otherwise the subject and the guess stay and the line says why there is no word, with no answer
-  offered: no item in the word list, more than one, a script the headset cannot show yet, Zetaris
-  not answering in time, or rows that do not match the import.
+  heard on the person's most recent attempt at it). A term shows only for exactly one item that
+  matches the guess, with a label in the target language that the display rules take as it is. The
+  line asks the person to say it, and a detail part says "Wikidata · Zetaris"; the revision, the
+  retrieval time and that the label is not reviewed stay in the part, the journal and the trace.
+  Earlier practice on another item appears only as a second detail line ("You tried <term>
+  (<concept>) before."), never on the subject. The guess opens the line, and a model confidence that
+  is unknown or under 0.5 makes the line say Boopy is not sure.
+- Otherwise the subject and the guess stay and the line says plainly that there is no word, with no
+  answer offered: no item in the word list, more than one, or a script the headset cannot show yet.
+  Zetaris not answering in time and rows that do not match the import read the same on screen; the
+  journal and the trace keep which one it was.
 - An answer on a practice task is assessed against the term: `heard` when the term's letters are in
   the recognized text, `not-heard` when letters of its script were recognized but not the term,
   `unclear` when none were. `recognitionUncertain` stays `true` and no result is a grade. The
