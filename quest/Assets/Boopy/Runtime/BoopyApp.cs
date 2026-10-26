@@ -96,6 +96,15 @@ namespace Boopy.Quest
         private float nextSceneAt;
         private bool liveScenePaused;
         private bool reportedLiveScene;
+        // The recorded scene the Mac shows, as a picture in the room. While it shows, every turn is about its still and no
+        // room frame is taken; it changes only between turns.
+        private RecordedPicture? recorded;
+        private CancellationTokenSource? recordedRead;
+        private float nextRecordedAt;
+        // Outlines and chips on the picture belong to its still; another still, or none, takes them away.
+        private bool pictureObserved;
+        // The last recorded-scene failure logged, so a Mac that stays away is logged once, not every five seconds.
+        private string? recordedFailure;
         private bool NeedsCaptureRecovery => unresolvedStartId != null || recoveryStorageFailed;
 
         private Chip? dwellChip;
@@ -186,6 +195,7 @@ namespace Boopy.Quest
             console.DockDialogue(dialogue);
             liveHud = LiveSceneHud.Create(transform, head, room);
             captureScan = CaptureScanCue.Create(transform);
+            recorded = RecordedPicture.Create(transform);
             liveScenePaused=PlayerPrefs.GetInt("Boopy.LiveScenePaused",0)==1;
             feedback = InteractionAudio.Create(console.transform);
             feedback.SetEnabled(console.SoundEnabled);
@@ -223,6 +233,7 @@ namespace Boopy.Quest
             taskOpen?.Cancel();
             healthCheck?.Cancel(); healthGeneration++;
             liveRequest?.Cancel();
+            recordedRead?.Cancel();
             StopSpeech();
             captureRequest?.Cancel();
             DiscardRecording();
@@ -240,6 +251,7 @@ namespace Boopy.Quest
             connectionLiveSceneAvailable = null;
             console?.SetLiveSceneCapability(null);
             liveRequest?.Cancel();
+            recordedRead?.Cancel();
             liveHud?.SetActive(false, console?.ReducedMotion ?? false);
             captureRequest?.Cancel();
             StopSpeech();
@@ -324,6 +336,7 @@ namespace Boopy.Quest
         private void Update()
         {
             if (inputAllowed && healthCheck == null && Time.unscaledTime >= nextHealthAt) _ = CheckMac(false);
+            if (RecordedSceneMayChange && recordedRead == null && Time.unscaledTime >= nextRecordedAt) _ = ReadRecordedScene();
             console?.InputPolicy.SetInteractionState(inputAllowed, busy);
             captureScan?.Refresh(Time.unscaledDeltaTime, inputAllowed && isActiveAndEnabled && console != null && !console.InputPolicy.SpokenOnly && !NeedsCaptureRecovery && scene?.ConsolePlaced == true);
             console?.SetSpeaking(inputAllowed && !busy && !voice.Recording ? speechPlayback?.Activity ?? 0f : 0f);
@@ -348,6 +361,7 @@ namespace Boopy.Quest
             var gazeControl = ControlHit(gazeRay, out var onControl);
             if (gazeControl != ConsoleAction.None) gaze.Show(onControl, true);
             else if (gazeChip != null) gaze.Show(onChip, true);
+            else if (recorded != null && recorded.TryHit(gazeRay, out var onPicture, out _)) gaze.Show(onPicture, true);
             else if (room.TryHit(gazeRay, 6f, out var point, out _)) gaze.Show(point, true);
             else gaze.Show(head.position + head.forward * 1.5f, false);
 
@@ -410,7 +424,8 @@ namespace Boopy.Quest
         // Background perception yields to the wearer's current conversation and controls.
         private bool AmbientSceneAllowed => connectionLiveSceneAvailable == true && inputAllowed &&
             console != null && !console.InputPolicy.SpokenOnly && !NeedsCaptureRecovery && !liveScenePaused &&
-            !busy && !voice.Recording && speechRequest == null && speechPlayback?.Playing != true && !console.Reading && !console.HasFocus;
+            !busy && !voice.Recording && speechRequest == null && speechPlayback?.Playing != true && !console.Reading && !console.HasFocus
+            && recorded?.Showing != true;
 
         private bool AmbientCaptureAllowed => AmbientSceneAllowed && liveHud?.HasPresentationFocus != true;
 
@@ -475,6 +490,56 @@ namespace Boopy.Quest
         // What a live frame's failure was, for the log: a service refusal's code and status, never its words; otherwise the type.
         private static string LiveFailure(Exception failure) => failure is ServiceException refused
             ? refused.Code + " status=" + refused.Status : failure.GetType().Name;
+
+        // The picture changes only between turns: never while the person talks, Boopy works, a turn holds its still, or an
+        // earlier capture waits to be checked.
+        private bool RecordedSceneMayChange => inputAllowed && isActiveAndEnabled && client != null && recorded != null && head != null
+            && !busy && !voice.Recording && !buttonTalk.Recording && active == null && pending == null && pendingEvidence == null
+            && !NeedsCaptureRecovery;
+
+        /// <summary>
+        /// Reads the recorded scene the Mac shows and shows its still, fetched only when the still changes and checked
+        /// against the digest the Mac named. No scene takes the picture away. A failure leaves the picture as it was.
+        /// </summary>
+        private async Task ReadRecordedScene()
+        {
+            if (client == null || recorded == null) return;
+            using var read = new CancellationTokenSource(); recordedRead = read;
+            try
+            {
+                var shown = await client.ReadRecordedSceneAsync(read.Token);
+                recordedFailure = null;
+                if (read.IsCancellationRequested || !RecordedSceneMayChange) return;
+                if (shown == null)
+                {
+                    if (!recorded.Showing) return;
+                    recorded.Hide(); ForgetPicture();
+                    Debug.Log("Boopy: recorded scene cleared.");
+                    return;
+                }
+                if (recorded.Showing && recorded.Scene!.RecordingId == shown.RecordingId && recorded.Scene.FrameId == shown.FrameId) return;
+                var still = await client.ReadRecordedFrameAsync(shown.FrameId, shown.FrameSha256, read.Token);
+                if (read.IsCancellationRequested || !RecordedSceneMayChange) return;
+                if (!recorded.Show(shown, still, head!)) { Debug.LogWarning("Boopy: recorded still did not decode."); return; }
+                ForgetPicture();
+                Debug.Log($"Boopy: recorded scene shown {shown.Kind} {shown.Width}x{shown.Height}.");
+            }
+            catch (OperationCanceledException) { }
+            catch (ServiceException refused)
+            {
+                var failure = refused.Code + " status=" + refused.Status;
+                if (failure != recordedFailure) Debug.LogWarning("Boopy: recorded scene unavailable: " + failure);
+                recordedFailure = failure;
+            }
+            finally { if (ReferenceEquals(recordedRead, read)) { recordedRead = null; nextRecordedAt = Time.unscaledTime + 5f; } }
+        }
+
+        private void ForgetPicture()
+        {
+            if (!pictureObserved) return;
+            pictureObserved = false;
+            scene?.Clear();
+        }
 
         /// <summary>A chip unfolds after a ray rests on it briefly, so sweeping past does not open everything.</summary>
         private void UpdateFocus(Chip? chip, float now)
@@ -780,7 +845,7 @@ namespace Boopy.Quest
             console?.InputPolicy.SetInteractionState(inputAllowed, busy);
             pendingEvidence = console?.InputPolicy.Begin();
             if (pendingEvidence == null) return;
-            if (pendingEvidence.RequiresPicture && (room == null || !room.Ready))
+            if (CameraMissing(pendingEvidence))
             {
                 SayStatus("Camera not ready. Allow camera access, then try again.", 6f);
                 dialogue?.Show(DialogueStage.Error, "Camera not ready. Allow camera access, then try again.");
@@ -851,6 +916,9 @@ namespace Boopy.Quest
             }
         }
 
+        // A picture turn needs the room's camera, unless a recorded scene shows: then its still is the picture.
+        private bool CameraMissing(EvidenceTurn turn) => turn.RequiresPicture && recorded?.Showing != true && (room == null || !room.Ready);
+
         private async Task CaptureAfterAcknowledgement(HandInput hand, string? targetId, EvidenceTurn evidenceTurn, int generation, bool fromButton = false)
         {
             using var preparation = new CancellationTokenSource();
@@ -893,6 +961,19 @@ namespace Boopy.Quest
         {
             if (room == null || gaze == null || scene == null) return;
             pendingTarget = targetId;
+            // A recorded scene: the turn is about its still, with the gaze point on it when the eyes are there; no room frame.
+            if (recorded != null && recorded.Showing && head != null)
+            {
+                pending = recorded.Still();
+                var onStill = new Cues { TargetItemId = pendingTarget };
+                if (pending != null && recorded.TryHit(new Ray(head.position, gaze.Point - head.position), out var looked, out var image))
+                {
+                    onStill.Gaze = new Cue { Point = image };
+                    marker?.Show(looked, true);
+                }
+                pendingCues = onStill;
+                return;
+            }
             pending = room.Capture();
             var cues = new Cues { TargetItemId = pendingTarget };
             if (pending != null)
@@ -938,7 +1019,8 @@ namespace Boopy.Quest
             try
             {
                 var speech = new SpeechData { Wav = Convert.ToBase64String(wav) };
-                var frame = snapshot?.ToFrame();
+                var still = snapshot?.Recorded;
+                var frame = still == null ? snapshot?.ToFrame() : null;
                 if (frame != null) { frame.Source = "current-surroundings"; frame.TimestampTrusted = false; }
                 SessionView view;
                 var starting = session == null || session.State == "committed";
@@ -949,7 +1031,7 @@ namespace Boopy.Quest
                         ReportFailure("The camera is not ready. Allow camera access, then try again.");
                         return;
                     }
-                    var start = evidenceTurn.Start(speech, pendingCues ?? new Cues(), frame);
+                    var start = evidenceTurn.Start(speech, pendingCues ?? new Cues(), frame, still);
                     start.RequestId = Guid.NewGuid().ToString("D");
                     if (!TryPersistCapture(start.RequestId)) return;
                     unresolvedStartId = start.RequestId;
@@ -958,13 +1040,13 @@ namespace Boopy.Quest
                 }
                 else
                 {
-                    view = await client.UtterStreamingAsync(session.Id, evidenceTurn.Utter(speech, pendingCues, frame), TurnProgressFor(request, session.Id), request.Token);
+                    view = await client.UtterStreamingAsync(session.Id, evidenceTurn.Utter(speech, pendingCues, frame, still), TurnProgressFor(request, session.Id), request.Token);
                 }
                 request.Token.ThrowIfCancellationRequested();
                 // A recovered start returns the current projection. Its original pixels belong
                 // to the first observation, never a later observation from another turn.
                 var observation = starting ? view.Observations.FirstOrDefault() : view.Observations.LastOrDefault();
-                if (snapshot != null && observation != null) scene.Remember(observation.Id, snapshot);
+                if (snapshot != null && observation != null) { scene.Remember(observation.Id, snapshot); pictureObserved |= snapshot.Recorded != null; }
                 if (starting && !ClearCaptureRecovery()) return;
                 Apply(view);
                 speechView = view;
@@ -983,8 +1065,19 @@ namespace Boopy.Quest
             {
                 Debug.LogWarning($"Boopy: request refused status={refused.Status}.");
                 if (refused.Code == "service_unavailable") ClearCaptureRecovery();
-                cancelledWaitNotice = refused.Message;
-                ReportFailure(refused.Message);
+                // The Mac shows another still now, or none, or looks only at recordings: read its scene again at once, and say
+                // so in DESIGN's words.
+                var words = refused.Code == "recorded_frame_changed" ? "The picture changed before I could look. Ask again."
+                    : refused.Code == "recorded_frame_unknown" ? "Your Mac doesn't have that picture."
+                    : refused.Code == "recorded_only" ? "Open a video or photo on your Mac first." : refused.Message;
+                if (refused.Code == "recorded_frame_changed" || refused.Code == "recorded_frame_unknown" || refused.Code == "recorded_only")
+                {
+                    // Refused before any session or journal row: nothing waits on the Mac.
+                    nextRecordedAt = 0f;
+                    ClearCaptureRecovery();
+                }
+                cancelledWaitNotice = words;
+                ReportFailure(words);
             }
             catch (Exception failure)
             {
@@ -1377,7 +1470,7 @@ namespace Boopy.Quest
                     receipt.View != null && receipt.View.Id == receipt.SessionId)
                 {
                     var observation = receipt.View.Observations.FirstOrDefault();
-                    if (snapshot != null && observation != null) scene?.Remember(observation.Id, snapshot);
+                    if (snapshot != null && observation != null) { scene?.Remember(observation.Id, snapshot); pictureObserved |= snapshot.Recorded != null; }
                     if (!ClearCaptureRecovery()) return;
                     Apply(receipt.View);
                     if (snapshot == null && receipt.View.State != "committed") dialogue?.Show(DialogueStage.Response, "Your earlier conversation is back. Object positions are unavailable after restart.");

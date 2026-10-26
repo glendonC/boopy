@@ -22,6 +22,24 @@ namespace Boopy.Quest
             SourceTime = sourceTime;
         }
 
+        /// <summary>
+        /// A recorded still the Mac shows, as a picture in the room. It has no capture moment, room pose, depth or camera of
+        /// its own on the headset: its image points lie on the picture, and a turn sends its reference, never its pixels.
+        /// </summary>
+        public Snapshot(byte[] jpeg, int width, int height, PicturePlane picture, RecordedFrameRef recorded)
+            : this(jpeg, width, height, default, PicturePose(picture), new DepthGrid { Columns = 1, Rows = 1, Meters = new float?[] { null } }, new CameraInfo())
+        {
+            Picture = picture;
+            Recorded = recorded;
+        }
+
+        private static Pose PicturePose(PicturePlane picture)
+        {
+            var right = new Vector3(picture.Right.X, picture.Right.Y, picture.Right.Z);
+            var up = new Vector3(picture.Up.X, picture.Up.Y, picture.Up.Z);
+            return new Pose(new Vector3(picture.Center.X, picture.Center.Y, picture.Center.Z), Quaternion.LookRotation(Vector3.Cross(right, up), up));
+        }
+
         public byte[] Jpeg { get; }
         public int Width { get; }
         public int Height { get; }
@@ -34,8 +52,13 @@ namespace Boopy.Quest
 
         public DepthGrid Depth { get; }
         public CameraInfo Camera { get; }
+        /// <summary>The picture a recorded still is shown on, and the still's reference; null for a camera frame.</summary>
+        public PicturePlane? Picture { get; }
+        public RecordedFrameRef? Recorded { get; }
 
-        public FrameData ToFrame() => new FrameData
+        public FrameData ToFrame() => Recorded != null
+            ? throw new InvalidOperationException("A recorded still goes to the Mac by reference, never as pixels.")
+            : new FrameData
         {
             Jpeg = Convert.ToBase64String(Jpeg),
             Width = Width,
@@ -172,14 +195,29 @@ namespace Boopy.Quest
             return Geometry.FromViewport(new N.Vector2(viewport.x, viewport.y));
         }
 
-        /// <summary>Where an image point lies in the room: depth from the snapshot, else live depth, else a fallback distance.</summary>
+        // Outlines and anchors on a recorded picture sit this far in front of it, so they never fight its pixels.
+        public const float PictureLift = 0.001f;
+
+        /// <summary>
+        /// Where an image point lies in the room: on its picture for a recorded still (a 2D source has no depth), else depth
+        /// from the snapshot, else live depth, else a fallback distance.
+        /// </summary>
         public Vector3 Place(N.Vector2 image, Snapshot snapshot, float fallback = 1f)
         {
+            if (snapshot.Picture is PicturePlane picture) return OnPicture(picture, image);
             var ray = SnapshotRay(image, snapshot);
             var meters = Geometry.SampleDepth(snapshot.Depth, image);
             if (meters != null) return ray.origin + ray.direction * meters.Value;
             if (TryHit(ray, MaxDepth, out var point, out _)) return point;
             return ray.origin + ray.direction * fallback;
+        }
+
+        // The picture's Right and Up are as the person sees them; in Unity's left-handed frame their cross points away.
+        private static Vector3 OnPicture(PicturePlane picture, N.Vector2 image)
+        {
+            var away = N.Vector3.Normalize(N.Vector3.Cross(picture.Right, picture.Up));
+            var point = picture.At(image.X, image.Y, -away, PictureLift);
+            return new Vector3(point.X, point.Y, point.Z);
         }
 
         /// <summary>Captured intrinsics keep a delayed answer valid even if the camera stopped.</summary>
@@ -194,13 +232,21 @@ namespace Boopy.Quest
         /// Place a boundary from captured depth. A box with no mask sits at its subject's depth: one plane
         /// facing the capture through the point the chip's anchor uses. A mask contour keeps its own samples:
         /// a distributed, strongly supported plane can stabilize a slanted flat surface; otherwise retain
-        /// individual captured samples. Missing depth stays approximate and never receives a surface fill.
+        /// individual captured samples. Missing depth stays approximate and never receives a surface fill. A recorded still's
+        /// boundary lies on its picture, exactly where its pixels are.
         /// </summary>
         public Vector3[] PlaceBoundary(Grounding grounding, Snapshot snapshot, out bool capturedDepth)
         {
             var boundary = Geometry.Outline(grounding);
             capturedDepth = false;
             if (boundary.Length < 3) return Array.Empty<Vector3>();
+            if (snapshot.Picture is PicturePlane picture)
+            {
+                var onPicture = new Vector3[boundary.Length];
+                for (var i = 0; i < boundary.Length; i++) onPicture[i] = OnPicture(picture, boundary[i]);
+                capturedDepth = true;
+                return onPicture;
+            }
             if (grounding.Box != null && !Geometry.TryContour(grounding, out _))
             {
                 // A box is the subject's extent, not a surface: its corners would sample, and a fitted plane
