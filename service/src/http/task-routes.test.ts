@@ -7,9 +7,17 @@ import { TaskStore } from '../interaction/tasks.ts';
 import { FixtureInterpreter } from '../interpret/fixture.ts';
 import type { ModelOutput } from '../interpret/output.ts';
 import { Journal } from '../journal.ts';
+import {
+  type PickedRow,
+  type PracticeRow,
+  type TermPickRequest,
+  type TermPickResult,
+  ZetarisPracticeError,
+} from '../references/zetaris.ts';
 import type { Segmenter } from '../segmentation.ts';
 import { fixtureJpeg, startRequest, testBoopy } from '../testing.ts';
 import { headsetApp } from './headset.ts';
+import { type PracticeLink, registerTaskRoutes } from './tasks.ts';
 
 const SAID = 'What is this?';
 const OPEN = { eventId: 'evt_open_capture', taskId: 'tsk_capture' };
@@ -67,7 +75,11 @@ const ASKS: Change = (output) => ({ ...output, response: 'Is this your desert ph
 /** A Boopy on the recorded fixture interpretation, a fake recognizer, and no way off the Mac. */
 function setup(
   change: Change = (output) => output,
-  options: { readonly segmenter?: Segmenter | undefined; readonly recognizer?: false } = {},
+  options: {
+    readonly segmenter?: Segmenter | undefined;
+    readonly recognizer?: false;
+    readonly practice?: PracticeLink;
+  } = {},
 ) {
   const journal = Journal.open(':memory:');
   const fixture = new FixtureInterpreter();
@@ -104,7 +116,9 @@ function setup(
     throw new Error('Nothing leaves the Mac in this test.');
   }) as typeof fetch;
   const tasks = new TaskStore(journal);
-  const app = headsetApp(boopy, { logger: false, tasks });
+  // With a practice link, the task routes are registered here with it, on the same headset app.
+  const app = headsetApp(boopy, { logger: false, ...(options.practice ? {} : { tasks }) });
+  if (options.practice) registerTaskRoutes(app, tasks, boopy, options.practice);
   const post = (url: string, payload: unknown, headers: Record<string, string> = {}) =>
     app.inject({
       method: 'POST',
@@ -1468,6 +1482,356 @@ describe('task routes on the headset boundary', () => {
       assert.equal(response.statusCode, 413, response.body);
       assert.equal(ctx.transcriptions(), 0);
       assert.equal(ctx.journal.all().length, before);
+    } finally {
+      await ctx.close();
+    }
+  });
+});
+
+describe('practice through the task routes', () => {
+  const HEARD = '합성어가 있어요';
+  const pickedRow = (guess: string, overrides: Partial<PickedRow> = {}): PickedRow => ({
+    referenceId: 'Q7375',
+    matched: 'subject',
+    matchedText: guess,
+    term: '합성어',
+    gloss: null,
+    description: null,
+    referenceSourceId: 'wikidata:Q7375',
+    revisionId: '101',
+    modifiedAt: '1970-01-01T00:00:00Z',
+    retrievedAt: '1970-01-01T00:00:02.000Z',
+    referenceUrl: 'https://www.wikidata.org/wiki/Q7375',
+    license: 'CC0-1.0',
+    status: 'external-unreviewed',
+    attempts: 0,
+    notHeard: 0,
+    onSource: 0,
+    lastAt: null,
+    lastResult: null,
+    why: 'new',
+    ...overrides,
+  });
+  type Call = { request: TermPickRequest; signal: AbortSignal };
+  function link(
+    answer: (call: Call) => Promise<TermPickResult> | TermPickResult,
+    timeoutMs = 2000,
+  ) {
+    const picks: Call[] = [];
+    const stages: (readonly PracticeRow[])[] = [];
+    const practice: PracticeLink = {
+      table: 'practice_check',
+      timeoutMs,
+      async pick(request, signal) {
+        picks.push({ request, signal });
+        return answer({ request, signal });
+      },
+      async stage(rows) {
+        stages.push(rows);
+        return {
+          mode: 'zetaris-runtime',
+          operation: 'practice-stage-check',
+          practice: { tableRows: 0, journalRows: rows.length, restaged: true },
+          stageMs: 1,
+        };
+      },
+    };
+    return { practice, picks, stages };
+  }
+  const result = (request: TermPickRequest, rows: PickedRow[]): TermPickResult => ({
+    mode: 'zetaris-runtime',
+    operation: 'term-pick-check',
+    practice: { tableRows: request.rows.length, journalRows: request.rows.length, restaged: false },
+    stageMs: 1,
+    pickMs: 1,
+    rows,
+  });
+  const guessOf = (request: TermPickRequest) =>
+    request.matchKey === 'desert photo' ? 'Desert photo' : request.matchKey;
+  const goal = (tasks: TaskStore) =>
+    tasks.setGoal(
+      { eventId: 'evt_goal_ko', language: 'ko', personLanguage: 'en' },
+      '1970-01-01T00:00:00.000Z',
+    );
+  const lineOf = (view: { components: { type: string; text?: string }[] }) =>
+    view.components.find((part) => part.type === 'dialogue')?.text;
+  async function settled(ctx: ReturnType<typeof setup>, count: number) {
+    for (let tries = 0; tries < 100; tries++) {
+      if (
+        ctx.journal.all().filter((event) => event.type === 'task.practice-staged').length >= count
+      )
+        return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('The practice stage was not recorded.');
+  }
+
+  it('without a goal nothing about outside words happens, and no lookup runs', async () => {
+    const zetaris = link((call) => result(call.request, [pickedRow(guessOf(call.request))]));
+    const ctx = setup(ASKS, { practice: zetaris.practice });
+    try {
+      const { task } = await ctx.opened();
+      assert.equal(zetaris.picks.length, 0);
+      assert.equal(
+        task.components.some((part: { type: string }) => part.type === 'term'),
+        false,
+      );
+      assert.equal(
+        ctx.journal.all().some((event) => event.type === 'task.reference-retrieved'),
+        false,
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it("opens with the source's word for Boopy's guess and journals the retrieval with the task", async () => {
+    const zetaris = link((call) => result(call.request, [pickedRow(guessOf(call.request))]));
+    const ctx = setup(ASKS, { practice: zetaris.practice });
+    try {
+      goal(ctx.tasks);
+      const { session, task } = await ctx.opened();
+      assert.equal(zetaris.picks.length, 1);
+      const request = zetaris.picks[0]?.request;
+      assert.equal(request?.matchKey, 'desert photo');
+      assert.equal(request?.targetLanguage, 'ko');
+      assert.equal(request?.personLanguage, 'en');
+      assert.equal(request?.sourceId, task.source.sourceId);
+      assert.deepEqual(request?.rows, []);
+      assert.equal(task.revision, 1);
+      assert.equal(task.delivery, 'not-sent');
+      assert.equal(
+        lineOf(task),
+        'My guess: Desert photo. The Korean word for Desert photo is 합성어. Can you say it?',
+      );
+      assert.equal(
+        task.components.find((part: { type: string }) => part.type === 'term')?.text,
+        '합성어',
+      );
+      const types = ctx.journal
+        .all()
+        .filter((event) => event.session === session.id && event.type.startsWith('task.'))
+        .map((event) => event.type);
+      assert.deepEqual(types, [
+        'task.opened',
+        'task.reference-retrieved',
+        'task.provider-accepted',
+      ]);
+      const retrieval = ctx.journal
+        .all()
+        .find((event) => event.type === 'task.reference-retrieved');
+      if (retrieval?.type !== 'task.reference-retrieved') throw new Error('No retrieval.');
+      assert.equal(retrieval.data.outcome, 'passed');
+      assert.equal(retrieval.data.reason, 'term');
+      assert.equal(retrieval.data.decision.referenceId, 'Q7375');
+      assert.equal(retrieval.data.guess, 'Desert photo');
+      assert.doesNotMatch(JSON.stringify(retrieval.data), new RegExp(SAID));
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('an outage, a timeout or a changed word list says so, with no word and no answer offered', async () => {
+    const outcomes: [Parameters<typeof link>[0], string, string][] = [
+      [
+        () => {
+          throw new ZetarisPracticeError('connect');
+        },
+        'connect',
+        "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
+      ],
+      [
+        ({ signal }) =>
+          new Promise((_resolve, reject) =>
+            signal.addEventListener('abort', () =>
+              reject(new ZetarisPracticeError('subprocess', true)),
+            ),
+          ),
+        'timeout',
+        "Zetaris on your Mac didn't answer in time, so there's no Korean word this time.",
+      ],
+      [
+        () => {
+          throw new ZetarisPracticeError('integrity');
+        },
+        'integrity',
+        "The word list on your Mac doesn't match what was imported, so there's no Korean word this time.",
+      ],
+    ];
+    for (const [answer, phase, words] of outcomes) {
+      const zetaris = link(answer, 50);
+      const ctx = setup(ASKS, { practice: zetaris.practice });
+      try {
+        goal(ctx.tasks);
+        const { task } = await ctx.opened();
+        assert.equal(lineOf(task), words);
+        assert.equal(
+          task.components.some(
+            (part: { type: string }) => part.type === 'term' || part.type === 'voice_reply',
+          ),
+          false,
+        );
+        const retrieval = ctx.journal
+          .all()
+          .find((event) => event.type === 'task.reference-retrieved');
+        if (retrieval?.type !== 'task.reference-retrieved') throw new Error('No retrieval.');
+        assert.equal(retrieval.data.outcome, 'failed');
+        assert.equal(retrieval.data.phase, phase);
+        assert.deepEqual(retrieval.data.rows, []);
+      } finally {
+        await ctx.close();
+      }
+    }
+  });
+
+  it('two opens in flight for one session share one lookup', async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const zetaris = link(async (call) => {
+      await held;
+      return result(call.request, [pickedRow(guessOf(call.request))]);
+    });
+    const ctx = setup(ASKS, { practice: zetaris.practice });
+    try {
+      goal(ctx.tasks);
+      const session = await ctx.start();
+      const first = ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
+      const second = ctx.post(`/v1/sessions/${session.id}/task`, {
+        eventId: 'evt_open_again',
+        taskId: 'tsk_again',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      release();
+      const [a, b] = await Promise.all([first, second]);
+      assert.equal(a.statusCode, 200, a.body);
+      assert.equal(b.statusCode, 200, b.body);
+      assert.deepEqual(a.json(), b.json());
+      assert.equal(zetaris.picks.length, 1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('an answer is assessed against the term, corrected by Boopy, and staged from the journal', async () => {
+    const zetaris = link((call) => result(call.request, [pickedRow(guessOf(call.request))]));
+    const ctx = setup(ASKS, { practice: zetaris.practice });
+    try {
+      goal(ctx.tasks);
+      const { session, task } = await ctx.opened();
+      ctx.speech.heard = { text: HEARD, language: 'ko' };
+      const response = await ctx.post(ANSWERS, answer(session.id, task.revision));
+      assert.equal(response.statusCode, 200, response.body);
+      const view = response.json();
+      assert.equal(view.revision, 3);
+      assert.equal(view.delivery, 'not-sent');
+      assert.deepEqual(view.attempts, [
+        {
+          eventId: 'evt_answer_one',
+          text: HEARD,
+          recognitionUncertain: true,
+          kind: 'practice-attempt',
+          heard: 'heard',
+        },
+      ]);
+      assert.equal(lineOf(view), 'I heard 합성어.');
+      assert.equal(
+        view.components.some((part: { type: string }) => part.type === 'voice_reply'),
+        false,
+      );
+      await settled(ctx, 1);
+      assert.equal(zetaris.stages.length, 1);
+      assert.deepEqual(
+        zetaris.stages[0]?.map((row) => [row.attemptId, row.taskId, row.referenceId, row.result]),
+        [['evt_answer_one', OPEN.taskId, 'Q7375', 'heard']],
+      );
+      const kinds = ['task.answer-assessed', 'task.practice-staged', 'task.reference-retrieved'];
+      for (const event of ctx.journal.all().filter((entry) => kinds.includes(entry.type)))
+        assert.doesNotMatch(JSON.stringify(event.data), /있어요/);
+      const again = await ctx.post(ANSWERS, answer(session.id, task.revision));
+      assert.deepEqual(again.json(), view);
+      assert.equal(ctx.transcriptions(), 1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('a later task recalls a term Boopy did not hear, and the pick it gets says so', async () => {
+    const zetaris = link((call) =>
+      result(call.request, [
+        pickedRow(
+          guessOf(call.request),
+          call.request.rows.length > 0
+            ? {
+                attempts: 1,
+                notHeard: 1,
+                onSource: 1,
+                lastAt: call.request.rows[0]?.attemptedAt ?? null,
+                lastResult: 'not-heard',
+                why: 'not-heard-before',
+              }
+            : {},
+        ),
+      ]),
+    );
+    const ctx = setup(ASKS, { practice: zetaris.practice });
+    try {
+      goal(ctx.tasks);
+      const { session, task } = await ctx.opened();
+      ctx.speech.heard = { text: '사막이에요', language: 'ko' };
+      const answered = (await ctx.post(ANSWERS, answer(session.id, task.revision))).json();
+      assert.equal(answered.attempts[0].heard, 'not-heard');
+      assert.equal(lineOf(answered), "I didn't hear 합성어 in that. Once more?");
+      await settled(ctx, 1);
+      const later = await ctx.start();
+      const response = await ctx.post(`/v1/sessions/${later.id}/task`, {
+        eventId: 'evt_open_later',
+        taskId: 'tsk_later',
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const request = zetaris.picks.at(-1)?.request;
+      assert.deepEqual(
+        request?.rows.map((row) => [row.attemptId, row.result]),
+        [['evt_answer_one', 'not-heard']],
+      );
+      assert.deepEqual(request?.recalled, ['Q7375']);
+      assert.equal(
+        lineOf(response.json()),
+        "Last time I didn't hear 합성어 from you. Try it again?",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('a wrong subject takes its practice out of later picks', async () => {
+    const zetaris = link((call) => result(call.request, [pickedRow(guessOf(call.request))]));
+    const ctx = setup(ASKS, { practice: zetaris.practice });
+    try {
+      goal(ctx.tasks);
+      const { session, task } = await ctx.opened();
+      ctx.speech.heard = { text: '사막이에요', language: 'ko' };
+      const answered = (await ctx.post(ANSWERS, answer(session.id, task.revision))).json();
+      await settled(ctx, 1);
+      const wrong = await ctx.post(ACTIONS, {
+        eventId: 'evt_wrong_subject',
+        sessionId: session.id,
+        expectedRevision: answered.revision,
+        action: { type: 'wrong_subject' },
+      });
+      assert.equal(wrong.statusCode, 200, wrong.body);
+      await settled(ctx, 2);
+      assert.deepEqual(zetaris.stages.at(-1), []);
+      const later = await ctx.start();
+      await ctx.post(`/v1/sessions/${later.id}/task`, {
+        eventId: 'evt_open_later',
+        taskId: 'tsk_later',
+      });
+      const request = zetaris.picks.at(-1)?.request;
+      assert.deepEqual(request?.rows, []);
+      assert.deepEqual(request?.excluded, [OPEN.taskId]);
+      assert.deepEqual(request?.recalled, []);
     } finally {
       await ctx.close();
     }
