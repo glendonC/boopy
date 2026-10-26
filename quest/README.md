@@ -134,6 +134,24 @@ result, a missed answer, a later turn, a clip's still) through the app's own pat
 service captured in a rehearsal: `BOOPY_RECORDED_VIEWS` names their folder, `BOOPY_RECORDED_FRAME` and
 `BOOPY_RECORDED_FRAME_D` the two stills, and `BOOPY_RENDER_DIR` an existing private folder.
 
+## Measuring the Quest's own capture
+
+To learn how the Quest's own video recorder frames the view, launch Boopy with the angle chart instead
+of the app. It is fixed to the view on black: a centre cross and thin lines every 5 degrees across and
+up or down out to 60, numbered every 10 (left and down negative), each at the exact tangent of its
+angle 8 m ahead. Record a few seconds of it with the Quest's recorder and read where the numbered lines
+fall in the video.
+
+```bash
+adb shell am force-stop com.boopy.quest
+```
+
+```bash
+adb shell am start -n com.boopy.quest/com.unity3d.player.UnityPlayerGameActivity --ez boopy.calibration true
+```
+
+Launch it again without the extra to get Boopy back.
+
 ## Check first on the headset
 
 These cannot be settled off the device:

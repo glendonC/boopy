@@ -194,6 +194,14 @@ namespace Boopy.Quest
                 return;
             }
             head = rig.centerEyeAnchor;
+            // Launched for the angle chart: only the chart shows, and nothing else of Boopy runs.
+            if (CalibrationView.Asked())
+            {
+                CalibrationView.Create(head);
+                Debug.Log("Boopy: calibration view.");
+                enabled = false;
+                return;
+            }
             pocket = rig.leftHandAnchor;
             leftController = rig.leftControllerAnchor; rightController = rig.rightControllerAnchor;
             left = new HandInput(false, rig.leftHandAnchor.GetComponentInChildren<OVRHand>(true), rig.leftHandAnchor.GetComponentInChildren<OVRSkeleton>(true));
