@@ -175,12 +175,17 @@ function recordedTurn(
     recordedFrame?: unknown;
     cues?: { gaze?: { world?: unknown; onSurface: boolean }; pointer?: unknown };
     attention?: { source: string; evidence: string };
+    speech?: Speech;
   },
   context: z.RefinementCtx,
 ): void {
-  if (request.recordedFrame === undefined) return;
   const problem = (message: string, path: string[]) =>
     context.addIssue({ code: 'custom', message, path });
+  if (request.recordedFrame === undefined) {
+    if (request.speech !== undefined && 'gesture' in request.speech)
+      problem('A tap with no words boops a recorded frame only.', ['speech']);
+    return;
+  }
   if (request.frame !== undefined)
     problem('Send a frame or a recorded frame, not both.', ['recordedFrame']);
   if (request.cues?.pointer !== undefined)
@@ -196,6 +201,8 @@ function recordedTurn(
 export const Speech = z.union([
   z.object({ wav: z.string().min(1) }),
   z.object({ text: z.string().trim().min(1).max(2000), language: z.string().optional() }),
+  /** A quick tap on a recorded frame: a boop by pointing, with nothing said. */
+  z.object({ gesture: z.literal('tap') }),
 ]);
 export type Speech = z.infer<typeof Speech>;
 

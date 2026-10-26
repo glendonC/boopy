@@ -238,14 +238,19 @@ export class Boopy {
    * What a moment sent to the person's own Bot shows: the view around where they looked, else
    * around the booped subject, on the turn's frame, with the subject's box drawn on it.
    */
-  async momentPicture(
-    sessionId: string,
-  ): Promise<{ readonly picture: Buffer | null; readonly recorded: boolean }> {
+  async momentPicture(sessionId: string): Promise<{
+    readonly picture: Buffer | null;
+    readonly recorded: boolean;
+    readonly pointed: boolean;
+  }> {
     const session = this.#projection.session(sessionId);
     const first = session?.interpretations[0];
     const observation = session?.observations.find((entry) => entry.id === first?.observationId);
+    // A boop with no words heard was made by pointing alone.
+    const pointed =
+      session?.utterances.find((utterance) => utterance.id === first?.utteranceId)?.text === '';
     if (session === undefined || observation === undefined)
-      return { picture: null, recorded: false };
+      return { picture: null, recorded: false, pointed };
     const referent = session.items.find((item) => item.id === session.referentId);
     const box =
       referent?.grounding.observationId === observation.id
@@ -258,6 +263,7 @@ export class Boopy {
     return {
       picture: await momentPicture(jpeg, center, box),
       recorded: observation.recorded !== undefined,
+      pointed,
     };
   }
 
@@ -355,6 +361,9 @@ export class Boopy {
           observationId,
           null,
           request.attention?.source,
+          undefined,
+          undefined,
+          recorded !== undefined,
         );
         if (heard.reading.kind === 'commit') {
           this.#notices.set(session, 'There is nothing to save yet. Look at something and talk.');
@@ -564,6 +573,8 @@ export class Boopy {
           : session.observations.find((observation) => observation.id === selected.observationId)
               ?.source,
         request.selection,
+        undefined,
+        request.recordedFrame !== undefined,
       );
       const reading = heard.reading;
       if (selected !== undefined && observationId !== null) {
@@ -1020,12 +1031,17 @@ export class Boopy {
     evidenceSource: AttentionInput['source'] = 'unknown',
     selection?: ContextualActionSelection,
     choiceSelection?: ChoiceSelection,
+    /** A recorded boop: with no words heard, it is a boop by pointing, asked as "What is this?". */
+    recordedBoop = false,
   ): Promise<Heard> {
     let text: string;
     let language: string;
     let audioSha256: string | null = null;
     let transcriber: string | null = null;
-    if ('wav' in speech) {
+    if ('gesture' in speech) {
+      text = '';
+      language = 'en';
+    } else if ('wav' in speech) {
       const engine = this.#deps.speech;
       if (engine === null) {
         throw new BoopyError(503, 'no_speech', 'Speech is not set up on this Mac.');
@@ -1047,8 +1063,13 @@ export class Boopy {
       text = speech.text;
       language = speech.language ?? (/[가-힣]/.test(speech.text) ? 'ko' : 'en');
     }
-    if (text.trim() === '')
-      throw new BoopyError(422, 'no_words', 'I did not hear clear words. Please try again.');
+    if (text.trim() === '') {
+      if (!recordedBoop)
+        throw new BoopyError(422, 'no_words', 'I did not hear clear words. Please try again.');
+      // The journal keeps that no words were heard; nothing is put in the person's mouth.
+      text = '';
+      language = 'en';
+    }
     const utteranceId = this.#newId('utt');
     const reading: Reading =
       selection === undefined && choiceSelection === undefined
@@ -1068,9 +1089,11 @@ export class Boopy {
             ? 'choice'
             : selection !== undefined
               ? 'suggestion'
-              : 'wav' in speech
-                ? 'speech'
-                : 'typed',
+              : 'gesture' in speech
+                ? 'pointing'
+                : 'wav' in speech
+                  ? 'speech'
+                  : 'typed',
         ...(choiceSelection === undefined ? {} : { choiceSelection }),
         ...(selection === undefined ? {} : { selection }),
         evidenceSource,

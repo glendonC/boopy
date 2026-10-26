@@ -5,14 +5,14 @@ import type { ModelOutput } from './output.ts';
 /** Everything a model is shown for one utterance. */
 export interface InterpretInput {
   readonly said: string;
-  readonly inputSource?: 'speech' | 'typed' | 'suggestion' | 'choice';
+  readonly inputSource?: 'speech' | 'typed' | 'suggestion' | 'choice' | 'pointing';
   /** Up to six prior turns, supplied from journal provenance, never verified model truth. */
   readonly conversation?: readonly {
     readonly speaker: 'person' | 'boopy';
     readonly text: string;
     readonly utteranceId: string;
     readonly observationId: string | null;
-    readonly inputSource?: 'speech' | 'typed' | 'suggestion' | 'choice';
+    readonly inputSource?: 'speech' | 'typed' | 'suggestion' | 'choice' | 'pointing';
   }[];
   /** Up to eight actual existing items; selection does not confirm their claims. */
   readonly contextualItems?: readonly {

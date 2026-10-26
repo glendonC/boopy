@@ -153,6 +153,8 @@ export type Moment = {
   readonly heard: boolean | null;
   readonly memory: string | null;
   readonly recorded: boolean;
+  /** The boop was made by pointing alone, with no words heard. */
+  readonly pointed: boolean;
   readonly picture: Buffer | null;
 };
 
@@ -161,10 +163,11 @@ const article = (noun: string) => (/^[aeiou]/i.test(noun) ? `an ${noun}` : `a ${
 /** The one plain sentence the Bot reads first, in the person's voice. */
 export function momentMessage(moment: Moment): string {
   const where = moment.recorded ? 'in my trip footage' : 'around me';
+  const did = moment.pointed ? 'pointed at' : 'looked at';
   const seen =
     moment.subject === null
-      ? `I looked at something ${where}, and Boopy was not sure what it was.`
-      : `I looked at something ${where}, and Boopy thought it was ${article(moment.subject)}.`;
+      ? `I ${did} something ${where}, and Boopy was not sure what it was.`
+      : `I ${did} something ${where}, and Boopy thought it was ${article(moment.subject)}.`;
   if (moment.term === null) return `From my Boopy headset: ${seen}`;
   const word = `Boopy gave the ${moment.term.languageName} word ${moment.term.text} (Wikidata via Zetaris)`;
   const said =

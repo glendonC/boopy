@@ -12,6 +12,7 @@ import {
   GrokBotMoments,
   loadGrokBot,
   type Moment,
+  momentMessage,
   momentPicture,
   webhookSignature,
 } from './grok-bot.ts';
@@ -51,6 +52,7 @@ const moment = async (over: Partial<Moment> = {}): Promise<Moment> => ({
   heard: null,
   memory: null,
   recorded: true,
+  pointed: false,
   picture: await momentPicture(
     await frame(),
     { x: 0.8, y: 0.4 },
@@ -122,6 +124,11 @@ test('a moment goes once to the Bot with a Bearer key, and only a started run co
     assert.equal(second.heard, true);
     assert.equal(second.image, undefined);
     assert.match(second.message, /word 낙타 \(Wikidata via Zetaris\) and heard me say it\.$/);
+    // A boop made by pointing alone says so.
+    assert.match(
+      momentMessage(await moment({ pointed: true })),
+      /^From my Boopy headset: I pointed at /,
+    );
     assert.ok(
       !JSON.stringify(started).includes('crsr_') &&
         !JSON.stringify(started).includes('/automations/'),

@@ -40,7 +40,7 @@ export interface Utterance {
   readonly id: string;
   readonly text: string;
   readonly language: string;
-  readonly source: 'speech' | 'typed' | 'suggestion' | 'choice';
+  readonly source: 'speech' | 'typed' | 'suggestion' | 'choice' | 'pointing';
   readonly selection?: ContextualActionSelection;
   readonly choiceSelection?: ChoiceSelection;
   readonly evidenceSource: import('./attention.ts').AttentionSource;
@@ -86,7 +86,7 @@ export interface SessionState {
     text: string;
     utteranceId: string;
     observationId: string | null;
-    inputSource?: 'speech' | 'typed' | 'suggestion' | 'choice';
+    inputSource?: 'speech' | 'typed' | 'suggestion' | 'choice' | 'pointing';
   }[];
   corrections: number;
   humanActions: (z.infer<typeof HumanAction> & { itemId: string })[];

@@ -531,6 +531,48 @@ describe('a turn on a recorded frame', () => {
     assert.equal(JSON.stringify(journal.all()).includes('current-surroundings'), false);
   });
 
+  it('takes a tap, or a held boop with no words, as a boop by pointing', async (context) => {
+    if (missing) return context.skip(missing);
+    const { headset, journal, interpreter, scene } = await shown();
+    const post = (payload: unknown) =>
+      headset.inject({
+        method: 'POST',
+        url: '/v1/sessions',
+        headers: HOST,
+        payload: payload as object,
+      });
+    const asked = await post(boop(scene));
+    assert.equal(asked.statusCode, 200, asked.body);
+    const tapped = await post({ ...boop(scene), speech: { gesture: 'tap' } });
+    assert.equal(tapped.statusCode, 200, tapped.body);
+    // The synthetic recognizer hears no words in this clip.
+    const held = await post({
+      ...boop(scene),
+      speech: { wav: Buffer.from('RIFF').toString('base64') },
+    });
+    assert.equal(held.statusCode, 200, held.body);
+    const heard = journal
+      .all()
+      .flatMap((event) =>
+        event.type === 'utterance.heard' ? [[event.data.source, event.data.text]] : [],
+      );
+    assert.deepEqual(heard, [
+      ['typed', 'What is this?'],
+      ['pointing', ''],
+      ['speech', ''],
+    ]);
+    // Boopy is asked exactly what a spoken "What is this?" asks, about the same point.
+    const [ask, tap, hold] = interpreter.inputs;
+    for (const input of [tap, hold]) {
+      assert.equal(input?.said, ask?.said);
+      assert.deepEqual(input?.gaze, ask?.gaze);
+    }
+    assert.equal(tapped.json().items.length > 0, true);
+    // A tap is a boop on a recorded frame only; in the room it is refused.
+    const room = await post({ ...startRequest('x'), speech: { gesture: 'tap' } });
+    assert.equal(room.statusCode, 400, room.body);
+  });
+
   it('refuses a recorded frame mixed with a room frame, a pointer, a surface or another source', async (context) => {
     if (missing) return context.skip(missing);
     const { headset, scene, journal } = await shown();

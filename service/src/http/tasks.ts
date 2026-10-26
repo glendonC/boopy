@@ -310,7 +310,7 @@ export function registerTaskRoutes(
     const term = tasks.practice(task.taskId);
     const annotation = task.components.find((part) => part.type === 'annotation');
     void (async () => {
-      const { picture, recorded } = await boopy.momentPicture(task.sessionId);
+      const { picture, recorded, pointed } = await boopy.momentPicture(task.sessionId);
       await grokBot.send({
         momentId: `mom_${task.taskId.slice(4)}`,
         attempt,
@@ -328,6 +328,7 @@ export function registerTaskRoutes(
         heard,
         memory,
         recorded,
+        pointed,
         picture: heard === null ? picture : null,
       });
     })().catch(() => {});

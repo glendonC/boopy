@@ -158,7 +158,7 @@ export type BoopyEvent =
         readonly observationId: string | null;
         readonly text: string;
         readonly language: string;
-        readonly source: 'speech' | 'typed' | 'suggestion' | 'choice';
+        readonly source: 'speech' | 'typed' | 'suggestion' | 'choice' | 'pointing';
         readonly selection?: ContextualActionSelection;
         readonly choiceSelection?: ChoiceSelection;
         readonly evidenceSource?: import('./attention.ts').AttentionSource;
