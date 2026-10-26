@@ -5,6 +5,7 @@ import { ActivityCalls } from './activity-call.ts';
 import { OllamaActivityAssistant } from './activity-ollama.ts';
 import { Boopy } from './boopy.ts';
 import { connectorToken, loadConfig } from './config.ts';
+import { GrokBotMoments, loadGrokBot } from './grok-bot.ts';
 import { HandoffPreparation } from './handoff-preparation.ts';
 import { connectorApp } from './http/connector.ts';
 import { headsetApp } from './http/headset.ts';
@@ -159,6 +160,10 @@ const practice: PracticeLink | undefined = practiceSettings
       } satisfies PracticeLink;
     })()
   : undefined;
+// The person's own Grok Bot: each boop moment goes there when they name a webhook file.
+const grokBot = config.grokBotWebhookFile
+  ? new GrokBotMoments(journal, await loadGrokBot(config.grokBotWebhookFile))
+  : undefined;
 const headset = headsetApp(boopy, {
   logger: config.logger,
   liveScene,
@@ -167,6 +172,7 @@ const headset = headsetApp(boopy, {
   activityCalls,
   tasks,
   ...(practice ? { practice } : {}),
+  ...(grokBot ? { grokBot } : {}),
   ...(recorded ? { recorded } : {}),
 });
 const connector = connectorApp(boopy, {
@@ -197,6 +203,7 @@ console.log(
     `  text          ${config.ocrBinary === null ? 'off (run pnpm ocr:build)' : 'Apple Vision'}`,
     `  recorded      ${recorded ? 'on: recorded scenes from the local operator' : 'off'}`,
     `  practice      ${practiceSettings ? `Zetaris on this Mac, ${practiceSettings.table}` : 'off'}`,
+    `  grok bot      ${grokBot ? 'on: each boop moment goes to your Grok Bot' : 'off'}`,
   ].join('\n'),
 );
 // One pick at start, so the first boop does not wait for the engine's cold start. It also brings

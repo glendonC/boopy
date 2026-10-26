@@ -263,6 +263,24 @@ export type BoopyEvent =
         readonly via: 'mcp' | 'rest';
         readonly tool: string;
       }
+    >
+  | Event<
+      'grokbot.delivery.started',
+      {
+        readonly momentId: string;
+        readonly attempt: number;
+        readonly taskId: string;
+        readonly runUuid: string | null;
+      }
+    >
+  | Event<
+      'grokbot.delivery.failed',
+      {
+        readonly momentId: string;
+        readonly attempt: number;
+        readonly taskId: string;
+        readonly status: number | null;
+      }
     >;
 
 export type EventType = BoopyEvent['type'];

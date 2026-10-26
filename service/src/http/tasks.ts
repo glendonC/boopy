@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { type Boopy, BoopyError } from '../boopy.ts';
+import type { GrokBotMoments } from '../grok-bot.ts';
 import {
   Connect,
   ConnectionId,
@@ -108,14 +109,19 @@ type Planned = NonNullable<ReturnType<typeof standIn>> & { readonly retrieval?: 
  * person's own assistant. The one result a capture gets is a labeled local stand-in projected from
  * Boopy's own turn. Under the person's practice goal, with a practice link, that result carries the
  * outside term for Boopy's guess from one Zetaris pick, and an answer is assessed against it.
- * Reading a task only reads the journal.
+ * Reading a task only reads the journal. With the person's own Grok Bot named, each opening and
+ * each assessed answer is also sent there as a moment, in the background, and a view says sentTo
+ * only once a delivery for its task has started.
  */
 export function registerTaskRoutes(
   app: FastifyInstance,
   tasks: TaskStore,
   boopy: Boopy,
   practice?: PracticeLink,
+  grokBot?: GrokBotMoments,
 ) {
+  const shown = (view: TaskView): TaskView & { readonly sentTo?: 'grok-bot' } =>
+    grokBot?.started(view.taskId) ? { ...view, sentTo: 'grok-bot' } : view;
   const native = {
     onRequest: async (request: FastifyRequest, reply: FastifyReply) => {
       reply.header('Cache-Control', 'no-store');
@@ -132,7 +138,8 @@ export function registerTaskRoutes(
     if (claim === 'delivery')
       throw new BoopyError(400, 'delivery_refused', 'Delivery stays not-sent.');
     const taskId = literalTaskId(request);
-    return reply.send(taskId === undefined ? null : (tasks.get(taskId) ?? null));
+    const view = taskId === undefined ? undefined : tasks.get(taskId);
+    return reply.send(view === undefined ? null : shown(view));
   });
 
   // One task per session in this version: an existing one is returned and the body's ids unused.
@@ -142,7 +149,7 @@ export function registerTaskRoutes(
     const sessionId = (request.params as { sessionId: string }).sessionId;
     const facts = boopy.taskTurn(sessionId);
     const existing = tasks.forSession(sessionId);
-    if (existing !== undefined && existing.revision > 0) return existing;
+    if (existing !== undefined && existing.revision > 0) return shown(existing);
     const ids = { eventId: body.eventId, taskId: existing?.taskId ?? body.taskId };
     const plan = standIn(sessionId, ids, facts);
     const planned =
@@ -156,7 +163,10 @@ export function registerTaskRoutes(
             new Date().toISOString(),
             planned.retrieval,
           );
-    if (outcome?.status === 'accepted') return outcome.task;
+    if (outcome?.status === 'accepted' && planned !== null) {
+      momentSoon(outcome.task, 0, null, memoryLine(planned, outcome.task));
+      return outcome.task;
+    }
     if (outcome === undefined || existing !== undefined)
       throw new BoopyError(
         409,
@@ -288,6 +298,41 @@ export function registerTaskRoutes(
     return { open: plan.open, result: decided.result, retrieval };
   };
 
+  // Each moment goes to the person's own Grok Bot in the background: the turn never waits for it.
+  // An opening and each answer after it share one momentId; an answer's carries no picture.
+  const momentSoon = (
+    task: TaskView,
+    attempt: number,
+    heard: boolean | null,
+    memory: string | null,
+  ) => {
+    if (grokBot === undefined) return;
+    const term = tasks.practice(task.taskId);
+    const annotation = task.components.find((part) => part.type === 'annotation');
+    void (async () => {
+      const { picture, recorded } = await boopy.momentPicture(task.sessionId);
+      await grokBot.send({
+        momentId: `mom_${task.taskId.slice(4)}`,
+        attempt,
+        taskId: task.taskId,
+        sessionId: task.sessionId,
+        subject: term?.guess ?? (annotation?.type === 'annotation' ? annotation.text : null),
+        term:
+          term === null
+            ? null
+            : {
+                text: term.term,
+                language: term.language,
+                languageName: languageName(term.language, term.personLanguage),
+              },
+        heard,
+        memory,
+        recorded,
+        picture: heard === null ? picture : null,
+      });
+    })().catch(() => {});
+  };
+
   const stageSoon = (taskId: string, sessionId: string, stageId: string) => {
     if (practice === undefined) return;
     // Each rewrite reads the journal as it is when its turn comes.
@@ -366,8 +411,10 @@ export function registerTaskRoutes(
     const term = tasks.practice(input.taskId);
     if (term === null) return tasks.act(act, new Date().toISOString());
     // What Boopy heard and its correction are recorded with the attempt, all or none.
+    let assessed: boolean | null = null;
     const outcome = tasks.answer(act, new Date().toISOString(), (task, attemptEventId) => {
       const heard = assessAnswer(term.term, text.data);
+      assessed = heard === 'heard';
       return {
         assessment: {
           assessmentId: `asm_${attemptEventId.slice(4)}`,
@@ -390,8 +437,10 @@ export function registerTaskRoutes(
         }),
       };
     });
-    if (outcome.status === 'accepted')
+    if (outcome.status === 'accepted') {
       stageSoon(input.taskId, input.sessionId, `stg_${input.eventId.slice(4)}`);
+      if (assessed !== null) momentSoon(outcome.task, outcome.task.attempts.length, assessed, null);
+    }
     return outcome;
   };
 
@@ -415,13 +464,13 @@ export function registerTaskRoutes(
     ]);
     const running = answering.get(body.eventId);
     if (running !== undefined)
-      return settle(running.key === key ? await running.outcome : CONFLICT);
+      return shown(settle(running.key === key ? await running.outcome : CONFLICT));
     const known = tasks.checkAnswer(input);
-    if (known !== undefined) return settle(known);
+    if (known !== undefined) return shown(settle(known));
     const outcome = answer(input, wav);
     answering.set(body.eventId, { key, outcome });
     try {
-      return settle(await outcome);
+      return shown(settle(await outcome));
     } finally {
       answering.delete(body.eventId);
     }
@@ -440,8 +489,18 @@ export function registerTaskRoutes(
       tasks.practiceRecords().some((record) => record.taskId === taskId)
     )
       stageSoon(taskId, body.sessionId, `stg_${body.eventId.slice(4)}`);
-    return settle(outcome);
+    return shown(settle(outcome));
   });
+}
+
+/** The line Boopy's memory of earlier practice shaped, when it shaped one. */
+function memoryLine(planned: Planned, task: TaskView): string | null {
+  const retrieval = planned.retrieval as
+    | { readonly decision?: { readonly recalledReferenceId?: string | null } }
+    | undefined;
+  if (!retrieval?.decision?.recalledReferenceId) return null;
+  const dialogue = task.components.find((part) => part.type === 'dialogue');
+  return dialogue?.type === 'dialogue' ? dialogue.text : null;
 }
 
 const LocalRequest = z.strictObject({

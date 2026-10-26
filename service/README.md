@@ -91,6 +91,7 @@ All optional.
 | `BOOPY_ZETARIS_TERMS` | none | Folder holding `wikidata_term.csv` and its receipt; required with practice |
 | `BOOPY_ZETARIS_PRACTICE_TABLE` | none | `practice_attempt`, or `practice_check` for checks; required with practice |
 | `BOOPY_PROBE_JAR` | none | The Zetaris JDBC driver jar the runner uses |
+| `BOOPY_GROK_BOT_WEBHOOK_FILE` | unset | A 0600 JSON file with your Grok Bot routine's webhook; setting it sends each boop moment there |
 
 For Muse Spark, store the key yourself in `~/.boopy/model-api-key` (or under
 `BOOPY_DATA_DIR`) with mode `0600`. When `MODEL_API_KEY` is unset, the service reads that file
@@ -312,6 +313,35 @@ language, the result, the time). It lives in the Zetaris stack's own Docker volu
 ```bash
 printf 'end\n' | node probes/zetaris/run-federation.mjs /absolute/private/practice-credential-file practice-stage
 ```
+
+## Moments to your Grok Bot
+
+With `BOOPY_GROK_BOT_WEBHOOK_FILE` set, each boop moment also goes to your own Grok Bot, so you
+can pick it up later from your other devices. The file is yours to make, mode `0600`:
+
+```json
+{ "url": "https://...your routine's webhook URL...", "key": "crsr_... or whsec_..." }
+```
+
+The service refuses a file others can read, a URL that is not https, and any other kind of key. A
+`crsr_` key goes as a Bearer token; a `whsec_` secret signs each body the Standard Webhooks way
+(`webhook-id`, `webhook-timestamp`, `webhook-signature`). The key and the URL are never logged or
+journaled.
+
+A moment goes out when a task opens and again, with the same `momentId`, after each answer Boopy
+assesses, in the background, so a turn never waits: one POST, a 10 s bound, no retry. Its JSON body holds `source`
+`"Boopy"`, `kind` `"moment"`, `momentId`, one plain `message` sentence for the Bot to read first,
+`subject` (Boopy's guess), `term` (`text`, `language`, `source`), `heard` (`true`, `false`, or
+`null` before an answer), `memory` (the line Boopy's memory of earlier practice shaped, if any),
+`recorded` (`true` for recorded footage), and on the opening's moment `image`: the view around
+where you looked, the subject's box drawn on it, as a JPEG of about 40 KB or less with no capture
+metadata. No transcript, capture time or place is sent.
+
+The journal records `grokbot.delivery.started` (with the Bot's run id when it gives one) or
+`grokbot.delivery.failed` (the HTTP status only). A started delivery means the Bot's run began,
+not that it finished. Only after one has started for a task does that task's view carry
+`"sentTo": "grok-bot"`. An opening's own response comes before its moment is sent, so the headset
+sees the field when it next reads the task.
 
 ## Check
 

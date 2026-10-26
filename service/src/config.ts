@@ -74,6 +74,11 @@ export interface Config {
     readonly termsDirectory: string;
     readonly table: 'practice_attempt' | 'practice_check';
   } | null;
+  /**
+   * The person's own Grok Bot: a 0600 JSON file with the routine webhook's url and key, from
+   * BOOPY_GROK_BOT_WEBHOOK_FILE. Off without it, and nothing is sent.
+   */
+  readonly grokBotWebhookFile: string | null;
 }
 
 const serviceRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -117,6 +122,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     connectionReplies: env.BOOPY_CONNECTION_REPLIES === '1',
     practice: practiceConfig(env),
     recordedScene: recordedSceneConfig(env),
+    grokBotWebhookFile:
+      env.BOOPY_GROK_BOT_WEBHOOK_FILE === undefined
+        ? null
+        : required(env, 'BOOPY_GROK_BOT_WEBHOOK_FILE'),
   };
 }
 

@@ -191,6 +191,8 @@ export class Projection {
     // Tasks and the person's practice goal are separate projections. They must not create
     // conversation facts.
     if (event.type.startsWith('task.') || event.type === 'goal.set') return;
+    // Moments sent to the person's own Bot change nothing in a conversation.
+    if (event.type.startsWith('grokbot.')) return;
     const session = this.sessions.get(event.session);
     if (session === undefined) throw new Error(`Event ${event.id} names unknown session.`);
     switch (event.type) {

@@ -14,6 +14,7 @@ import {
 } from '../contracts.ts';
 import type { TurnStage } from '../events.ts';
 import { SupersedeRequest } from '../evidence-contract.ts';
+import type { GrokBotMoments } from '../grok-bot.ts';
 import type { HandoffPreparation } from '../handoff-preparation.ts';
 import type { TaskStore } from '../interaction/tasks.ts';
 import { type LiveObservation, SceneObservationRequest } from '../live-observation.ts';
@@ -45,6 +46,8 @@ export function headsetApp(
     readonly tasks?: TaskStore;
     /** Zetaris on this Mac for practice under the person's goal; only with it set up. */
     readonly practice?: PracticeLink;
+    /** The person's own Grok Bot, sent each boop moment; only with a webhook file. */
+    readonly grokBot?: GrokBotMoments;
     /** A recorded scene for the headset to show and boop; only with BOOPY_RECORDED_SCENE=1. */
     readonly recorded?: RecordedScenes;
     /** How long close() lets requests in progress run; tests shorten it. */
@@ -162,7 +165,8 @@ export function headsetApp(
 
   if (options.handoff) registerHandoffRoutes(app, options.handoff);
   if (options.activities) registerActivityRoutes(app, options.activities, options.activityCalls);
-  if (options.tasks) registerTaskRoutes(app, options.tasks, boopy, options.practice);
+  if (options.tasks)
+    registerTaskRoutes(app, options.tasks, boopy, options.practice, options.grokBot);
   if (options.recorded) registerRecordedSceneRoutes(app, options.recorded);
 
   return app;

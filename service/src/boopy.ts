@@ -37,6 +37,7 @@ import {
   SupersedeRequest,
   type Supersession,
 } from './evidence-contract.ts';
+import { momentPicture } from './grok-bot.ts';
 import { cueReferent } from './interpret/cue-referent.ts';
 import { type Interpreter, InterpreterUnavailableError } from './interpret/interpreter.ts';
 import { choiceForResponse, normalize } from './interpret/output.ts';
@@ -230,6 +231,33 @@ export class Boopy {
             },
       referent: referent === undefined ? null : structuredClone(referent),
       ...(cueChosen === undefined ? {} : { cueChosen }),
+    };
+  }
+
+  /**
+   * What a moment sent to the person's own Bot shows: the view around where they looked, else
+   * around the booped subject, on the turn's frame, with the subject's box drawn on it.
+   */
+  async momentPicture(
+    sessionId: string,
+  ): Promise<{ readonly picture: Buffer | null; readonly recorded: boolean }> {
+    const session = this.#projection.session(sessionId);
+    const first = session?.interpretations[0];
+    const observation = session?.observations.find((entry) => entry.id === first?.observationId);
+    if (session === undefined || observation === undefined)
+      return { picture: null, recorded: false };
+    const referent = session.items.find((item) => item.id === session.referentId);
+    const box =
+      referent?.grounding.observationId === observation.id
+        ? (referent.grounding.box ?? null)
+        : null;
+    const center =
+      observation.cues.gaze?.point ??
+      (box === null ? { x: 0.5, y: 0.5 } : { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 });
+    const jpeg = this.#deps.media.get(observation.frameSha256, 'jpg');
+    return {
+      picture: await momentPicture(jpeg, center, box),
+      recorded: observation.recorded !== undefined,
     };
   }
 
