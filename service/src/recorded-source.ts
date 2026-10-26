@@ -722,6 +722,18 @@ export class RecordedScenes {
     };
   }
 
+  /** The outlines the latest run made on one frame of a recording, or null without one. */
+  frameOutlines(
+    recordingId: string,
+    frameId: string,
+  ): { provider: string; model: string; frame: OutlinedFrame } | null {
+    const run = this.#outlines.get(recordingId);
+    const frame = run?.frames.find((candidate) => candidate.frameId === frameId);
+    return run === undefined || frame === undefined
+      ? null
+      : { provider: run.provider, model: run.model, frame };
+  }
+
   /** A still of the shown recording; any other frame is unknown to the headset. */
   frame(frameId: string): Buffer {
     const recording =

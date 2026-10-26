@@ -43,6 +43,7 @@ import { choiceForResponse, normalize } from './interpret/output.ts';
 import type { Journal, MediaStore, Recorded } from './journal.ts';
 import { nearest, type TextReader } from './ocr.ts';
 import { buildPackage, verificationOf } from './package.ts';
+import { bestOutline } from './recorded-outlines.ts';
 import type { RecordedScenes, ResolvedFrame } from './recorded-source.ts';
 import {
   MAX_SEGMENT_ITEMS,
@@ -1488,6 +1489,7 @@ export class Boopy {
           jpeg,
           pointer ?? gaze,
         );
+      this.#recordedContours(sessionId, observationId, interpretationId, heard.utteranceId);
     } catch (failure) {
       // Provider exceptions may echo private inputs or credentials; never persist or speak them.
       const code =
@@ -1587,6 +1589,82 @@ export class Boopy {
         sessionId,
         `${this.#notices.get(sessionId) ?? ''} ${eligible.length - ordered.length} more object${eligible.length - ordered.length === 1 ? '' : 's'} kept as approximate boxes (capture limit).`.trim(),
       );
+  }
+
+  /**
+   * On a recorded frame, each object the interpreter just placed takes the shape of the recording's
+   * own outline on that exact frame when the outline's box overlaps its box by half or more; a
+   * matching noun only breaks ties, and the item keeps its own label. The shape stays proposed and
+   * says where it came from. No outline run on the frame, or no match: the box stays.
+   */
+  #recordedContours(
+    sessionId: string,
+    observationId: string,
+    interpretationId: string,
+    utteranceId: string,
+  ): void {
+    const recorded = this.#deps.recorded;
+    const session = this.#projection.session(sessionId);
+    const observation = session?.observations.find((candidate) => candidate.id === observationId);
+    if (recorded == null || session === undefined || observation?.recorded === undefined) return;
+    const outlines = recorded.frameOutlines(
+      observation.recorded.recordingId,
+      observation.recorded.frameId,
+    );
+    if (outlines === null || outlines.provider !== 'local') return;
+    const eligible = session.items.filter(
+      (item) =>
+        item.origin === 'model' &&
+        item.status === 'proposed' &&
+        item.interpretationId === interpretationId &&
+        item.grounding.observationId === observationId &&
+        item.grounding.box !== undefined &&
+        (item.id === session.referentId || item.kind === 'object' || item.kind === 'text'),
+    );
+    const taken = new Set<(typeof outlines.frame.objects)[number]>();
+    for (const item of [
+      ...eligible.filter((item) => item.id === session.referentId),
+      ...eligible.filter((item) => item.id !== session.referentId),
+    ]) {
+      const match = bestOutline(
+        { label: item.label, box: item.grounding.box as Box },
+        outlines.frame.objects,
+        taken,
+      );
+      if (match === null) continue;
+      taken.add(match.object);
+      const spatial: SpatialEvidence = {
+        provider: 'local',
+        model: outlines.model,
+        concept: match.object.label.slice(0, 120),
+        latencyMs: outlines.frame.latencyMs,
+        confidence: match.object.confidence,
+        verification: 'proposed',
+        outcome: 'contour',
+        frameSha256: observation.frameSha256,
+        utteranceId,
+        from: 'recorded-outline',
+        overlap: Math.round(match.overlap * 1000) / 1000,
+      };
+      const grounding = Grounding.safeParse({
+        ...item.grounding,
+        contour: match.object.contour,
+        spatial,
+      });
+      if (!grounding.success || grounding.data.contour === undefined) continue;
+      this.#record({
+        type: 'grounding.refined',
+        session: sessionId,
+        actor: `model:local:${outlines.model}`,
+        data: {
+          itemId: item.id,
+          observationId,
+          interpretationId,
+          contour: grounding.data.contour,
+          spatial,
+        },
+      });
+    }
   }
 
   #recordRefinement(

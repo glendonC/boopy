@@ -100,7 +100,7 @@ const namingScene = {
   }),
 };
 
-async function setup(outline = false) {
+async function setup(outline: boolean | typeof namingScene = false) {
   const data = await mkdtemp(join(directory, 'data-'));
   await writeFile(join(data, 'connector-token'), TOKEN, { mode: 0o600 });
   const interpreter = new CapturingInterpreter();
@@ -110,7 +110,9 @@ async function setup(outline = false) {
     media: test.deps.media,
     directory: join(data, 'recorded'),
     helper,
-    ...(outline ? { outliner: { scene: namingScene, interpreter } } : {}),
+    ...(outline
+      ? { outliner: { scene: outline === true ? namingScene : outline, interpreter } }
+      : {}),
   });
   const boopy = new Boopy({ ...test.deps, recorded: scenes });
   const preparation = new HandoffPreparation({
@@ -184,7 +186,10 @@ async function shown() {
   };
 }
 
-const boop = (scene: { recordingId: string; frames: { frameId: string }[] }, index = 2) => ({
+const boop = (
+  scene: { recordingId: string; frames: readonly { frameId: string }[] },
+  index = 2,
+) => ({
   recordedFrame: { recordingId: scene.recordingId, frameId: scene.frames[index]?.frameId },
   attention: {
     scope: 'target',
@@ -369,6 +374,100 @@ describe('outlines for a recording', () => {
     // Only nouns the interpreter proposed for this recording are served; the general list's are not.
     assert.ok(samples.every((sample: { objects: unknown[] }) => sample.objects.length === 1));
     assert.deepEqual(scenes.recordings()[0]?.outlines, { running: false, frames: 4 });
+  });
+});
+
+describe('the booped subject on a recorded frame', () => {
+  it("takes the shape of the frame's own outline over its box, and keeps the box without one", async (context) => {
+    if (missing) return context.skip(missing);
+    // The outline pass places one shape wherever the test says, named as the interpreter's noun.
+    let shape = { x0: 0.1, y0: 0.1, x1: 0.2, y1: 0.2 };
+    const scene = {
+      provider: 'local',
+      model: 'synthetic-outliner',
+      observe: async () => ({
+        objects: [
+          {
+            label: 'camel',
+            confidence: 0.6,
+            origin: 'proposed',
+            box: shape,
+            contour: [
+              { x: shape.x0, y: shape.y1 },
+              { x: (shape.x0 + shape.x1) / 2, y: shape.y0 },
+              { x: shape.x1, y: shape.y1 },
+            ],
+          },
+        ],
+        latencyMs: 3,
+      }),
+    };
+    const { headset, local, sha256, scenes } = await setup(scene);
+    const imported = await local('POST', '/v1/local-recorded/imports', {
+      sha256,
+      extension: 'mov',
+      sampling: { mode: 'stills', count: 2 },
+    });
+    const recordingId = imported.json().recordingId;
+    await local('POST', '/v1/local-recorded/scene', { recordingId });
+    const shown = scenes.scene();
+    assert.ok(shown !== null);
+    const camels = (view: {
+      items: {
+        label: string;
+        grounding: { box?: typeof shape; contour?: unknown[]; spatial?: Record<string, unknown> };
+      }[];
+    }) => view.items.find((item) => item.label === 'Camels');
+    // Without an outline run the frame's items keep their boxes.
+    const before = (
+      await headset.inject({
+        method: 'POST',
+        url: '/v1/sessions',
+        headers: HOST,
+        payload: boop(shown, 1),
+      })
+    ).json();
+    assert.equal(camels(before)?.grounding.contour, undefined);
+    shape = camels(before)?.grounding.box ?? shape;
+    await local('POST', '/v1/local-recorded/outlines', { recordingId });
+    while (scenes.recordings()[0]?.outlines.running)
+      await new Promise((done) => setTimeout(done, 10));
+    const after = (
+      await headset.inject({
+        method: 'POST',
+        url: '/v1/sessions',
+        headers: HOST,
+        payload: boop(shown, 1),
+      })
+    ).json();
+    const subject = camels(after);
+    assert.equal(subject?.grounding.contour?.length, 3);
+    assert.equal(subject?.grounding.box?.x0, shape.x0, 'the box is kept beside the shape');
+    assert.equal(subject?.label, 'Camels', 'the item keeps its own label');
+    assert.deepEqual(
+      {
+        ...subject?.grounding.spatial,
+        latencyMs: undefined,
+        frameSha256: undefined,
+        utteranceId: undefined,
+      },
+      {
+        provider: 'local',
+        model: 'synthetic-outliner',
+        concept: 'camel',
+        latencyMs: undefined,
+        confidence: 0.6,
+        verification: 'proposed',
+        outcome: 'contour',
+        frameSha256: undefined,
+        utteranceId: undefined,
+        from: 'recorded-outline',
+        overlap: 1,
+      },
+    );
+    // The large photo item overlaps the small camel shape by far less than half: it keeps its box.
+    const photo = after.items.find((item: { label: string }) => item.label === 'Desert photo');
+    assert.equal(photo?.grounding.contour, undefined);
   });
 });
 

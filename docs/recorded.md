@@ -111,6 +111,13 @@ runs as a capture does: speech, attention, text reading, interpretation and the 
 interpreter is told it is looking at the person's own recording, where in it, and whether a capture
 time exists; the time itself is not sent.
 
+When the recording has an outline run, each object the interpreter places on that frame takes the
+shape of the frame's own outline whose box overlaps its box by at least half (intersection over
+union), an outline whose noun names the object first. The object keeps its label and its box, and
+gains `grounding.contour` with `spatial` marked `from: recorded-outline`, the worker, the overlap
+and `verification: proposed`, so the headset draws its silhouette instead of a box. Without an
+outline run on the frame, or without such an overlap, the box stays.
+
 A service that shows recordings takes recorded frames only: a room frame there is refused with 409
 `recorded_only`, so its journal never mixes the room with a recording. A service without recordings
 refuses a recorded frame with 404 `recorded_unavailable`. Session views and saved context show

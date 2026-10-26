@@ -11,14 +11,20 @@ import type { Interpreter } from './interpret/interpreter.ts';
 import { SceneObject } from './live-observation.ts';
 import { proposedNouns } from './live-scene/local-scene.ts';
 
-/** The worker's answer for one still, keeping where each outline's noun came from. */
-const Outlines = z.object({
-  objects: z
-    .array(SceneObject.extend({ origin: z.enum(['base', 'proposed']).default('base') }))
-    .max(4),
-  leftOut: z.number().int().nonnegative().default(0),
-  latencyMs: z.number().finite().nonnegative(),
-});
+/**
+ * The worker's answer for one still, keeping where each outline's noun came from. Built on first
+ * use: boopy.ts imports this module, and live-observation.ts (which SceneObject comes from)
+ * imports boopy.ts, so the schema cannot be read while the modules load.
+ */
+const outlinesSchema = () =>
+  z.object({
+    objects: z
+      .array(SceneObject.extend({ origin: z.enum(['base', 'proposed']).default('base') }))
+      .max(4),
+    leftOut: z.number().int().nonnegative().default(0),
+    latencyMs: z.number().finite().nonnegative(),
+  });
+let outlines: ReturnType<typeof outlinesSchema> | undefined;
 
 /** The scene worker as the run calls it: a still, an abort signal, and the proposed nouns. */
 export type SceneWorker = (
@@ -31,7 +37,7 @@ export interface OutlinedFrame {
   readonly frameId: string;
   readonly latencyMs: number;
   readonly leftOut: number;
-  readonly objects: z.infer<typeof Outlines>['objects'];
+  readonly objects: z.infer<ReturnType<typeof outlinesSchema>>['objects'];
 }
 
 export interface OutlineRun {
@@ -80,7 +86,8 @@ export async function outlineFrames(
   for (const frame of frames) {
     signal?.throwIfAborted();
     try {
-      const result = Outlines.parse(await worker(frame.jpeg, signal, nouns));
+      outlines ??= outlinesSchema();
+      const result = outlines.parse(await worker(frame.jpeg, signal, nouns));
       outlined.push({
         frameId: frame.frameId,
         latencyMs: result.latencyMs,
@@ -93,4 +100,48 @@ export async function outlineFrames(
     }
   }
   return { nouns, outlined, failed, wallMs: performance.now() - started };
+}
+
+type Box = { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number };
+
+/** Intersection over union of two normalized boxes. */
+export function overlap(a: Box, b: Box): number {
+  const width = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+  const height = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+  if (width <= 0 || height <= 0) return 0;
+  const shared = width * height;
+  const area = (box: Box) => (box.x1 - box.x0) * (box.y1 - box.y0);
+  return shared / (area(a) + area(b) - shared);
+}
+
+const named = (label: string, noun: string) => {
+  const [a, b] = [label, noun].map((text) => text.trim().toLowerCase());
+  return (
+    a !== '' &&
+    b !== '' &&
+    ((a as string).includes(b as string) || (b as string).includes(a as string))
+  );
+};
+
+/**
+ * The outline on the same frame that traces an item: its box overlaps the item's box by at least
+ * half (intersection over union), an outline whose noun names the item first, then the largest
+ * overlap. Null when none qualifies, so the item keeps its box. Only the shape is taken; the item
+ * keeps the interpreter's own label.
+ */
+export function bestOutline<T extends { readonly label: string; readonly box: Box }>(
+  item: { readonly label: string; readonly box: Box },
+  objects: readonly T[],
+  taken: ReadonlySet<T> = new Set(),
+): { readonly object: T; readonly overlap: number } | null {
+  const candidates = objects
+    .filter((object) => !taken.has(object))
+    .map((object) => ({ object, overlap: overlap(item.box, object.box) }))
+    .filter((candidate) => candidate.overlap >= 0.5);
+  candidates.sort(
+    (a, b) =>
+      Number(named(item.label, b.object.label)) - Number(named(item.label, a.object.label)) ||
+      b.overlap - a.overlap,
+  );
+  return candidates[0] ?? null;
 }

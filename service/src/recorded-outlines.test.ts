@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { outlineFrames } from './recorded-outlines.ts';
+import { bestOutline, outlineFrames, overlap } from './recorded-outlines.ts';
 
 // Synthetic stills: one byte names the frame, and the fake worker names what it saw after it.
 const still = (marker: number) => Buffer.from([0xff, 0xd8, marker, 0xff, 0xd9]);
@@ -45,4 +45,21 @@ it('keeps every outline on the frame it was made from, and leaves a failed frame
     ],
   );
   assert.equal(run.outlined[1]?.latencyMs, 3);
+});
+
+it('takes the shape of the outline that overlaps the item by half or more, a matching noun first', () => {
+  const item = { label: 'Quad bike', box: { x0: 0.2, y0: 0.2, x1: 0.6, y1: 0.6 } };
+  const motorcycle = { label: 'motorcycle', box: { x0: 0.2, y0: 0.2, x1: 0.6, y1: 0.62 } };
+  const quad = { label: 'quad bike', box: { x0: 0.22, y0: 0.2, x1: 0.62, y1: 0.6 } };
+  const far = { label: 'quad bike', box: { x0: 0.7, y0: 0.7, x1: 0.9, y1: 0.9 } };
+  assert.equal(bestOutline(item, [motorcycle, quad, far])?.object, quad);
+  // Without a matching noun the largest overlap wins; an outline already used is not reused.
+  assert.equal(bestOutline(item, [motorcycle, far])?.object, motorcycle);
+  assert.equal(bestOutline(item, [motorcycle, quad], new Set([quad]))?.object, motorcycle);
+  // Under half an overlap, nothing qualifies and the item keeps its box.
+  assert.equal(
+    bestOutline(item, [far, { label: 'quad bike', box: { x0: 0.4, y0: 0.4, x1: 0.8, y1: 0.8 } }]),
+    null,
+  );
+  assert.ok(Math.abs(overlap(item.box, item.box) - 1) < 1e-9);
 });

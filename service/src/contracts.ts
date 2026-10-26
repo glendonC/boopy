@@ -255,8 +255,9 @@ export type Origin = z.infer<typeof Origin>;
 
 /** Spatial detector evidence is proposed independently of a person's item confirmation. */
 export const SpatialEvidence = z.object({
-  provider: z.literal('meta'),
-  model: z.literal('sam-3.1'),
+  /** Hosted SAM, or the local outline pass over a recorded frame. */
+  provider: z.enum(['meta', 'local']),
+  model: z.string().min(1).max(100),
   concept: z.string().min(1).max(120),
   latencyMs: z.number().nonnegative(),
   confidence: Unit.nullable(),
@@ -265,6 +266,10 @@ export const SpatialEvidence = z.object({
   frameSha256: z.string(),
   utteranceId: z.string(),
   maskSha256: z.string().optional(),
+  /** Set when the shape came from the recording's own outline pass on this exact frame. */
+  from: z.literal('recorded-outline').optional(),
+  /** How much the outline's box overlapped the item's box (intersection over union). */
+  overlap: Unit.optional(),
 });
 export type SpatialEvidence = z.infer<typeof SpatialEvidence>;
 
