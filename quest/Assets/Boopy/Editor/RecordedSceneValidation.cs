@@ -49,6 +49,7 @@ namespace Boopy.Quest.Editor
                 ScriptCoverage.Install();
                 SynchronizationContext.SetSynchronizationContext(null);
                 using (var live = new Fixture()) ValidateLiveStaysInTheRoom(live);
+                ValidateController();
                 using var f = new Fixture();
                 ValidateScene(f);
                 Debug.Log("Boopy recorded scene validation passed (synthetic still and transport; no camera, microphone or device).");
@@ -62,6 +63,28 @@ namespace Boopy.Quest.Editor
             finally { SynchronizationContext.SetSynchronizationContext(context); }
         }
 
+        // With a Touch controller held the headset tracks no hand: its trigger is the pinch, held to talk, and the ray goes
+        // where the controller points. Without focus, or with neither a hand nor a held controller, nothing pinches.
+        private static void ValidateController()
+        {
+            var eyes = new GameObject("Controller check eyes");
+            try
+            {
+                var hand = new HandInput(true, null, null);
+                var pose = new Vector3(.2f, -.3f, .3f); var forward = new Vector3(0f, .2f, 1f);
+                HandInput.Controller Pull(float trigger) => new HandInput.Controller(true, trigger, pose, forward);
+                Require(hand.Update(eyes.transform, 0f, true, Pull(1f)) == PinchEvent.Began && hand.RayActive
+                    && Vector3.Distance(hand.Ray.origin, pose) < 1e-5f && Vector3.Angle(hand.Ray.direction, forward) < .01f,
+                    "A held controller's trigger does not begin a pinch along the controller.");
+                Require(hand.Update(eyes.transform, .5f, true, Pull(1f)) == PinchEvent.Holding, "A held trigger does not talk.");
+                Require(hand.Update(eyes.transform, .6f, true, Pull(0f)) == PinchEvent.Released, "Letting the trigger go does not end the talk.");
+                Require(hand.Update(eyes.transform, 1f, false, Pull(1f)) == PinchEvent.None, "A controller pinches without input focus.");
+                var idle = new HandInput(false, null, null);
+                Require(idle.Update(eyes.transform, 0f, true) == PinchEvent.None && !idle.RayActive, "Nothing is held, yet something pinches.");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(eyes); }
+        }
+
         private static void ValidateScene(Fixture f)
         {
             // The Mac shows a still: the headset reads it, checks its digest, and shows it as a picture ahead.
@@ -69,12 +92,30 @@ namespace Boopy.Quest.Editor
             f.ReadScene();
             Require(f.Picture.Showing && f.Picture.Scene!.FrameId == FrameA, "The recorded still the Mac shows is not shown.");
             var plane = f.Picture.Plane;
-            Require(Vector3.Distance(Unity(plane.Center), new Vector3(0f, -RecordedPicture.Drop, RecordedPicture.Distance)) < .001f,
-                "The picture is not ahead of the person, a little below the eyes: " + Unity(plane.Center));
+            Require(Vector3.Distance(Unity(plane.Center), new Vector3(0f, 0f, RecordedPicture.Distance)) < .001f,
+                "The picture is not ahead of the person at eye level: " + Unity(plane.Center));
             Require(Mathf.Abs(plane.Width / plane.Height - (float)Width / Height) < .001f, "The picture lost its still's aspect.");
-            Require(plane.Width <= RecordedPicture.MaxWidth + .001f && plane.Height <= RecordedPicture.MaxHeight + .001f, "The picture is larger than its box.");
-            // No words on or under the picture; a photo has no player bar.
-            Require(f.Picture.GetComponentsInChildren<TextMeshPro>(true).Length == 0, "Words sit on the recorded picture.");
+            // It fills the view as the room would: taller from the eyes than the headset's view (about 96 degrees), with the
+            // room covered around it in every direction and the cover drawn before the picture.
+            var pictureTall = 2f * Mathf.Atan(plane.Height / 2f / RecordedPicture.Distance) * Mathf.Rad2Deg;
+            Require(pictureTall >= 96f, $"The picture does not fill the view from top to bottom: {pictureTall:0.0} degrees tall.");
+            var renderers = f.Picture.GetComponentsInChildren<MeshRenderer>(true);
+            var cover = renderers.Single(renderer => renderer.name == "Room cover");
+            var face = renderers.Single(renderer => renderer.name == "Recorded picture");
+            Require(cover.gameObject.activeInHierarchy && cover.enabled && cover.bounds.Contains(f.Eyes.position)
+                && new[] { plane.At(0f, 0f), plane.At(1f, 0f), plane.At(0f, 1f), plane.At(1f, 1f) }.All(corner => cover.bounds.Contains(Unity(corner)))
+                && cover.sortingOrder < face.sortingOrder, "The room is not covered around the recording.");
+            // No words on the picture: a photo's only cue is the one word "Recorded", in the lower-left of the view, and it
+            // stays there when the head turns. It has no player bar.
+            var marks = f.Picture.GetComponentsInChildren<TextMeshPro>(true).Where(text => text.gameObject.activeInHierarchy).ToArray();
+            Require(marks.Length == 1 && marks[0].text == RecordedPicture.Mark && InCorner(f, marks[0].transform.position),
+                "A photo does not show only its Recorded mark in the corner of the view.");
+            var rest = f.Eyes.rotation;
+            f.Eyes.rotation = Quaternion.Euler(-10f, 30f, 0f) * rest;
+            f.Picture.Follow(f.Eyes, null, float.PositiveInfinity);
+            Require(InCorner(f, marks[0].transform.position), "The Recorded mark does not stay in view when the head turns.");
+            f.Eyes.rotation = rest;
+            f.Picture.Follow(f.Eyes, null, float.PositiveInfinity);
             Require(f.Picture.Held == null && Bars(f).All(bar => !bar.gameObject.activeInHierarchy), "A photo shows a player bar.");
             NeverNow(f, "with the picture shown");
 
@@ -168,29 +209,27 @@ namespace Boopy.Quest.Editor
             Require(Overlays(f) == 0 && f.Scene.GetComponentsInChildren<Chip>(true).All(candidate => !candidate.gameObject.activeInHierarchy)
                 && f.Scene.GetComponentsInChildren<WordBlock>(true).All(candidate => !candidate.gameObject.activeInHierarchy),
                 "The old still's outline, chip or word stays on the new still.");
-            // A clip's still has a player's thin bar along the picture's bottom edge, its width, filled to where the still is in
-            // the clip, with the play triangle of a stopped player under its left end; never the Pause bars, never words.
+            // A clip's cue is a player's thin bar in the lower-left of the view, filled to where the still is in the clip, with
+            // the play triangle of a stopped player just left of it; never the Pause bars, never words.
             f.Mac.Scene = SceneJson(FrameA, f.StillA, kind: "video", at: 4.2f, duration: 12.232f);
             f.ReadScene();
             Require(f.Picture.Scene!.Kind == "video" && f.Picture.Held is float held && Mathf.Abs(held - 4.2f / 12.232f) < .001f, "A clip's still does not show where it is held.");
             var track = Bars(f).Single(bar => bar.name == "Player track"); var played = Bars(f).Single(bar => bar.name == "Player played");
-            var start = ImageOf(f.Picture.Plane, f.Picture.transform.TransformPoint(track.GetPosition(0)));
-            var end = ImageOf(f.Picture.Plane, f.Picture.transform.TransformPoint(track.GetPosition(1)));
-            var reached = ImageOf(f.Picture.Plane, f.Picture.transform.TransformPoint(played.GetPosition(1)));
-            Require(track.gameObject.activeInHierarchy && played.gameObject.activeInHierarchy && Mathf.Abs(start.x) < .001f && Mathf.Abs(end.x - 1f) < .001f
-                && start.y > 1f && start.y < 1.02f && Mathf.Abs(reached.x - 4.2f / 12.232f) < .002f,
-                $"The player bar is not the picture's width along its bottom edge, or not filled to the held still: {start}, {end}, {reached}.");
-            // The play triangle of a stopped player, about 1.5 degrees tall, just left of the bar, outside the picture's corner,
-            // centered on the bar (DESIGN): never the Pause bars.
+            var start = track.transform.TransformPoint(track.GetPosition(0)); var end = track.transform.TransformPoint(track.GetPosition(1));
+            var along = Vector3.Distance(start, played.transform.TransformPoint(played.GetPosition(1))) / Vector3.Distance(start, end);
+            Require(track.gameObject.activeInHierarchy && played.gameObject.activeInHierarchy && InCorner(f, (start + end) / 2f)
+                && Mathf.Abs(along - 4.2f / 12.232f) < .002f,
+                $"The player bar is not in the corner of the view, or not filled to the held still: {along:0.000}.");
+            // The play triangle of a stopped player, about 1.5 degrees tall, just left of the bar, centered on it (DESIGN).
             var triangle = f.Picture.GetComponentsInChildren<MeshRenderer>(true).Single(renderer => renderer.name == "Play triangle");
             var bounds = triangle.bounds;
-            var at = ImageOf(f.Picture.Plane, bounds.center);
             var tall = 2f * Mathf.Atan(bounds.size.y / 2f / Vector3.Distance(f.Eyes.position, bounds.center)) * Mathf.Rad2Deg;
-            Require(triangle.gameObject.activeInHierarchy && at.x < 0f && Mathf.Abs(at.y - start.y) < .01f && tall > 1.3f && tall < 1.7f
-                && ImageOf(f.Picture.Plane, bounds.max).x < start.x,
-                $"A held clip's play triangle is not 1.5 degrees tall just left of the bar: at {at}, {tall:0.00} degrees.");
+            var tip = triangle.transform.localPosition.x + triangle.transform.localScale.x / 2f;
+            Require(triangle.gameObject.activeInHierarchy && tip < track.GetPosition(0).x && Mathf.Abs(triangle.transform.localPosition.y - track.GetPosition(0).y) < .001f
+                && tall > 1.3f && tall < 1.7f,
+                $"A held clip's play triangle is not 1.5 degrees tall just left of the bar: {tall:0.00} degrees.");
             Require(f.Picture.GetComponentsInChildren<SpatialActionIcon>(true).Length == 0, "The held clip shows a control glyph.");
-            Require(f.Picture.GetComponentsInChildren<TextMeshPro>(true).Length == 0, "Words sit on the clip's picture.");
+            Require(f.Picture.GetComponentsInChildren<TextMeshPro>(true).All(text => !text.gameObject.activeInHierarchy), "Words show with the clip.");
 
             // No scene takes the picture away, and the live room scene may come back.
             f.Mac.Scene = "{\"scene\":null}";
@@ -494,6 +533,14 @@ namespace Boopy.Quest.Editor
             var shown = f.Scene.GetComponentsInChildren<GroundedOverlay>(true).Where(overlay => overlay.gameObject.activeInHierarchy).ToArray();
             Require(shown.Length == 1, "Expected the reply's one outline, found " + shown.Length + ".");
             return shown[0];
+        }
+
+        // Whether a point is in the lower-left of the view: left of and below where the eyes look, inside the headset's view.
+        private static bool InCorner(Fixture f, Vector3 point)
+        {
+            var local = f.Eyes.InverseTransformPoint(point);
+            var off = Vector3.Angle(Vector3.forward, local);
+            return local.x < 0f && local.y < 0f && off > 15f && off < 40f;
         }
 
         private static LineRenderer[] Bars(Fixture f) => f.Picture.GetComponentsInChildren<LineRenderer>(true).Where(line => line.name.StartsWith("Player", StringComparison.Ordinal)).ToArray();

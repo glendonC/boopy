@@ -131,8 +131,8 @@ namespace Boopy.Quest.Editor
             Physics.SyncTransforms();
         }
 
-        // What each frame must show, checked here because QUEST never opens a still of the owner's footage: the frame's word,
-        // and the console clear of the picture as seen from the eyes. Counts and flags only go to the log.
+        // What each frame must show, checked here because QUEST never opens a still of the owner's footage: the frame's word.
+        // Counts and flags only go to the log.
         private static void Expect(Fixture f, string name, Func<WordBlock, bool>? shows)
         {
             Hold(f);
@@ -141,11 +141,6 @@ namespace Boopy.Quest.Editor
             if (shows != null && (shown == null || !shows(shown)))
                 throw new InvalidOperationException($"Frame {name} does not show what it should (word {(shown != null ? "present" : "missing")}, "
                     + $"brightness {shown?.Brightness:0.00}, remembers {shown?.Remembers}, reaction {f.Console.Reaction ?? "none"}).");
-            var plane = f.Picture.Plane;
-            var edge = f.Eyes.InverseTransformPoint(new Vector3(plane.At(1f, .5f).X, plane.At(1f, .5f).Y, plane.At(1f, .5f).Z));
-            var console = f.Eyes.InverseTransformPoint(f.Console.transform.position) - Vector3.right * (f.Console.LayoutSize.x / 2f);
-            if (Mathf.Atan2(console.x, console.z) <= Mathf.Atan2(edge.x, edge.z))
-                throw new InvalidOperationException($"Frame {name}: the console covers the picture.");
             Debug.Log(shown == null ? $"Boopy recorded look frame {name}: no word (no subject grounded)."
                 : $"Boopy recorded look frame {name}: ink {(shown.Ink == WordBlock.Graphite ? "graphite" : "frost")}, scrim {shown.Scrimmed}, remembers {shown.Remembers}, reaction {f.Console.Reaction ?? "none"}.");
         }

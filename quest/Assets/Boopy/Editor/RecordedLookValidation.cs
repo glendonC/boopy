@@ -58,14 +58,14 @@ namespace Boopy.Quest.Editor
             f.ReadScene();
             var plane = f.Picture.Plane;
             Look(f, plane.At(.42f, .63f));
-            // A turn on the picture docks the console just outside the picture's right edge, never over the picture.
+            // The recording fills the view as the room would: a turn on it puts the console at its usual home, in view and
+            // in front of the picture.
             Invoke(f.App, "OpenTurn");
             var place = f.Console.Destination;
-            var edge = f.Eyes.InverseTransformPoint(Unity(plane.At(1f, .63f)));
-            var left = f.Eyes.InverseTransformPoint(place) - f.Eyes.right * (f.Console.LayoutSize.x / 2f);
-            var beyond = Mathf.Atan2(left.x, left.z) - Mathf.Atan2(edge.x, edge.z);
-            Require(beyond * Mathf.Rad2Deg > 1f && Mathf.Abs(Vector3.Distance(f.Eyes.position, place) - 1f) < .15f,
-                $"The console is not docked just outside the picture's right edge: {beyond * Mathf.Rad2Deg:0.0} degrees beyond it.");
+            var off = Vector3.Angle(f.Eyes.forward, place - f.Eyes.position);
+            var away = Vector3.Distance(f.Eyes.position, place);
+            Require(off < 40f && away < RecordedPicture.Distance - 1f,
+                $"The console is not in view in front of the recording: {off:0.0} degrees off the eyes, {away:0.00} m away.");
             Invoke(f.App, "CloseTurn");
             Invoke(f.App, "Capture", new object?[] { null });
             f.Send(f.Reply("box"));

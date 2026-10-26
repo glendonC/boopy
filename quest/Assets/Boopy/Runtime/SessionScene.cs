@@ -130,7 +130,7 @@ namespace Boopy.Quest
         /// A turn opens at the pinch: the layout frame is taken now, and the console goes to its home in it, or the nearest
         /// spot clear of the objects shown, by fade if it moves. Until the turn closes only the reply's own objects move it.
         /// </summary>
-        public void OpenTurn(ContextConsole controls, Vector3? booped = null)
+        public void OpenTurn(ContextConsole controls)
         {
             console = controls;
             if (head == null) return;
@@ -139,29 +139,13 @@ namespace Boopy.Quest
             if (renderedView != null) ProtectObjects(renderedView);
             turnOpen = true;
             ConsolePlaced = true;
-            var place = booped is Vector3 point && picture != null && picture.Showing ? BesidePicture(head, controls, picture.Plane, point) : HomeFor(head, controls);
+            // A recorded scene fills the view as the room would, so its turn takes the same home as a turn in the room.
+            var place = HomeFor(head, controls);
             if (!FollowFootprintClear(controls, place))
                 foreach (var bounds in new[] { ViewBounds, Expanded() })
                     if (TryPlaceElement(controls.LayoutSize, ConsoleHome, new List<LabelRect>(), bounds, out var spot, out _)
                         && FollowFootprintClear(controls, ConsoleAnchor(spot))) { place = ConsoleAnchor(spot); break; }
             controls.Relocate(place);
-        }
-
-        /// <summary>
-        /// A turn about a recorded picture docks the console just outside the picture's right edge (DESIGN): its near edge
-        /// about 2 degrees right of the frame as seen from the eyes, its top level with the booped point, at its 1 m distance,
-        /// so it never covers the picture.
-        /// </summary>
-        public static Vector3 BesidePicture(Transform head, ContextConsole controls, PicturePlane plane, Vector3 booped)
-        {
-            var center = new Vector3(plane.Center.X, plane.Center.Y, plane.Center.Z);
-            var right = new Vector3(plane.Right.X, plane.Right.Y, plane.Right.Z); var up = new Vector3(plane.Up.X, plane.Up.Y, plane.Up.Z);
-            var edge = center + right * (plane.Width / 2f) + up * Vector3.Dot(booped - center, up);
-            var half = controls.LayoutSize * .5f;
-            var turn = 2f + Mathf.Atan(half.x / LabelDistance) * Mathf.Rad2Deg;
-            var toward = Quaternion.AngleAxis(turn, Vector3.up) * (edge - head.position).normalized;
-            var place = head.position + toward * LabelDistance - Vector3.up * half.y;
-            return Anchor(head, place, controls.LayoutCenterOffset);
         }
 
         /// <summary>The turn closes once its answer has shown: from then on the console stays where it is in the room.</summary>
@@ -456,9 +440,11 @@ namespace Boopy.Quest
             var w = word.Size.x / plane.Width; var h = word.Size.y / plane.Height;
             var gap = SpatialTheme.Gap * Vector3.Distance(eyes, center) / plane.Height;
             var middle = (x0 + x1) / 2f; var level = (y0 + y1) / 2f;
-            // Above the subject first, climbing a gap at a time; then below, right and left of it.
+            // Above the subject first, climbing toward the picture's top a gap at a time (a third of the block at least, so a
+            // tall picture stays a few dozen spots); then below, right and left of it.
             var spots = new List<N.Vector2>();
-            for (var step = 0; step < 16; step++) spots.Add(new N.Vector2(middle, y0 - gap - h / 2f - step * gap));
+            var climb = Mathf.Max(gap, h / 3f);
+            for (var y = y0 - gap - h / 2f; y - h / 2f >= 0f; y -= climb) spots.Add(new N.Vector2(middle, y));
             spots.Add(new N.Vector2(middle, y1 + gap + h / 2f));
             spots.Add(new N.Vector2(x1 + gap + w / 2f, level)); spots.Add(new N.Vector2(x0 - gap - w / 2f, level));
             var inside = spots.Where(at => at.X - w / 2f >= 0f && at.X + w / 2f <= 1f && at.Y - h / 2f >= 0f && at.Y + h / 2f <= 1f).ToList();

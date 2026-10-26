@@ -1,30 +1,45 @@
 #nullable enable
 using Boopy.Client;
+using TMPro;
 using UnityEngine;
 using N = System.Numerics;
 
 namespace Boopy.Quest
 {
     /// <summary>
-    /// The recorded scene the Mac shows, as one flat picture in the room: world-fixed, placed once in front of the person
-    /// when it first appears, upright and facing them. A 2D source has no depth, so the picture's plane is where its
-    /// subjects lie. No words sit on it. A clip's still has a player's thin bar along its bottom edge, its width, filled to
-    /// where the still is in the clip, with the play triangle just left of the bar, as any player shows a stopped video (two
-    /// bars would be the privacy Pause). A photo has nothing. Its still stays in memory only, never on the headset's storage;
-    /// a coarse grid of its luminance stays with it so words on it can choose their ink.
+    /// The recorded scene the Mac shows, filling the person's view as the room would: world-fixed, placed once in front of
+    /// the person at eye level when it first appears, upright and facing them, tall enough to cover the headset's view
+    /// from top to bottom and as wide as its own aspect makes it, with the room hidden behind it in every direction, so
+    /// the person looks around the recording as if they were there. A 2D source has no depth, so the picture's plane is
+    /// where its subjects lie. No words sit on it. Because it fills the view it is never mistaken for the room as it is now:
+    /// one small media cue stays in the lower-left of the view the whole time (the upper-left when the subject's word is
+    /// there). For a clip it is a player's thin bar filled to where the still is in the clip, with the play triangle just
+    /// left of it, as any player shows a stopped video (two bars would be the privacy Pause); for a photo it is the one
+    /// word "Recorded" in the same ink. Its still stays in memory only, never on the headset's storage; a coarse grid of its
+    /// luminance stays with it so words on it can choose their ink.
     /// </summary>
     public sealed class RecordedPicture : MonoBehaviour
     {
-        // Ahead, a little below the eyes, and at most this wide and tall: the still keeps its own aspect inside the box.
-        public const float Distance = 1.8f, Drop = 0.15f, MaxWidth = 1.6f, MaxHeight = 1.0f;
+        // Ahead at eye level, past Boopy and its line, and this many degrees tall from the eyes (the headset shows about 96):
+        // the still keeps its own aspect, so a portrait still fits the height and a wide one runs past the sides.
+        public const float Distance = 3f, ViewDegrees = 100f;
+        public static float Height => 2f * Distance * Mathf.Tan(ViewDegrees * Mathf.Deg2Rad / 2f);
+        // The room cover's half size: past the picture's corners, which are the farthest part of it from the eyes.
+        private const float CoverHalf = 8f;
+        // The media cue: this far from the eyes, this far left of and below where they look, this long (a clip's bar) and
+        // this tall (a photo's word); it moves to the upper-left when the subject's word is within AvoidDegrees of it.
+        public const float CueDistance = 1.1f, CueYaw = 22f, CuePitch = 20f, CueBarDegrees = 8f, MarkDegrees = 1f, AvoidDegrees = 15f;
+        public const string Mark = "Recorded";
 
         private Transform? frame;
         private MeshRenderer? surface;
         // The still's relative luminance on a coarse grid, top row first, kept so words on it can choose their ink.
         private float[] luminance = System.Array.Empty<float>();
         private int columns, rows;
+        private Transform? cue;
         private LineRenderer? track, played;
         private MeshRenderer? stopped;
+        private TextMeshPro? mark;
         private Texture2D? texture;
         private byte[]? still;
 
@@ -61,8 +76,20 @@ namespace Boopy.Quest
             picture.surface.sortingOrder = -10;
             picture.surface.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             picture.surface.receiveShadows = false;
-            // A clip's player bar: the track, the part played up to the held still, and the play triangle of a stopped player.
-            var triangle = new GameObject("Play triangle"); triangle.transform.SetParent(go.transform, false);
+            // The room cover: a dark box around the eyes, drawn first, so the passthrough room never shows around the still.
+            var cover = new GameObject("Room cover");
+            cover.transform.SetParent(go.transform, false);
+            cover.transform.localPosition = new Vector3(0f, 0f, -Distance);
+            cover.transform.localScale = Vector3.one * (2f * CoverHalf);
+            cover.AddComponent<MeshFilter>().sharedMesh = Box();
+            var covering = cover.AddComponent<MeshRenderer>(); covering.sharedMaterial = Visuals.Solid; covering.sortingOrder = -20;
+            covering.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off; covering.receiveShadows = false;
+            var black = new MaterialPropertyBlock(); black.SetColor("_Color", Color.black); covering.SetPropertyBlock(black);
+            // The media cue, which follows the view: a clip's player bar (the track, the part played up to the held still, and
+            // the play triangle of a stopped player) or a photo's one word.
+            var cue = new GameObject("Media cue"); cue.transform.SetParent(go.transform, false);
+            picture.cue = cue.transform;
+            var triangle = new GameObject("Play triangle"); triangle.transform.SetParent(cue.transform, false);
             var mesh = new Mesh { name = "Play triangle", vertices = new[] { new Vector3(-.5f, -.5f, 0f), new Vector3(-.5f, .5f, 0f), new Vector3(.5f, 0f, 0f) },
                 triangles = new[] { 0, 1, 2 } };
             triangle.AddComponent<MeshFilter>().sharedMesh = mesh;
@@ -70,7 +97,13 @@ namespace Boopy.Quest
             var frost = new MaterialPropertyBlock(); frost.SetColor("_Color", WordBlock.Frost); picture.stopped.SetPropertyBlock(frost);
             picture.track = picture.Bar("Player track", new Color(SpatialTheme.Smoke.r, SpatialTheme.Smoke.g, SpatialTheme.Smoke.b, .45f), 3);
             picture.played = picture.Bar("Player played", SpatialTheme.TextColor, 4);
-            picture.ShowBar(null, 1f, 1f);
+            picture.mark = SpatialTheme.Text(cue.transform, "Recorded mark", SpatialTheme.Utility, SpatialTheme.TextColor);
+            picture.mark.text = Mark;
+            picture.mark.alignment = TextAlignmentOptions.Center;
+            picture.mark.textWrappingMode = TextWrappingModes.NoWrap;
+            picture.mark.rectTransform.sizeDelta = new Vector2(4f, .1f);
+            picture.mark.transform.localScale = Vector3.one * (Em(MarkDegrees, CueDistance) / Mathf.Max(1e-5f, picture.mark.fontSize / 10f));
+            picture.ShowBar(null);
             go.SetActive(false);
             return picture;
         }
@@ -96,19 +129,36 @@ namespace Boopy.Quest
             texture = decoded; still = jpeg; Scene = scene;
             surface.sharedMaterial.mainTexture = texture;
             var aspect = (float)scene.Width / scene.Height;
-            var width = Mathf.Min(MaxWidth, MaxHeight * aspect);
-            var height = width / aspect;
+            var height = Height;
+            var width = height * aspect;
             frame!.localScale = new Vector3(width, height, 1f);
-            ShowBar(RecordedScenes.Progress(scene), width, height);
+            ShowBar(RecordedScenes.Progress(scene));
             if (first)
             {
                 var forward = Vector3.ProjectOnPlane(head.forward, Vector3.up);
                 if (forward.sqrMagnitude < 1e-4f) forward = Vector3.ProjectOnPlane(head.up, Vector3.up);
                 forward.Normalize();
-                transform.SetPositionAndRotation(head.position + forward * Distance + Vector3.down * Drop, Quaternion.LookRotation(forward, Vector3.up));
+                transform.SetPositionAndRotation(head.position + forward * Distance, Quaternion.LookRotation(forward, Vector3.up));
+                Follow(head, null, float.PositiveInfinity);
             }
             gameObject.SetActive(true);
             return true;
+        }
+
+        /// <summary>
+        /// Keeps the media cue in the lower-left of the view, or the upper-left when <paramref name="avoid"/> (the subject's
+        /// word) is near that corner; it eases there over <paramref name="elapsed"/> seconds, and infinity puts it there.
+        /// </summary>
+        public void Follow(Transform head, Vector3? avoid, float elapsed)
+        {
+            if (cue == null || float.IsNaN(elapsed)) return;
+            var toward = head.rotation * Quaternion.Euler(CuePitch, -CueYaw, 0f) * Vector3.forward;
+            if (avoid is Vector3 word && Vector3.Angle(toward, word - head.position) < AvoidDegrees)
+                toward = head.rotation * Quaternion.Euler(-CuePitch, -CueYaw, 0f) * Vector3.forward;
+            var place = head.position + toward * CueDistance;
+            var facing = Quaternion.LookRotation(toward, head.up);
+            var ease = float.IsPositiveInfinity(elapsed) ? 1f : 1f - Mathf.Exp(-12f * Mathf.Max(0f, elapsed));
+            cue.SetPositionAndRotation(Vector3.Lerp(cue.position, place, ease), Quaternion.Slerp(cue.rotation, facing, ease));
         }
 
         public void Hide()
@@ -122,8 +172,8 @@ namespace Boopy.Quest
         private LineRenderer Bar(string name, Color color, int order)
         {
             var host = new GameObject(name);
-            host.transform.SetParent(transform, false);
-            var line = Visuals.Line(host, BarWidth * Distance, false, Visuals.Solid);
+            host.transform.SetParent(cue, false);
+            var line = Visuals.Line(host, BarWidth * CueDistance, false, Visuals.Solid);
             line.useWorldSpace = false; line.positionCount = 2; line.sortingOrder = order; line.numCapVertices = 0;
             Visuals.Tint(line, color);
             return line;
@@ -164,24 +214,41 @@ namespace Boopy.Quest
             return brightest - darkest;
         }
 
-        // The bar runs the picture's width just under its bottom edge. The play triangle of a stopped player, about 1.5
-        // degrees tall at the picture's distance, sits just left of the bar's left end, outside the picture's corner and
+        // The play triangle of a stopped player, about 1.5 degrees tall from the eyes, sits just left of the bar's left end,
         // centered on the bar (DESIGN, on Chrome's player in one line); it is not a control.
-        public const float Triangle = .047f;
+        public const float TriangleDegrees = 1.5f;
         private const float BarWidth = .003f;
-        private void ShowBar(float? held, float width, float height)
+        private void ShowBar(float? held)
         {
             Held = held;
-            if (track == null || played == null || stopped == null) return;
+            if (track == null || played == null || stopped == null || mark == null) return;
             var shown = held != null;
             track.gameObject.SetActive(shown); played.gameObject.SetActive(shown); stopped.gameObject.SetActive(shown);
+            // A photo's cue is its one word; a clip's is its bar.
+            mark.gameObject.SetActive(!shown);
             if (held is not float along) return;
-            var y = -height / 2f - BarWidth * Distance;
-            track.SetPosition(0, new Vector3(-width / 2f, y, -.003f)); track.SetPosition(1, new Vector3(width / 2f, y, -.003f));
-            played.SetPosition(0, new Vector3(-width / 2f, y, -.004f)); played.SetPosition(1, new Vector3(-width / 2f + width * along, y, -.004f));
+            var length = Em(CueBarDegrees, CueDistance);
+            track.SetPosition(0, new Vector3(-length / 2f, 0f, 0f)); track.SetPosition(1, new Vector3(length / 2f, 0f, 0f));
+            played.SetPosition(0, new Vector3(-length / 2f, 0f, -.001f)); played.SetPosition(1, new Vector3(-length / 2f + length * along, 0f, -.001f));
             // As tall as it is long, pointing right; its point ends one gap short of the bar.
-            stopped.transform.localScale = new Vector3(Triangle * .87f, Triangle, 1f);
-            stopped.transform.localPosition = new Vector3(-width / 2f - SpatialTheme.Gap * Distance - Triangle * .87f / 2f, y, -.003f);
+            var tall = Em(TriangleDegrees, CueDistance);
+            stopped.transform.localScale = new Vector3(tall * .87f, tall, 1f);
+            stopped.transform.localPosition = new Vector3(-length / 2f - SpatialTheme.Gap * CueDistance - tall * .87f / 2f, 0f, 0f);
+        }
+
+        private static float Em(float degrees, float distance) => 2f * distance * Mathf.Tan(degrees * Mathf.Deg2Rad / 2f);
+
+        // A unit box, seen from inside (the material draws both faces).
+        private static Mesh Box()
+        {
+            var corners = new Vector3[8];
+            for (var i = 0; i < 8; i++) corners[i] = new Vector3((i & 1) - .5f, ((i >> 1) & 1) - .5f, ((i >> 2) & 1) - .5f);
+            return new Mesh
+            {
+                name = "Room cover",
+                vertices = corners,
+                triangles = new[] { 0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3 },
+            };
         }
 
         /// <summary>Where a ray meets the picture: the room point and the still's image point (0 to 1, origin top-left).</summary>

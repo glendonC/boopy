@@ -67,12 +67,16 @@ returns to the conversation's own line and follow-up questions. Without a task, 
 conversation looks as before.
 
 The Mac can show a recorded scene: one still of the person's own recording, chosen on the Mac. The
-headset shows it as a large flat picture ahead and a little below the eyes, fixed in the room, and
-takes it away when the Mac clears it. No words sit on it: a still from a clip has a player's thin
-bar along its bottom edge, stopped where the still is, with the play triangle; a photo has nothing.
+headset shows it filling the view as if the person were there: ahead at eye level, taller than the
+headset's view, fixed where it first appeared so the person still aims by looking, with the room
+hidden behind it in every direction, and takes it away when the Mac clears it. A portrait still
+fits the height, with dark on either side. No words sit on it, and it never passes for the room as
+it is now: one small cue stays in the lower-left of the view the whole time (the upper-left when the
+subject's word is there). For a clip it is a player's thin bar, stopped where the still is, with the
+play triangle; for a photo it is the word "Recorded".
 While it shows, every Talk turn is about that still: the turn names the still and the point the
 eyes were on, never sends a frame of the room, and the room's live outlines are off. Boopy's line
-and the controls sit just right of the picture. The reply's outline lies on the picture, with a
+and the controls sit where they sit in the room, in front of the recording. The reply's outline lies on the picture, with a
 dark edge so it reads on bright sand and sky, and the subject's word sits on the picture right above
 it, with no box: in a practice task the outside word, Boopy's guess under it, and where the word
 came from. When the person answers, Boopy shows what it heard: the word lights up once and Boopy
