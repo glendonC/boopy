@@ -1300,6 +1300,34 @@ describe('practice under a goal', () => {
     return { journal, tasks };
   }
 
+  it('rebuilds the session projection from a journal holding the goal and the practice events', () => {
+    const { journal, tasks } = practising();
+    tasks.answer(answer('evt_answer_restart', 1), AT, follow('not-heard'));
+    tasks.recordStage(
+      {
+        stageId: 'stg_restart',
+        taskId: 'tsk_practice',
+        sessionId: SESSION,
+        table: 'practice_check',
+        outcome: 'passed',
+        phase: null,
+        practice: { tableRows: 0, journalRows: 1, restaged: true },
+        stageMs: 1,
+        elapsedMs: 2,
+      },
+      AT,
+    );
+    const types = new Set(journal.all().map((event) => event.type));
+    for (const type of [
+      'goal.set',
+      'task.reference-retrieved',
+      'task.answer-assessed',
+      'task.practice-staged',
+    ])
+      assert.ok(types.has(type as never), type);
+    assert.doesNotThrow(() => Projection.from(journal.all()));
+  });
+
   it('reads the latest goal the person set, and a null language turns practice off', () => {
     const tasks = store();
     assert.equal(tasks.goal(), null);

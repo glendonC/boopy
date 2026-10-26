@@ -188,15 +188,9 @@ export class Projection {
     if (event.type === 'scene.observed') return;
     // Recordings and the scene on show are their own projection (recorded-source.ts).
     if (event.type.startsWith('recorded.')) return;
-    // Task revisions are a separate projection. They must not create conversation facts.
-    if (
-      event.type === 'task.opened' ||
-      event.type === 'task.action-accepted' ||
-      event.type === 'task.action-rejected' ||
-      event.type === 'task.provider-accepted' ||
-      event.type === 'task.provider-rejected'
-    )
-      return;
+    // Tasks and the person's practice goal are separate projections. They must not create
+    // conversation facts.
+    if (event.type.startsWith('task.') || event.type === 'goal.set') return;
     const session = this.sessions.get(event.session);
     if (session === undefined) throw new Error(`Event ${event.id} names unknown session.`);
     switch (event.type) {
