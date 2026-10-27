@@ -72,6 +72,8 @@ export function practiceWords(input: {
     notHeard: `I didn't catch ${term} there. Try again?`,
     unclear: `I didn't hear any ${language} there. Try again?`,
     again: `Last time ${term} didn't come through. Want to try again?`,
+    heardBefore: `${opening}, I think. Last time I heard ${term}. Can you say it again?`,
+    heardBeforeUnsure: `${opening}? I'm not sure. Last time I heard ${term}. Can you say it again?`,
     noMatch: `I don't have a ${language} word for ${guess} yet.`,
     ambiguous: 'Not sure which word fits this.',
     notDisplayable: "I can't show that word's letters yet.",

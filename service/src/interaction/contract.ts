@@ -102,6 +102,11 @@ const Term = z.strictObject({
   reviewed: z.literal(false),
   /** This subject's term was not heard on the person's most recent attempt at it. */
   notHeardLastTime: z.boolean(),
+  /**
+   * This subject's term was heard on the person's most recent attempt at it. Always set on a new
+   * part; absent only on parts journaled before it existed, which read as false.
+   */
+  heardLastTime: z.boolean().optional(),
 });
 const AgentPresence = z.strictObject({
   type: z.literal('agent_presence'),

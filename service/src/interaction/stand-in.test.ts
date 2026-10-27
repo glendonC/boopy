@@ -250,6 +250,7 @@ describe('the stand-in under a practice goal', () => {
         via: 'zetaris-local',
         reviewed: false,
         notHeardLastTime: false,
+        heardLastTime: false,
       },
       {
         type: 'dialogue',
@@ -265,6 +266,32 @@ describe('the stand-in under a practice goal', () => {
     assert.deepEqual(practised.result.evidenceIds, ['int_4.photo', 'wikidata:Q7375.ko']);
     assert.equal(ProviderResult.safeParse(practised.result).success, true);
     assert.equal(practised.result.resultId, plan?.result.resultId);
+  });
+
+  it('says it heard the word last time when this subject was heard, sure or unsure', () => {
+    const heard = row({ attempts: 1, lastResult: 'heard', why: 'heard-before' });
+    const again = practise({ status: 'passed', rows: [heard] });
+    assert.equal(
+      line(again.result),
+      'Synthetic animal, I think. Last time I heard 합성어. Can you say it again?',
+    );
+    const marked = again.result.components.find((part) => part.type === 'term');
+    assert.equal(marked?.type === 'term' && marked.heardLastTime, true);
+    assert.equal(marked?.type === 'term' && marked.notHeardLastTime, false);
+    assert.ok(again.result.components.some((part) => part.type === 'voice_reply'));
+    assert.ok(plan);
+    for (const confidence of [null, 0.3]) {
+      const unsure = practiceResult(plan, {
+        language: 'ko',
+        languageName: 'Korean',
+        pick: { status: 'passed', rows: [heard] },
+        confidence,
+      });
+      assert.equal(
+        line(unsure.result),
+        "Synthetic animal? I'm not sure. Last time I heard 합성어. Can you say it again?",
+      );
+    }
   });
 
   it('asks again when this subject was not heard last time, and keeps other practice off the subject', () => {
@@ -424,6 +451,7 @@ describe('the stand-in under a practice goal', () => {
       );
       const term = correction.components.find((part) => part.type === 'term');
       assert.equal(term?.type === 'term' && term.notHeardLastTime, heard === 'not-heard');
+      assert.equal(term?.type === 'term' && term.heardLastTime, heard === 'heard');
       assert.doesNotMatch(JSON.stringify(correction), /있어요/);
     }
   });

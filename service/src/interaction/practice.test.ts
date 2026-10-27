@@ -39,6 +39,8 @@ test('the lines, filled in and kept within the display rules as they are', () =>
     notHeard: "I didn't catch 낙타 there. Try again?",
     unclear: "I didn't hear any Korean there. Try again?",
     again: "Last time 낙타 didn't come through. Want to try again?",
+    heardBefore: 'Camel, I think. Last time I heard 낙타. Can you say it again?',
+    heardBeforeUnsure: "Camel? I'm not sure. Last time I heard 낙타. Can you say it again?",
     noMatch: "I don't have a Korean word for camel yet.",
     ambiguous: 'Not sure which word fits this.',
     notDisplayable: "I can't show that word's letters yet.",

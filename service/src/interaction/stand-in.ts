@@ -210,6 +210,7 @@ export function practiceResult(
     guess,
     term: match?.term ?? '',
   });
+  const unsure = input.confidence === null || input.confidence < 0.5;
   if (reason !== 'term' || match === undefined || match.term === null) {
     const said = {
       'no-match': words.noMatch,
@@ -260,15 +261,21 @@ export function practiceResult(
         via: 'zetaris-local',
         reviewed: false,
         notHeardLastTime: match.why === 'not-heard-before',
+        heardLastTime: match.why === 'heard-before',
       },
       {
         type: 'dialogue',
+        // "Heard" is only what the recognizer heard on the last assessed attempt at this term.
         text:
           match.why === 'not-heard-before'
             ? words.again
-            : input.confidence === null || input.confidence < 0.5
-              ? words.unsure
-              : words.first,
+            : match.why === 'heard-before'
+              ? unsure
+                ? words.heardBeforeUnsure
+                : words.heardBefore
+              : unsure
+                ? words.unsure
+                : words.first,
         evidenceIds: [...new Set([...line.evidenceIds, cited])],
       },
       { type: 'voice_reply', prompt: ANSWER_PROMPT },
@@ -327,7 +334,13 @@ export function correctionResult(
     ...kept
       .filter((part) => part.type !== 'detail')
       .map((part) =>
-        part.type === 'term' ? { ...part, notHeardLastTime: input.heard === 'not-heard' } : part,
+        part.type === 'term'
+          ? {
+              ...part,
+              notHeardLastTime: input.heard === 'not-heard',
+              heardLastTime: input.heard === 'heard',
+            }
+          : part,
       ),
     { type: 'dialogue' as const, text, evidenceIds: [input.attemptEventId] },
     ...(asks(text) ? [{ type: 'voice_reply' as const, prompt: ANSWER_PROMPT }] : []),

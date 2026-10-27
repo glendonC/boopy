@@ -164,14 +164,18 @@ the Mac runs Zetaris with the practice account.
   reviewed and never called live.
 - The annotation keeps Boopy's guess. A `term` part carries the source's word: `text`,
   `language`, `gloss`, `sourceId` (`wikidata:Q…`), `revision`, `retrievedAt`, `license`,
-  `via: "zetaris-local"`, `reviewed: false` and `notHeardLastTime` (this subject's term was not
-  heard on the person's most recent attempt at it). A term shows only for exactly one item that
+  `via: "zetaris-local"`, `reviewed: false`, `notHeardLastTime` (this subject's term was not
+  heard on the person's most recent attempt at it) and `heardLastTime` (it was heard; absent on
+  parts journaled before it existed, which reads as false). A term shows only for exactly one item that
   matches the guess, with a label in the target language that the display rules take as it is. The
   line asks the person to say it, and a detail part says "Wikidata · Zetaris"; the revision, the
   retrieval time and that the label is not reviewed stay in the part, the journal and the trace.
   Earlier practice on another item appears only as a second detail line ("You tried <term>
   (<concept>) before."), never on the subject. The guess opens the line, and a model confidence that
-  is unknown or under 0.5 makes the line say Boopy is not sure.
+  is unknown or under 0.5 makes the line say Boopy is not sure. When the person's most recent
+  assessed attempt at the term was heard, the line says so: "Tent, I think. Last time I heard 천막.
+  Can you say it again?" ("Heard" means only that the recognizer heard the term; the transcript is
+  never quoted.)
 - Otherwise the subject and the guess stay and the line says plainly that there is no word, with no
   answer offered: no item in the word list, more than one, or a script the headset cannot show yet.
   Zetaris not answering in time and rows that do not match the import read the same on screen; the
