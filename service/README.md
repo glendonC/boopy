@@ -304,7 +304,9 @@ pnpm trace ses_ID                   # one session
 
 `pnpm task goal` and `pnpm trace` take `--data-dir`/`--port` and `--journal` like the other local
 commands, and default to `$BOOPY_DATA_DIR` or `~/.boopy`. The trace is read-only and prints no
-words the person said, no transcript, no OCR text, no path and no frame.
+words the person said, no transcript, no OCR text, no path and no frame. Each moment sent to your
+Grok Bot is a `send` line with its outcome and the Bot's run id, never the webhook URL or key; a
+task with no send that started a run says its stand-in was not sent to your AI.
 
 The practice table in Zetaris is a copy of the journal's practice records (ids, the item, the
 language, the result, the time). It lives in the Zetaris stack's own Docker volume under

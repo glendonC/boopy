@@ -228,3 +228,58 @@ test("Boopy's lines still show when the person said only the term or the guess",
   assert.match(text, /"Last time I didn't hear 합성어 from you\. Try it again\?"/);
   assert.doesNotMatch(text, /withheld/);
 });
+
+test('a task sent to the Grok Bot shows each send in order, and its act lines do not say not sent', () => {
+  const delivery = (id: string, type: string, data: Record<string, unknown>): TraceRow => ({
+    type,
+    session: 'ses_1',
+    actor: 'system',
+    at: '1970-01-01T00:00:05.000Z',
+    id,
+    data: { momentId: 'mom_1', taskId: 'tsk_1', ...data },
+  });
+  const sent = [
+    ...rows,
+    delivery('gbd_1_0', 'grokbot.delivery.started', {
+      attempt: 0,
+      runUuid: 'a8dd8516-0000-4000-8000-000000000000',
+    }),
+    delivery('gbd_1_1', 'grokbot.delivery.failed', { attempt: 1, status: 502 }),
+  ];
+  const lines = traceLines(sent, 'ses_1');
+  const sends = lines.filter((line) => line.startsWith('send '));
+  assert.deepEqual(sends, [
+    'send      moment to your Grok Bot (attempt 0): run started, run a8dd8516…',
+    'send      moment to your Grok Bot (attempt 1): failed, HTTP 502',
+  ]);
+  const acts = lines.filter((line) => line.startsWith('act '));
+  assert.ok(acts.length > 0);
+  for (const act of acts) {
+    assert.match(act, /Boopy's own stand-in:/);
+    assert.doesNotMatch(act, /not sent to your AI/);
+  }
+  assert.doesNotMatch(lines.join('\n'), /https?:|crsr_|whsec_|webhook/);
+});
+
+test('a task whose sends all failed keeps its not-sent wording, beside its failed send lines', () => {
+  const lines = traceLines(
+    [
+      ...rows,
+      {
+        type: 'grokbot.delivery.failed',
+        session: 'ses_1',
+        actor: 'system',
+        at: '1970-01-01T00:00:05.000Z',
+        id: 'gbd_1_0',
+        data: { momentId: 'mom_1', taskId: 'tsk_1', attempt: 0, status: null },
+      },
+    ],
+    'ses_1',
+  );
+  assert.deepEqual(
+    lines.filter((line) => line.startsWith('send ')),
+    ['send      moment to your Grok Bot (attempt 0): failed, no answer'],
+  );
+  for (const act of lines.filter((line) => line.startsWith('act ')))
+    assert.match(act, /not sent to your AI/);
+});

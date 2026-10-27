@@ -1,7 +1,8 @@
 /**
  * The reasoning trace of a session, read from the journal: what Boopy observed, the evidence it
  * proposed, what it retrieved (H-MEM over the journal's practice, one Zetaris query on this Mac),
- * what it decided, what it showed, and what changed after an answer. It prints ids, digests'
+ * what it decided, what it showed, each moment sent to the person's own Grok Bot, and what changed
+ * after an answer. It prints ids, digests'
  * first characters, Boopy's guess, the outside rows and Boopy's own lines. It never prints the
  * person's words, a transcript, OCR text, a file name or path, a frame or audio; a line of Boopy's
  * that contains the person's words is withheld.
@@ -72,6 +73,13 @@ export function traceLines(rows: readonly TraceRow[], sessionId: string): string
       ? '(withheld: it contains the person’s words)'
       : `"${value}"`;
   };
+  // A task whose moment started a run on the person's own Bot was sent; its send lines say where it
+  // went, so its act lines do not claim it stayed local. Failed sends reached nothing.
+  const linked = new Set(
+    events
+      .filter((row) => row.type === 'grokbot.delivery.started')
+      .map((row) => text(record(row.data).taskId)),
+  );
   const lines = [`Boopy trace for session ${sessionId}, from the journal on this Mac`];
   for (const row of events) {
     const data = record(row.data);
@@ -130,7 +138,7 @@ export function traceLines(rows: readonly TraceRow[], sessionId: string): string
       const line = parts.find((part) => part.type === 'dialogue');
       const term = parts.find((part) => part.type === 'term');
       lines.push(
-        `act       revision ${data.revision}, Boopy's own stand-in, not sent to your AI: ${shown(line?.text)}${
+        `act       revision ${data.revision}, Boopy's own stand-in${linked.has(text(data.taskId)) ? '' : ', not sent to your AI'}: ${shown(line?.text)}${
           term === undefined
             ? ''
             : `; term ${text(term.text)} (${text(term.language)}) from ${text(term.sourceId)}`
@@ -146,6 +154,18 @@ export function traceLines(rows: readonly TraceRow[], sessionId: string): string
     } else if (row.type === 'task.answer-assessed') {
       lines.push(
         `update    Boopy heard: ${text(data.result)} against ${text(data.term)} (${text(data.method)}, recognition uncertain)`,
+      );
+    } else if (row.type === 'grokbot.delivery.started' || row.type === 'grokbot.delivery.failed') {
+      // Only the outcome and the Bot's run id: the journal never holds the webhook URL or key.
+      const runUuid = text(data.runUuid);
+      lines.push(
+        `send      moment to your Grok Bot (attempt ${data.attempt}): ${
+          row.type === 'grokbot.delivery.started'
+            ? `run started, ${runUuid === null ? 'no run id' : `run ${short(runUuid)}`}`
+            : typeof data.status === 'number'
+              ? `failed, HTTP ${data.status}`
+              : 'failed, no answer'
+        }`,
       );
     } else if (row.type === 'task.practice-staged') {
       const staged = record(data.practice);
