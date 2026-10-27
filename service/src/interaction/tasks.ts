@@ -56,6 +56,7 @@ import {
   type TaskView,
   type UserAction,
 } from './contract.ts';
+import { observationSourceId } from './stand-in.ts';
 
 type Seen = {
   readonly hash: string;
@@ -117,6 +118,8 @@ export type PracticeRecord = {
   readonly at: string;
   /** The person marked the task's subject wrong, so its practice no longer counts. */
   readonly excluded: boolean;
+  /** The recording the task's frame came from; null for a live view. */
+  readonly recordingId: string | null;
 };
 
 /** What a practice task records after a spoken answer, computed from the view with the attempt. */
@@ -409,8 +412,12 @@ export class TaskStore {
     return this.#fold().tasks.get(taskId)?.practice ?? null;
   }
 
-  /** Every assessed answer, from the journal, oldest first. */
+  /**
+   * Every assessed answer, from the journal, oldest first. Each names the recording its frame came
+   * from, read from the observation at read time, so attempts journaled before this field count.
+   */
   practiceRecords(): PracticeRecord[] {
+    const recordings = this.#recordings();
     const records: PracticeRecord[] = [];
     for (const state of this.#fold().tasks.values())
       for (const { data, at } of state.assessments)
@@ -426,8 +433,26 @@ export class TaskStore {
           result: data.result,
           at,
           excluded: state.subjectCorrected,
+          recordingId: recordings.get(state.source.sourceId) ?? null,
         });
     return records.sort((a, b) => a.at.localeCompare(b.at));
+  }
+
+  /** The recording a task source's frame came from, from its observation; null for a live view. */
+  recordingOf(sourceId: string): string | null {
+    return this.#recordings().get(sourceId) ?? null;
+  }
+
+  /** Each recorded observation's task source id, with its recording. */
+  #recordings(): Map<string, string> {
+    const recordings = new Map<string, string>();
+    for (const event of this.#journal.withTypePrefix('observation.recorded'))
+      if (event.type === 'observation.recorded' && event.data.recorded !== undefined)
+        recordings.set(
+          observationSourceId(event.data.observationId),
+          event.data.recorded.recordingId,
+        );
+    return recordings;
   }
 
   /** Records one rewrite of the practice table in Zetaris. It changes no task. */

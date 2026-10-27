@@ -38,26 +38,38 @@ function evidence(record: PracticeRecord): EvidenceRecord {
     utteranceId: null,
     interpretationId: null,
     model: null,
-    text: [sourceToken(record.sourceId)],
+    text: [sourceToken(sourceKey(record))],
     humanActions: [],
   };
 }
 
 /**
+ * Where a record was practised, for recall: the recording on recorded footage, where every boop is
+ * its own observation, else the observation's own source.
+ */
+const sourceKey = (at: { readonly sourceId: string; readonly recordingId: string | null }) =>
+  at.recordingId ?? at.sourceId;
+
+/**
  * Earlier practice for Boopy's guess or for this source: two H-MEM queries, one by the guess and
- * one by the source, over the practice records that still count. The Q-ids come back highest
- * relevance first, at most eight, for the term pick to look up; a score never confirms anything.
+ * one by the source (the same recording, on recorded footage), over the practice records that
+ * still count. The Q-ids come back highest relevance first, at most eight, for the term pick to
+ * look up; a score never confirms anything.
  */
 export function recallPractice(
   records: readonly PracticeRecord[],
-  query: { readonly guess: string; readonly sourceId: string },
+  query: {
+    readonly guess: string;
+    readonly sourceId: string;
+    readonly recordingId: string | null;
+  },
 ): { readonly hits: PracticeHit[]; readonly recalled: string[] } {
   const counted = records.filter((record) => !record.excluded);
   if (counted.length === 0) return { hits: [], recalled: [] };
   const byEvidence = new Map(counted.map((record) => [evidence(record).sourceId, record]));
   const recall = new MemoryRecall(counted.map(evidence));
   const best = new Map<string, PracticeHit>();
-  for (const text of [query.guess, sourceToken(query.sourceId)])
+  for (const text of [query.guess, sourceToken(sourceKey(query))])
     for (const hit of recall.query(text, { topN: 8 })) {
       const record = byEvidence.get(hit.evidence.sourceId);
       const prior = best.get(hit.evidence.sourceId);

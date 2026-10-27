@@ -1427,6 +1427,45 @@ describe('practice under a goal', () => {
     assert.deepEqual(tasks.get('tsk_practice')?.attempts, []);
   });
 
+  it('names the recording a practice record was made on, read from the journal at read time', () => {
+    const { journal, tasks } = practising();
+    tasks.answer(answer('evt_answer_5', 1), '1970-01-01T00:00:05.000Z', follow('heard'));
+    assert.equal(tasks.practiceRecords()[0]?.recordingId, null);
+    // The task's own observation, journaled as a frame of recorded footage.
+    const observed = (observationId: string, recordingId: string) =>
+      journal.append(
+        {
+          type: 'observation.recorded',
+          session: SESSION,
+          actor: 'person',
+          data: {
+            observationId,
+            frameSha256: 'a'.repeat(64),
+            width: 640,
+            height: 480,
+            capturedAt: null,
+            camera: null,
+            depth: null,
+            cues: {},
+            recorded: {
+              recordingId,
+              frameId: 'rfr_synthetic',
+              sourceSha256: 'b'.repeat(64),
+              seconds: 1,
+            },
+          },
+        },
+        `evt_${observationId}`,
+        AT,
+      );
+    observed('obs_elsewhere', 'rec_other');
+    assert.equal(tasks.practiceRecords()[0]?.recordingId, null);
+    observed('obs_synthetic', 'rec_synthetic');
+    assert.equal(tasks.practiceRecords()[0]?.recordingId, 'rec_synthetic');
+    assert.equal(tasks.recordingOf('src_obs_synthetic'), 'rec_synthetic');
+    assert.equal(tasks.recordingOf('src_obs_live'), null);
+  });
+
   it('lists practice records from the journal, leaving out a task the person marked wrong', () => {
     const { tasks } = practising();
     tasks.answer(answer('evt_answer_4', 1), '1970-01-01T00:00:04.000Z', follow('heard'));
@@ -1443,6 +1482,7 @@ describe('practice under a goal', () => {
         result: 'heard',
         at: '1970-01-01T00:00:04.000Z',
         excluded: false,
+        recordingId: null,
       },
     ]);
     tasks.act(

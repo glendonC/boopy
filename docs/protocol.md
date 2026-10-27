@@ -154,9 +154,11 @@ the Mac runs Zetaris with the practice account.
   own language. It is journaled as `goal.set` with the person as its actor. The latest goal holds; a
   goal with no language turns practice off. Without a goal, nothing on this page happens.
 - When a task opens, Boopy's guess (the annotation's label, the model's proposal) is folded into a
-  match key. H-MEM recalls earlier practice for the same guess or the same source from the
-  journal's practice records; practice on a subject the person marked wrong is left out first. Then
-  Boopy runs one fixed Zetaris query on this Mac, `term-pick-v1`, which joins the items whose label
+  match key. H-MEM recalls earlier practice from the journal's practice records for the same guess,
+  or for the same recording when the task's frame is recorded footage (read from its observation
+  at read time, since each boop there is its own observation), else for the same live
+  observation; practice on a subject the person marked wrong is left out first. Then Boopy runs
+  one fixed Zetaris query on this Mac, `term-pick-v1`, which joins the items whose label
   or alias is that key with the practice record per item and language. The model never names a
   reference id. The pick is bounded at 6 s from when the open asks, including any wait behind a
   practice rewrite, so an open stays inside the headset's 10 s limit; a pick whose time ran out

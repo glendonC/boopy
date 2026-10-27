@@ -234,7 +234,9 @@ export function registerTaskRoutes(
     const sourceId = plan.open.source.sourceId;
     const records = tasks.practiceRecords();
     const memory =
-      guess === null ? { hits: [], recalled: [] } : recallPractice(records, { guess, sourceId });
+      guess === null
+        ? { hits: [], recalled: [] }
+        : recallPractice(records, { guess, sourceId, recordingId: tasks.recordingOf(sourceId) });
     const excluded = [
       ...new Set(records.filter((record) => record.excluded).map((record) => record.taskId)),
     ];

@@ -20,6 +20,10 @@ import {
 } from './contract.ts';
 import { earlierPracticeLine, practiceWords, SOURCE_LINE } from './practice.ts';
 
+/** A task's source id for the observation its turn saw. */
+export const observationSourceId = (observationId: string) =>
+  `src_${observationId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)}`;
+
 const ANSWER_PROMPT = 'Answer.';
 const LABEL = displayText(80);
 const LINE = displayText(200);
@@ -63,7 +67,7 @@ export function standIn(
     !(turn.words === '' || unchanged(personLine, turn.words))
   )
     return null;
-  const sourceId = `src_${turn.observationId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)}`;
+  const sourceId = observationSourceId(turn.observationId);
   const source = { sourceId, sourceRevision: 1, sha256: turn.frameSha256 };
   const replyId = cueChosen?.replyId;
   if (replyId === null) return null;

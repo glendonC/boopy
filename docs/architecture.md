@@ -89,8 +89,9 @@ with the practice account. Capture, correction, and commit work without it.
    [Recorded sources](recorded.md)). A recorded frame is never treated as the live room.
 2. Evidence: the local model proposes the subject. Its label is Boopy's guess and stays a proposal.
 3. Retrieve: a Meterless H-MEM index over the journal's practice records recalls earlier attempts
-   for the same guess or the same source; practice on a subject the person marked wrong is left
-   out. Then one fixed Zetaris query on this Mac joins a dated Wikidata snapshot (labels, aliases
+   for the same guess, or on recorded footage for the same recording (each boop there is its own
+   observation), or else for the same live observation; practice on a subject the person marked
+   wrong is left out. Then one fixed Zetaris query on this Mac joins a dated Wikidata snapshot (labels, aliases
    and descriptions in several languages, CC0, not reviewed) with the practice record, rewritten
    from the journal whenever it differs. The model never names a reference id, and the caller
    cannot pass SQL. Every returned row is checked against the import's receipt, kept outside
