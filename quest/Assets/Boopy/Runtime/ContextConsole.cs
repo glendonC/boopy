@@ -23,7 +23,7 @@ namespace Boopy.Quest
         private BoxCollider? headerHit, evidenceHit, sheetHit;
         private CompanionOrb? companion;
         private SessionView? view;
-        private bool captureRecovery, dialogueVisible, controlsOnly;
+        private bool captureRecovery, dialogueVisible, controlsOnly, recordingShown;
         // More swaps the row in place: page 1 is Context and More, page 2 Settings and Back; 0 is the conversation's row.
         private int morePage;
         // The page each sheet's row shows: the Context sheet's actions paged with More, the reader's two rows, one setting.
@@ -185,7 +185,61 @@ namespace Boopy.Quest
         private void SaveVoicePreference() { PlayerPrefs.SetInt("Boopy.Voice", voicePreferred ? 1 : 0); PlayerPrefs.Save(); }
 
         private void Add(ConsoleAction action, string label) => actions.Add(action, SpatialAction.Create(bar!.transform, action, label, SpatialTheme.ShelfSlot));
-        public void Place(Vector3 point) { transform.position = point; gameObject.SetActive(true); if(controlsOnly) { controlsOnly=false; Compose(); } Face(); }
+        public void Place(Vector3 point)
+        {
+            transform.position = point; gameObject.SetActive(true);
+            if (controlsOnly) { controlsOnly = false; Compose(); }
+            if (mirrorAtPlace is bool mirrored) { mirrorAtPlace = null; SetMirrored(mirrored); }
+            Face();
+        }
+
+        /// <summary>True when Boopy sits right of his caption, away from a subject on its left; over a recording only.</summary>
+        public bool Mirrored { get; private set; }
+        private bool? mirrorAtPlace;
+        // Boopy and his caption mirror about their own middle, in the header's meters.
+        private const float MirrorMiddle = .025f;
+
+        /// <summary>Where Boopy and his caption mirror, in meters along the console's right from its position.</summary>
+        public float MirrorAxis => header == null ? 0f : Vector3.Dot(header.transform.TransformPoint(new Vector3(MirrorMiddle, 0f, 0f)) - transform.position, transform.right);
+
+        /// <summary>As <see cref="Relocate(Vector3?)"/>; once there, Boopy is right of his caption when <paramref name="mirrored"/>, else left.</summary>
+        public void Relocate(Vector3 point, bool mirrored)
+        {
+            mirrorAtPlace = mirrored == Mirrored ? (bool?)null : mirrored;
+            if ((point - Destination).sqrMagnitude >= 1e-6f || mirrorAtPlace != null) Moves++;
+            Relocate(point);
+        }
+
+        private void SetMirrored(bool mirrored)
+        {
+            if (Mirrored == mirrored) return;
+            Mirrored = mirrored;
+            dockedDialogue?.Redock();
+            Compose();
+        }
+
+        /// <summary>Turns to face the wearer's eyes, also while an aim rests on it: over a recording the caption always faces the eye.</summary>
+        public void FaceWearer()
+        {
+            if (head == null) return;
+            var direction = transform.position - head.position;
+            if (direction.sqrMagnitude > 1e-6f) transform.rotation = Quaternion.LookRotation(direction, Vector3.up);
+        }
+
+        /// <summary>Boopy's docked caption, when he has one.</summary>
+        public Component? Caption => dockedDialogue;
+        /// <summary>Boopy himself.</summary>
+        public Component? Companion => companion;
+
+        /// <summary>How far the caption's block moves along the console's right when Boopy goes from its left to its right.</summary>
+        public float MirrorShift => header == null || dockedDialogue == null ? 0f
+            : Vector3.Dot(header.transform.TransformVector(new Vector3(2f * MirrorMiddle + .27f - dockedDialogue.WrapWidth, 0f, 0f)), transform.right);
+
+        /// <summary>How many times the console has set off for another place, by fade or at once.</summary>
+        public int Moves { get; private set; }
+
+        /// <summary>Wraps Boopy's caption one step narrower; false when it is already at its narrowest.</summary>
+        public bool NarrowCaption() => dockedDialogue?.Narrow() ?? false;
         public void ShowControlsOnly(Vector3 point) { transform.position=point; controlsOnly=true; gameObject.SetActive(true); Compose(); Face(); }
         public void AttendTo(Vector3 worldPoint, bool objectAttention = false)
         {
@@ -227,7 +281,21 @@ namespace Boopy.Quest
         public void SetDialogueVisible(bool visible)
         {
             dialogueVisible = visible;
-            header?.SetTextVisible(!visible);
+            header?.SetTextVisible(!visible && !recordingShown);
+            Compose();
+        }
+
+        /// <summary>
+        /// While a recording shows, the console draws no panel, card or button over the footage, and none of its own words:
+        /// Boopy stays, with his line as a caption beside him. Tap and hold on the picture do what the buttons did.
+        /// </summary>
+        public void SetRecording(bool on)
+        {
+            if (recordingShown == on) return;
+            recordingShown = on;
+            // In the room Boopy is always left of his line.
+            if (!on) { mirrorAtPlace = null; Mirrored = false; dockedDialogue?.Redock(); }
+            header?.SetTextVisible(!dialogueVisible && !on);
             Compose();
         }
         public void SetSpeaking(float activity) => companion?.SetSpeaking(activity);
@@ -333,8 +401,8 @@ namespace Boopy.Quest
             RefreshSuggestions();
             shownSuggestionIds.Clear();
             // Protected-source fallback shows no conversation content and permits explicitly opened global settings only.
-            card.gameObject.SetActive(!controlsOnly && !recoveryOffered && !evidenceOffered && (savePreview || handoffOpen || (reviewing && readerOpen && navigator.Selected != null)));
-            options.gameObject.SetActive(optionsOpen && !recoveryOffered && !evidenceOffered && !(controlsOnly && !settingsOpen)
+            card.gameObject.SetActive(!controlsOnly && !recordingShown && !recoveryOffered && !evidenceOffered && (savePreview || handoffOpen || (reviewing && readerOpen && navigator.Selected != null)));
+            options.gameObject.SetActive(optionsOpen && !recordingShown && !recoveryOffered && !evidenceOffered && !(controlsOnly && !settingsOpen)
                 && (mode == "capture" || mode == "processing" || mode != "listening" && !busy));
             foreach (var action in actions.Values) action.gameObject.SetActive(false);
             if (dialogBacking != null) dialogBacking.enabled = false;
@@ -475,7 +543,7 @@ namespace Boopy.Quest
             else if (!ownWords) header.ReserveHeight(.160f);
             // Those words sit on the line's dark panel: across the text column with the line's 12 mm side margin, from the
             // panel's top to its bottom edge.
-            if (ownWords && dialogBacking != null)
+            if (ownWords && !recordingShown && dialogBacking != null)
             {
                 dialogBacking.transform.localPosition = new Vector3(SpatialTheme.ShelfLeft + SpatialTheme.ShelfWidth / 2f, 0f, .006f);
                 dialogBacking.transform.localScale = new Vector3(SpatialTheme.ShelfWidth + .024f, header.Size.y, 1f);
@@ -485,7 +553,7 @@ namespace Boopy.Quest
             {
                 // Beside the line: level with the middle of the line that sits on the panel's bottom edge.
                 var beside = dialogueVisible && dockedDialogue != null ? -header.Size.y / 2f + dockedDialogue.VisibleHeight / 2f : 0f;
-                companionHome = new Vector3(-.215f, beside, -.018f);
+                companionHome = new Vector3(Mirrored ? 2f * MirrorMiddle + .215f : -.215f, beside, -.018f);
                 // Away beside a subject, or flying back, Boopy keeps its own path home.
                 if (visitPoint == null && !returning) companion.transform.localPosition = companionHome;
                 companion.SetState(CompanionState());
@@ -642,7 +710,7 @@ namespace Boopy.Quest
             ? "Image point" : item.Grounding.Kind == "scene" ? "Scene / no object position" : "Position unknown";
         private void Put(ConsoleAction action, float x, float y, bool show)
         {
-            var control = actions[action]; control.gameObject.SetActive(show);
+            var control = actions[action]; control.gameObject.SetActive(show && !recordingShown);
             control.transform.localPosition = new Vector3(x, y, -.001f);
         }
         private void Assemble()
@@ -889,6 +957,10 @@ namespace Boopy.Quest
         private System.Action? onArrive;
         private System.Func<float?>? sweepProgress;
         private bool arrived, returning;
+        /// <summary>True while Boopy is beside the subject or on his way back from it.</summary>
+        public bool Visiting => visitPoint != null || returning;
+        /// <summary>One line of his caption, in metres as drawn; none without a docked caption.</summary>
+        public float CaptionLineHeight => dockedDialogue?.LineHeight ?? 0f;
 
         /// <summary>Boopy is away from the console, beside the subject it works on.</summary>
         public bool CompanionVisiting => visitPoint != null && !reduced;

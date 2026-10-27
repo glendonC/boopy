@@ -13,8 +13,19 @@ namespace Boopy.Quest
     public sealed class DialogueStrip : MonoBehaviour
     {
         private const float Width = .40f, Height = .16f;
-        private float CaptionWidth => dock != null && host?.CaptionHasTrailingAction == true ? .34f : Width;
-        private const float CaptionHeight = .102f;
+        private float CaptionWidth => narrowed ?? (dock != null && host?.CaptionHasTrailingAction == true ? .34f : Width);
+        /// <summary>The caption's wrap width, in meters.</summary>
+        public float WrapWidth => CaptionWidth;
+        // Over a recording the wrap narrows a step at a time when no home on the frame fits the caption (DESIGN), then its pages
+        // shorten to two lines; never narrower than about 28 characters a line (WrapFloor), and never to a one-word last row.
+        private static readonly (float Width, bool Short)[] NarrowSteps = { (.36f, false), (.32f, false), (Width, true), (.36f, true), (.32f, true) };
+        private const int WrapFloor = 28;
+        private float? narrowed;
+        private bool shortPages;
+        private int narrowStep;
+        private const float FullCaptionHeight = .102f;
+        // A page's height: the full one, or two lines once a recording has no home for the full page (DESIGN, ROOT).
+        private float CaptionHeight => shortPages && lineHeight > 0f ? 2.1f * lineHeight : FullCaptionHeight;
         // A question alone on its page may take two more lines, so one question fits one page; its panel grows upward to fit.
         private const float ItemRoom = .060f;
         private SpatialSurface? dock;
@@ -31,7 +42,41 @@ namespace Boopy.Quest
         private DialogueStage previousStage;
         private float noticeExpires, stageStartedAt, previousStartedAt;
         private Transform? head;
-        private TextMeshPro? speaker, caption, shownItem;
+        private TextMeshPro? speaker, caption, shownItem, hint;
+        // On a recording the line is a caption with no panel: a soft Graphite shadow behind each of its lines, this strong at
+        // its middle and reaching this share of a line's height past the strokes; and where its hint was set.
+        private bool boxless;
+        private readonly Dictionary<TextMeshPro, (MeshRenderer Renderer, Mesh Mesh)> shadows = new Dictionary<TextMeshPro, (MeshRenderer, Mesh)>();
+        public const float ShadowStrength = .55f, ShadowReach = .3f;
+        // Over a recording, how to read the footage under a line from its world corners: its darkest and brightest luminance.
+        private System.Func<Vector3[], (float Darkest, float Brightest)>? ground;
+        private readonly Dictionary<int, (float Darkest, float Brightest)> grounds = new Dictionary<int, (float Darkest, float Brightest)>();
+        private int groundShown;
+
+        /// <summary>
+        /// Over a recording, how to read the footage under each caption line, and what it shows now (<paramref name="shown"/>
+        /// changes with the still or the playing clip, so what was read is read again); null in the room.
+        /// </summary>
+        public void SetGround(System.Func<Vector3[], (float Darkest, float Brightest)>? under, int shown = 0)
+        {
+            if (under == null || shown != groundShown) grounds.Clear();
+            ground = under; groundShown = shown;
+        }
+
+        /// <summary>
+        /// The ink, the shadow behind it and each line's strength for one boxless text over the footage under its lines: one
+        /// style for every line (DESIGN), Frost on the dark Graphite shadow, the shadow raised line by line until that line
+        /// clears 4.5:1 against the brightest footage under it (AUDIT). Colors blend in linear space.
+        /// </summary>
+        public static (Color Ink, Color Glow, float[] Strengths) Contrast(IReadOnlyList<(float Darkest, float Brightest)> lines)
+        {
+            var frost = WordBlock.Luminance(WordBlock.Frost); var graphite = WordBlock.Luminance(WordBlock.Graphite);
+            // The most light the footage may let through behind Frost for 4.5:1.
+            var most = (frost + .05f) / 4.5f - .05f;
+            return (WordBlock.Frost, WordBlock.Graphite, lines.Select(line =>
+                Mathf.Clamp(line.Brightest <= most ? 0f : (line.Brightest - most) / (line.Brightest - graphite) + .01f, ShadowStrength, 1f)).ToArray());
+        }
+        private string? hintFor;
         private Vector3 velocity;
         private bool reduced;
         private float animationTime;
@@ -91,14 +136,19 @@ namespace Boopy.Quest
             // The speaker label rests on its line: bottom-aligned in its band, the line's first words top-aligned right under it.
             strip.speaker.alignment = TextAlignmentOptions.BottomLeft;
             strip.caption = SpatialTheme.Text(strip.reveal, "Actual response", SpatialTheme.Body, SpatialTheme.Ivory);
-            strip.caption.rectTransform.sizeDelta = new Vector2(Width, CaptionHeight);
-            strip.caption.transform.localPosition = new Vector3(0, .042f - CaptionHeight / 2f, -.004f);
+            strip.caption.rectTransform.sizeDelta = new Vector2(Width, FullCaptionHeight);
+            strip.caption.transform.localPosition = new Vector3(0, .042f - FullCaptionHeight / 2f, -.004f);
             strip.caption.alignment = TextAlignmentOptions.TopLeft;
             strip.caption.overflowMode = TextOverflowModes.Truncate;
             // A choice's option shown under its prompt: its own paragraph, one gap below, in the line's type.
             strip.shownItem = SpatialTheme.Text(strip.reveal, "Shown item", SpatialTheme.Body, SpatialTheme.Ivory);
             strip.shownItem.alignment = TextAlignmentOptions.TopLeft;
             strip.shownItem.gameObject.SetActive(false);
+            // A small hint under the line on a recording, such as "Hold to answer".
+            strip.hint = SpatialTheme.Text(strip.reveal, "Hint", SpatialTheme.Utility, SpatialTheme.Smoke);
+            strip.hint.alignment = TextAlignmentOptions.TopLeft;
+            strip.hint.rectTransform.sizeDelta = new Vector2(Width, .03f);
+            strip.hint.gameObject.SetActive(false);
             strip.pageHit = go.AddComponent<BoxCollider>(); strip.pageHit.size = new Vector3(Width, Height, .012f);
             strip.fallbackStop = SpatialAction.Create(go.transform, ConsoleAction.Cancel, "Stop waiting", .18f);
             strip.fallbackStop.transform.localPosition = new Vector3(0f, -.105f, -.004f);
@@ -111,10 +161,61 @@ namespace Boopy.Quest
         {
             dock = surface; host = owner;
             transform.SetParent(surface.transform, false);
-            transform.localPosition = new Vector3(.065f, 0, -.004f);
+            transform.localPosition = Docked(CaptionWidth);
             transform.localRotation = Quaternion.identity;
             transform.localScale = Vector3.one;
             host.SetDialogueVisible(gameObject.activeSelf);
+        }
+
+        // Docked, the caption's left edge keeps beside Boopy on his right; mirrored, its right edge keeps beside him on his left.
+        private Vector3 Docked(float width) => new Vector3(host != null && host.Mirrored ? .185f - width / 2f : -.135f + width / 2f, 0f, -.004f);
+
+        /// <summary>Takes the docked place again, on Boopy's side as he now sits.</summary>
+        public void Redock() { if (dock != null && !fallback) transform.localPosition = Docked(CaptionWidth); }
+
+        /// <summary>Wraps the caption one step narrower, or its pages shorter, its words kept from its first page; false at the last step.</summary>
+        public bool Narrow()
+        {
+            if (caption == null || speaker == null) return false;
+            if (lineHeight <= 0f) _ = LineHeight;
+            var (wasNarrowed, wasShort) = (narrowed, shortPages);
+            // The narrowest wrap still holds about 28 characters of these words on a line.
+            var words = ScriptCoverage.Prepare(FullText);
+            var floor = words.Length <= WrapFloor ? Width : caption.GetPreferredValues(words.Substring(0, WrapFloor), Mathf.Infinity, Mathf.Infinity).x;
+            while (narrowStep < NarrowSteps.Length)
+            {
+                var (next, brief) = NarrowSteps[narrowStep++];
+                if (next < floor - 1e-4f || (next >= CaptionWidth - 1e-4f && brief == shortPages)) continue;
+                Wrap(next, brief);
+                if (!OneWordLastRow()) return true;
+            }
+            Wrap(wasNarrowed, wasShort);
+            return false;
+        }
+
+        private void Wrap(float? width, bool brief)
+        {
+            narrowed = width; shortPages = brief;
+            var wrap = CaptionWidth;
+            speaker!.rectTransform.sizeDelta = new Vector2(wrap, .036f);
+            caption!.rectTransform.sizeDelta = new Vector2(wrap, CaptionHeight);
+            if (pageHit != null) pageHit.size = new Vector3(wrap, Height, .012f);
+            Redock();
+            Paginate();
+        }
+
+        // The page shown ends on a row of one word under others: what a narrower wrap must not leave.
+        private bool OneWordLastRow()
+        {
+            if (caption == null) return false;
+            caption.ForceMeshUpdate(true, true);
+            var info = caption.textInfo;
+            if (info.lineCount < 2) return false;
+            var last = info.lineInfo[info.lineCount - 1];
+            // The row's drawn characters, not the source's: a prepared line may carry font tags.
+            var row = new string(Enumerable.Range(last.firstCharacterIndex, Mathf.Max(0, last.lastCharacterIndex - last.firstCharacterIndex + 1))
+                .Where(at => at < info.characterCount).Select(at => info.characterInfo[at].character).ToArray()).Trim();
+            return row.Length > 0 && !row.Contains(' ');
         }
 
         /// <summary>Keep the exact caption readable when object keepouts hide the companion.
@@ -128,7 +229,7 @@ namespace Boopy.Quest
             if (value) { if (!PlaceFallback()) { transform.position = Target(); Face(); } velocity = Vector3.zero; }
             else
             {
-                transform.localPosition = new Vector3(.065f - (Width - CaptionWidth) / 2f, 0f, -.004f);
+                transform.localPosition = Docked(CaptionWidth);
                 transform.localRotation = Quaternion.identity;
             }
             if (speaker != null) speaker.alpha = 1f;
@@ -178,11 +279,13 @@ namespace Boopy.Quest
             // Each working line starts its shimmer on its first glyph.
             if (stage == DialogueStage.Working) animationTime = 0f;
             if (caption == null || speaker == null) return;
+            // A new line starts at the full wrap and page; a recording may narrow it again.
+            narrowed = null; shortPages = false; narrowStep = 0;
             var width = CaptionWidth;
             speaker.rectTransform.sizeDelta = new Vector2(width, .036f);
             caption.rectTransform.sizeDelta = new Vector2(width, CaptionHeight);
             if (pageHit != null) pageHit.size = new Vector3(width, Height, .012f);
-            if (dock != null && !fallback) transform.localPosition = new Vector3(.065f - (Width - width) / 2f, 0, -.004f);
+            if (dock != null && !fallback) transform.localPosition = Docked(width);
             // A new line's items are its own: the console names them again for this line.
             items.Clear(); itemsUnderLine = false; itemSpeaker = null;
             Paginate();
@@ -311,6 +414,8 @@ namespace Boopy.Quest
             var height = CaptionHeight + Extra;
             caption.rectTransform.sizeDelta = new Vector2(CaptionWidth, height);
             caption.transform.localPosition = new Vector3(caption.transform.localPosition.x, .042f - height / 2f, caption.transform.localPosition.z);
+            // The hint keeps its row under the page as drawn now, in this frame.
+            if (hintFor != null && hint != null && hint.gameObject.activeSelf) { caption.ForceMeshUpdate(true, true); SetHint(hintFor); }
             DrawItem();
             if (!Holding) return;
             // The answer is measured now, so the panel can grow to it; the thinking words stay until they have faded.
@@ -428,6 +533,8 @@ namespace Boopy.Quest
                 TextShimmer.Apply(caption, animationTime, (Stage == DialogueStage.Working || Holding) && !still, opacity);
             }
             if (shownItem != null) shownItem.alpha = opacity;
+            if (hint != null) hint.alpha = opacity;
+            ShadeLines(opacity);
             if (dock != null && !fallback) return;
             // Resolve from the current expanded controls every frame; independent damping can
             // sweep the subtitle through Settings, and independent facing defeats the bar lock.
@@ -476,7 +583,7 @@ namespace Boopy.Quest
             if(captionBacking==null || backingRenderer==null || backingTint==null)return;
             var found=PanelEdges(out var left, out var right, out var bottom, out var top);
             backingRenderer.sortingOrder=2;
-            backingRenderer.enabled=found;
+            backingRenderer.enabled=found && !boxless;
             if(!found)return;
             if(changeAge>=0f && dock!=null && !fallback)
             {
@@ -499,6 +606,133 @@ namespace Boopy.Quest
             else if(pageHit!=null){pageHit.center=Vector3.zero;pageHit.size=new Vector3(CaptionWidth,Height,.012f);}
             var panel=SpatialTheme.Panel;panel.a*=opacity;backingTint.SetColor("_Color",panel);backingRenderer.SetPropertyBlock(backingTint);
         }
+        /// <summary>
+        /// On a recording the line is a caption with no box over the footage: Frost words at full strength, each line of them
+        /// on a soft Graphite shadow that darkens the footage right behind and around its strokes (about half its light),
+        /// fading out past them so it reads as a shadow and not a box. False gives the line its panel and its usual type back.
+        /// </summary>
+        public void SetBoxless(bool on)
+        {
+            if (boxless == on) return;
+            boxless = on;
+            foreach (var (text, usual) in Lines()) if (text != null) text.color = on ? WordBlock.Frost : usual;
+            foreach (var shadow in shadows.Values) shadow.Renderer.enabled = false;
+            if (backingRenderer != null) backingRenderer.enabled = backingRenderer.enabled && !on;
+        }
+
+        // Behind each shown line of a boxless caption, its shadow: full strength over the line's own extent, fading to clear
+        // ShadowReach of the line's height beyond it on every side, at the words' own opacity.
+        private void ShadeLines(float opacity)
+        {
+            foreach (var (text, _) in Lines())
+            {
+                if (text == null) continue;
+                var shown = boxless && text.gameObject.activeInHierarchy && !string.IsNullOrEmpty(text.text);
+                if (!shadows.TryGetValue(text, out var shadow))
+                {
+                    if (!shown) continue;
+                    var host = new GameObject("Caption shadow"); host.transform.SetParent(text.transform, false);
+                    host.transform.localPosition = new Vector3(0f, 0f, .001f);
+                    var mesh = new Mesh { name = "Caption shadow" };
+                    host.AddComponent<MeshFilter>().sharedMesh = mesh;
+                    var renderer = host.AddComponent<MeshRenderer>(); renderer.sharedMaterial = Visuals.Solid;
+                    renderer.sortingOrder = text.sortingOrder - 1; renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                    shadow = (renderer, mesh); shadows[text] = shadow;
+                }
+                shadow.Renderer.enabled = shown;
+                if (!shown) continue;
+                text.ForceMeshUpdate();
+                var info = text.textInfo;
+                var vertices = new List<Vector3>(); var colors = new List<Color>(); var triangles = new List<int>();
+                var extents = new List<(float X0, float X1, float Y0, float Y1)>();
+                for (var l = 0; l < info.lineCount; l++)
+                {
+                    var line = info.lineInfo[l];
+                    if (line.visibleCharacterCount > 0) extents.Add((line.lineExtents.min.x, line.lineExtents.max.x, line.descender, line.ascender));
+                }
+                // Each line's contrast over the footage under it (AUDIT); with nothing to read, Frost on the usual shadow.
+                var (ink, glow, strengths) = ground == null ? (WordBlock.Frost, WordBlock.Graphite, extents.Select(_ => ShadowStrength).ToArray())
+                    : Contrast(extents.Select(line => Ground(text, line)).ToList());
+                text.color = new Color(ink.r, ink.g, ink.b, text.color.a);
+                for (var l = 0; l < extents.Count; l++)
+                {
+                    var (x0, x1, y0, y1) = extents[l];
+                    var reach = ShadowReach * (y1 - y0);
+                    float[] xs = { x0 - reach, x0, x1, x1 + reach }, ys = { y0 - reach, y0, y1, y1 + reach };
+                    var first = vertices.Count;
+                    for (var row = 0; row < 4; row++)
+                        for (var column = 0; column < 4; column++)
+                        {
+                            vertices.Add(new Vector3(xs[column], ys[row], 0f));
+                            colors.Add(new Color(1f, 1f, 1f, row is 1 or 2 && column is 1 or 2 ? strengths[l] : 0f));
+                        }
+                    for (var row = 0; row < 3; row++)
+                        for (var column = 0; column < 3; column++)
+                        {
+                            var i = first + row * 4 + column;
+                            triangles.AddRange(new[] { i, i + 4, i + 5, i, i + 5, i + 1 });
+                        }
+                }
+                shadow.Mesh.Clear();
+                shadow.Mesh.SetVertices(vertices); shadow.Mesh.SetColors(colors); shadow.Mesh.SetTriangles(triangles, 0);
+                shadow.Mesh.RecalculateBounds();
+                var tint = new MaterialPropertyBlock();
+                tint.SetColor("_Color", new Color(glow.r, glow.g, glow.b, opacity));
+                shadow.Renderer.SetPropertyBlock(tint);
+            }
+        }
+
+        // The footage under one line's own extent, read once for where the line lies.
+        private (float Darkest, float Brightest) Ground(TextMeshPro text, (float X0, float X1, float Y0, float Y1) line)
+        {
+            var corners = new[] { new Vector3(line.X0, line.Y0), new Vector3(line.X1, line.Y0), new Vector3(line.X1, line.Y1), new Vector3(line.X0, line.Y1) }
+                .Select(corner => text.transform.TransformPoint(corner)).ToArray();
+            var hash = new System.HashCode();
+            foreach (var corner in corners) { hash.Add(Mathf.RoundToInt(corner.x * 1000f)); hash.Add(Mathf.RoundToInt(corner.y * 1000f)); hash.Add(Mathf.RoundToInt(corner.z * 1000f)); }
+            var key = hash.ToHashCode();
+            if (grounds.TryGetValue(key, out var known)) return known;
+            if (grounds.Count > 256) grounds.Clear();
+            return grounds[key] = ground!(corners);
+        }
+
+        private (TextMeshPro?, Color)[] Lines() => new[] { (speaker, SpatialTheme.Smoke), (caption, SpatialTheme.Ivory), (shownItem, SpatialTheme.Ivory), (hint, SpatialTheme.Smoke) };
+
+        /// <summary>A small hint one gap under the line, such as "Hold to answer"; null takes it away.</summary>
+        private float lineHeight;
+        /// <summary>One line of the caption, in metres as drawn.</summary>
+        public float LineHeight
+        {
+            get
+            {
+                if (caption == null) return 0f;
+                if (lineHeight <= 0f) lineHeight = SpatialTheme.Height(caption, "Ag", CaptionWidth);
+                return lineHeight * caption.transform.lossyScale.y;
+            }
+        }
+
+        public void SetHint(string? words)
+        {
+            if (hint == null || caption == null) return;
+            hint.gameObject.SetActive(words != null);
+            if (words == null) { hintFor = null; return; }
+            if (words != hintFor) { hintFor = words; hint.text = ScriptCoverage.Prepare(words); }
+            // Placed every frame from the caption as it is laid out now (a wrap, a page or a face found for a script moves its
+            // rows): its own row, a gap under the caption's lowest row, from the caption's left edge and as wide as it, so it
+            // never runs under Boopy or under a row.
+            // Its box as tall as its own words, so they run down from its top and not above it.
+            hint.rectTransform.sizeDelta = new Vector2(CaptionWidth, hint.GetPreferredValues(hint.text, CaptionWidth, Mathf.Infinity).y);
+            // The caption's lowest row: the lowest of its drawn glyphs, its laid-out last row, and its words' full height from
+            // the box's top, so a row still revealing or a wrap still settling never sets it too high.
+            var box = caption.rectTransform.sizeDelta;
+            var laid = caption.textInfo;
+            var lowest = Mathf.Min(caption.textBounds.min.y, box.y / 2f - Mathf.Min(caption.GetPreferredValues(caption.text, box.x, Mathf.Infinity).y, box.y));
+            if (laid.lineCount > 0) lowest = Mathf.Min(lowest, laid.lineInfo[laid.lineCount - 1].descender);
+            var lineBottom = caption.transform.localPosition.y + lowest;
+            // One caption line clear of the last row (DESIGN).
+            if (lineHeight <= 0f) _ = LineHeight;
+            hint.transform.localPosition = new Vector3(caption.transform.localPosition.x, lineBottom - Mathf.Max(lineHeight, SpatialTheme.Gap) - hint.rectTransform.sizeDelta.y / 2f, caption.transform.localPosition.z);
+        }
+
         private void OnDestroy()
         {
             if(backingMesh==null)return;

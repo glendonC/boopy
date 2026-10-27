@@ -177,7 +177,8 @@ namespace Boopy.Quest
         /// right of the frame's middle and a little down, as in the room, lower right, left, lower left, below, upper right,
         /// upper left; then spots across the sharp part, nearest the first home first. With none clear, the spot that covers
         /// the least of a person, then the least of the rest, and the spot says so: Boopy is never hidden over a recording.
-        /// At each, Boopy sits on the side of his caption away from the subject (its outline or pin, else its word). The
+        /// At each, Boopy sits on the side of his caption away from the subject (its outline or pin, else its word), where
+        /// his caption lies to one side of it. The
         /// answer depends only on what is drawn and the keep-outs, never on where he sits now. Null with no recording shown.
         /// </summary>
         public RecordingSpot? RecordingHome(ContextConsole controls)
@@ -185,7 +186,7 @@ namespace Boopy.Quest
             if (picture == null || !picture.Showing) return null;
             var sharp = picture.Sharp;
             var (plain, plainCaption, beside, besideCaption) = Footprints(controls);
-            var gap = Mathf.Max(SpatialTheme.KeepoutMargin * controls.ComfortScale, controls.CaptionLineHeight) / LabelDistance;
+            var gap = KeepClear(controls);
             var found = RecordingKeepouts();
             subjectAcross = found.Where(keepout => keepout.What == "the pin" || keepout.What == "the subject's shape").Concat(found)
                 .Select(keepout => (float?)keepout.Area.center.x).FirstOrDefault();
@@ -215,7 +216,10 @@ namespace Boopy.Quest
                     var line = mirrored ? besideCaption : plainCaption;
                     var (position, seen) = Fit(shape, x, y, sharp);
                     any ??= new RecordingSpot(position, name, "the subject's side", mirrored);
-                    if (subjectAcross is float middle && seen.center.x + (line - shape.center.x) / LabelDistance > middle != mirrored) continue;
+                    // A caption across the subject's middle has no side away from it: either way is his.
+                    var from = seen.center.x + (line.xMin - shape.center.x) / LabelDistance;
+                    var to = seen.center.x + (line.xMax - shape.center.x) / LabelDistance;
+                    if (subjectAcross is float middle && (middle < from || middle > to) && (from + to) / 2f > middle != mirrored) continue;
                     var crowded = keepouts.Where(keepout => keepout.Area.Overlaps(seen)).ToList();
                     if (crowded.Count == 0) return Found(key, new RecordingSpot(position, name, null, mirrored));
                     var overlap = (Person: crowded.Where(keepout => keepout.What == "a person").Sum(keepout => Overlap(keepout.Area, seen)),
@@ -230,6 +234,11 @@ namespace Boopy.Quest
             }
             return Found(key, least ?? any);
         }
+
+        // How far Boopy and his line keep from every keep-out, in tangents: one caption line, the keepout margin when that is
+        // more, and 5 mm for his body's depth, which a flat footprint does not see.
+        private static float KeepClear(ContextConsole controls) =>
+            (Mathf.Max(SpatialTheme.KeepoutMargin * controls.ComfortScale, controls.CaptionLineHeight) + .005f) / LabelDistance;
 
         // How long a reply's layout must hold still before Boopy chooses his home for it: its parts are all known by then.
         private const float SettleSeconds = .25f;
@@ -292,7 +301,7 @@ namespace Boopy.Quest
             var (plain, _, beside, _) = Footprints(controls);
             var seen = Seen(controls.Mirrored ? beside : plain, controls.transform.position);
             var sharp = picture!.Sharp;
-            var gap = Mathf.Max(SpatialTheme.KeepoutMargin * controls.ComfortScale, controls.CaptionLineHeight) / LabelDistance;
+            var gap = KeepClear(controls);
             return seen.xMin >= -sharp.Left - 1e-3f && seen.xMax <= sharp.Right + 1e-3f && seen.yMin >= -sharp.Down - 1e-3f && seen.yMax <= sharp.Up + 1e-3f
                 && !RecordingKeepouts().Any(keepout => Grown(keepout.Area, gap).Overlaps(seen));
         }
@@ -373,10 +382,10 @@ namespace Boopy.Quest
         }
 
         // The console's drawn parts in metres along its own right and up from its position, with Boopy left of his caption
-        // (plain) and right of it (beside), each with its caption's middle across. Only the side he sits on is measured; the
+        // (plain) and right of it (beside), each with its caption's own extent. Only the side he sits on is measured; the
         // other is exact all the same: his body mirrors about the pair's middle, and the caption's block moves along, its
         // words left-aligned in it as they are. With nothing drawn, the layout box on both sides.
-        private static (Rect Plain, float PlainCaption, Rect Beside, float BesideCaption) Footprints(ContextConsole controls)
+        private static (Rect Plain, Rect PlainCaption, Rect Beside, Rect BesideCaption) Footprints(ContextConsole controls)
         {
             var at = controls.transform;
             Rect? Measure(IEnumerable<Vector3[]> parts)
@@ -397,7 +406,7 @@ namespace Boopy.Quest
             {
                 var half = controls.LayoutSize / 2f;
                 var layout = new Rect(-half.x, controls.LayoutCenterOffset - half.y, 2f * half.x, 2f * half.y);
-                return (layout, layout.center.x, layout, layout.center.x);
+                return (layout, layout, layout, layout);
             }
             var axis = controls.MirrorAxis; var shift = controls.MirrorShift;
             Rect? Mirror(Rect? side) => side is Rect r ? Rect.MinMaxRect(2f * axis - r.xMax, r.yMin, 2f * axis - r.xMin, r.yMax) : (Rect?)null;
@@ -405,7 +414,7 @@ namespace Boopy.Quest
             var (plainBody, plainLine, besideBody, besideLine) = controls.Mirrored
                 ? (Mirror(body), Along(line, -shift), body, line) : (body, line, Mirror(body), Along(line, shift));
             var plain = Union(Union(plainBody, plainLine), rest)!.Value; var beside = Union(Union(besideBody, besideLine), rest)!.Value;
-            return (plain, plainLine?.center.x ?? plain.center.x, beside, besideLine?.center.x ?? beside.center.x);
+            return (plain, plainLine ?? plain, beside, besideLine ?? beside);
         }
 
         // The console with its footprint's middle at tangents (x, y) from the recording's eye, facing that eye, moved inside
@@ -429,11 +438,12 @@ namespace Boopy.Quest
         private RecordingSpot? Found(int key, RecordingSpot? spot) { homeKey = key; homeFound = spot; return spot; }
 
         // What a home is found for: what of the console is drawn, the keep-outs, and the recording as placed and held.
-        private int HomeKey(Rect plain, float plainCaption, Rect beside, float besideCaption, List<(Rect Area, string What)> keepouts)
+        private int HomeKey(Rect plain, Rect plainCaption, Rect beside, Rect besideCaption, List<(Rect Area, string What)> keepouts)
         {
             static int Mm(float value) => Mathf.RoundToInt(value * 1000f);
             var hash = new HashCode();
-            foreach (var value in new[] { plain.xMin, plain.yMin, plain.xMax, plain.yMax, plainCaption, beside.xMin, beside.yMin, beside.xMax, beside.yMax, besideCaption,
+            foreach (var value in new[] { plain.xMin, plain.yMin, plain.xMax, plain.yMax, plainCaption.xMin, plainCaption.xMax,
+                beside.xMin, beside.yMin, beside.xMax, beside.yMax, besideCaption.xMin, besideCaption.xMax,
                 picture!.Eye.x, picture.Eye.y, picture.Eye.z, picture.Facing.x, picture.Facing.y, picture.Facing.z, picture.Facing.w,
                 picture.Sharp.Left, picture.Sharp.Right, picture.Sharp.Up, picture.Sharp.Down })
                 hash.Add(Mm(value));

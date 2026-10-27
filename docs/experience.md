@@ -105,11 +105,11 @@ the frame's middle and a little down, else lower right, left, lower left, below,
 left, else the nearest clear spot across the frame; when none is clear, the spot that covers the
 least of a person, then the least of the rest.
 A long line pages; his line is a caption beside him with no box, each line on a soft shadow right
-behind its strokes that fades out past them. Every line reads at 4.5:1 or more over the footage
-under it, measured from the still's own pixels there as the word's ink is: Graphite words on a soft
-Frost glow where the footage is bright enough, else Frost words on a Graphite shadow made stronger,
-line by line, until that line clears 4.5:1 against the brightest footage under it. While the clip
-plays, the frame under the line is not measured, so it is taken at its brightest. Once he asks, a small "Hold to
+behind its strokes that fades out past them. Every line is Frost words on a Graphite shadow, one
+style for all of them, and reads at 4.5:1 or more over the footage under it, measured from the
+still's own pixels there: the shadow is made stronger, line by line, until that line clears 4.5:1
+against the brightest footage under it. While the clip plays, the frame under the line is not
+measured, so it is taken at its brightest. Once he asks, a small "Hold to
 answer" sits under it, and holding answers. A capture left unresolved from before is settled
 quietly with the Mac when a recording shows, never shown as a card over it. The reply's outline lies on the picture, with a
 dark edge so it reads on bright sand and sky, and the subject's word sits right above it (below it
@@ -122,8 +122,9 @@ person pointed at; it pulses once as it appears (a cut with reduced motion) and 
 shows, and the word sits on it, half a line above it (else below it, else beside it). Where the word
 needs a backing to read, it is the caption's soft shading behind each line, with no edge or corner.
 Boopy sits on the side of his caption away from the subject, and his caption always faces the eye;
-when no home on the frame fits it, it wraps narrower, then pages two lines at a time, before he
-settles for a crowded spot. When the person answers, Boopy shows what it heard: the word lights up once and Boopy
+when no home on the frame fits it, it wraps narrower (never under about 28 characters a line, and
+never leaving one word alone on the last row), then pages two lines at a time, before he settles for
+a crowded spot. "Hold to answer" has its own row under the caption's last row, from its left edge. When the person answers, Boopy shows what it heard: the word lights up once and Boopy
 hops when it heard the word, the word lights up and Boopy points at it when it did not catch it,
 and Boopy tilts toward the person when it heard none of that language. On a later turn the word
 says "Didn't hear it last time" under it, with an Ember underline, or "Heard it last time" in the
