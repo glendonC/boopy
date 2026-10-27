@@ -18,7 +18,10 @@ namespace Boopy.Quest
     {
         // Angular em sizes (DESIGN): the word about 2 degrees, the guess 1, the source 0.8, the memory line as the guess.
         public const float TermDegrees = 2.0f, GuessDegrees = 1.0f, SourceDegrees = .8f;
-        public const string Memory = "Didn't hear it last time";
+        public const string Memory = "Didn't hear it last time", HeardMemory = "Heard it last time";
+        // The scrim is the caption's shading (DESIGN): behind each line, full over the line's own extent and fading to clear
+        // this much of its height beyond it on every side, so no edge or corner shows.
+        private const float ScrimReach = .3f, ScrimStrength = .7f;
         public static readonly Color Graphite = new Color(20f / 255f, 27f / 255f, 33f / 255f, 1f);
         public static readonly Color Frost = new Color(241f / 255f, 245f / 255f, 245f / 255f, 1f);
         private const float Minimum = 4.5f, BrightenSeconds = .4f;
@@ -26,6 +29,7 @@ namespace Boopy.Quest
         private TextMeshPro? term, guess, source, memory;
         private LineRenderer? underline;
         private MeshRenderer? scrim;
+        private Mesh? scrimMesh;
         private float brightenAge = float.PositiveInfinity;
         private bool reduced;
 
@@ -59,10 +63,13 @@ namespace Boopy.Quest
             go.transform.SetParent(parent, false);
             var block = go.AddComponent<WordBlock>();
             var plate = new GameObject("Word scrim"); plate.transform.SetParent(go.transform, false);
-            plate.AddComponent<MeshFilter>().sharedMesh = RoundedPlate.Create(1f, 1f, .2f);
+            plate.transform.localPosition = new Vector3(0f, 0f, .001f);
+            block.scrimMesh = new Mesh { name = "Word scrim" };
+            plate.AddComponent<MeshFilter>().sharedMesh = block.scrimMesh;
             block.scrim = plate.AddComponent<MeshRenderer>(); block.scrim.sharedMaterial = Visuals.Solid; block.scrim.sortingOrder = 1;
+            block.scrim.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             block.scrim.enabled = false;
-            var tint = new MaterialPropertyBlock(); tint.SetColor("_Color", new Color(Graphite.r, Graphite.g, Graphite.b, .7f)); block.scrim.SetPropertyBlock(tint);
+            var tint = new MaterialPropertyBlock(); tint.SetColor("_Color", new Color(Graphite.r, Graphite.g, Graphite.b, ScrimStrength)); block.scrim.SetPropertyBlock(tint);
             block.term = block.Line("Term", true);
             block.guess = block.Line("Guess", false);
             block.source = block.Line("Source", false);
@@ -87,9 +94,10 @@ namespace Boopy.Quest
 
         /// <summary>
         /// Shows the block's words at <paramref name="distance"/> meters from the eyes: the term (or, with none, the guess)
-        /// large, the guess small under a term, the source only with a term, and the memory line when asked.
+        /// large, the guess small under a term, the source only with a term, and the memory line when given: <see cref="Memory"/>
+        /// with its Ember underline, or <see cref="HeardMemory"/> with none.
         /// </summary>
-        public void Show(string? termText, string guessText, string? sourceText, bool remember, float distance, bool reducedMotion)
+        public void Show(string? termText, string guessText, string? sourceText, string? memoryLine, float distance, bool reducedMotion)
         {
             if (term == null || guess == null || source == null || memory == null || underline == null) return;
             reduced = reducedMotion;
@@ -99,7 +107,7 @@ namespace Boopy.Quest
                 (term, ScriptCoverage.Prepare(hasTerm ? termText : guessText), TermDegrees, true),
                 (guess, ScriptCoverage.Prepare(guessText), GuessDegrees, hasTerm),
                 (source, ScriptCoverage.Prepare(sourceText), SourceDegrees, hasTerm && !string.IsNullOrWhiteSpace(sourceText)),
-                (memory, Memory, GuessDegrees, hasTerm && remember),
+                (memory, memoryLine ?? "", GuessDegrees, hasTerm && memoryLine != null),
             };
             var top = 0f; var width = 0f; var gap = .2f * Em(GuessDegrees, distance);
             foreach (var (text, words, degrees, shown) in lines)
@@ -129,7 +137,7 @@ namespace Boopy.Quest
                 this.lines.Add(new Rect(-size.x / 2f, text.transform.localPosition.y - size.y / 2f, size.x, size.y));
             }
             Size = new Vector2(width, top);
-            underline.enabled = memory.gameObject.activeSelf;
+            underline.enabled = memory.gameObject.activeSelf && memoryLine == Memory;
             if (underline.enabled)
             {
                 var below = term.transform.localPosition.y - term.GetPreferredValues(term.text).y * term.transform.localScale.y / 2f - .1f * gap;
@@ -138,9 +146,38 @@ namespace Boopy.Quest
                 underline.SetPosition(0, new Vector3(-half, below, -.002f)); underline.SetPosition(1, new Vector3(half, below, -.002f));
                 Visuals.Tint(underline, SpatialTheme.Ember);
             }
-            if (scrim != null) scrim.transform.localScale = new Vector3(width + 2f * gap, top + 2f * gap, 1f);
+            Shade();
             gameObject.SetActive(true);
             Paint();
+        }
+
+        // The scrim's soft shading behind each shown line, in the block's own meters.
+        private void Shade()
+        {
+            if (scrimMesh == null) return;
+            var vertices = new System.Collections.Generic.List<Vector3>(); var colors = new System.Collections.Generic.List<Color>();
+            var triangles = new System.Collections.Generic.List<int>();
+            foreach (var line in lines)
+            {
+                var reach = ScrimReach * line.height;
+                float[] xs = { line.xMin - reach, line.xMin, line.xMax, line.xMax + reach }, ys = { line.yMin - reach, line.yMin, line.yMax, line.yMax + reach };
+                var first = vertices.Count;
+                for (var row = 0; row < 4; row++)
+                    for (var column = 0; column < 4; column++)
+                    {
+                        vertices.Add(new Vector3(xs[column], ys[row], 0f));
+                        colors.Add(new Color(1f, 1f, 1f, row is 1 or 2 && column is 1 or 2 ? 1f : 0f));
+                    }
+                for (var row = 0; row < 3; row++)
+                    for (var column = 0; column < 3; column++)
+                    {
+                        var at = first + row * 4 + column;
+                        triangles.AddRange(new[] { at, at + 4, at + 5, at, at + 5, at + 1 });
+                    }
+            }
+            scrimMesh.Clear();
+            scrimMesh.SetVertices(vertices); scrimMesh.SetColors(colors); scrimMesh.SetTriangles(triangles, 0);
+            scrimMesh.RecalculateBounds();
         }
 
         /// <summary>Takes the ink for the picture under the block: its darkest and brightest luminance (5th and 95th percentile).</summary>

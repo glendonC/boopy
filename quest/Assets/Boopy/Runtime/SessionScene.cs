@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using Boopy.Client;
+using TMPro;
 using UnityEngine;
 using N = System.Numerics;
 
@@ -24,6 +25,16 @@ namespace Boopy.Quest
         private readonly Dictionary<string, GroundedOverlay> overlays = new Dictionary<string, GroundedOverlay>();
         // A subject on a recorded picture carries its word in the picture's plane instead of a chip in front of it.
         private readonly Dictionary<string, WordBlock> words = new Dictionary<string, WordBlock>();
+        // A subject on a recorded picture whose only shape is the model's loose box carries a pin where the person pointed.
+        private readonly Dictionary<string, BoopPin> pins = new Dictionary<string, BoopPin>();
+        // Where the person pointed on each recorded observation, from the turn's own cue.
+        private readonly Dictionary<string, Point2> pointed = new Dictionary<string, Point2>();
+        // The objects the outline run proposed on one recorded frame: Boopy's line keeps off them on that frame only.
+        private string? outlinedFrame;
+        private IReadOnlyList<RecordedOutlineObject> outlinedObjects = Array.Empty<RecordedOutlineObject>();
+        // The last home found and what it was found for: it is searched again only when one of those changes.
+        private int homeKey;
+        private RecordingSpot? homeFound;
         private RecordedPicture? picture;
         private readonly ObjectAccents accents = new ObjectAccents();
         private string? focusedItemId;
@@ -64,7 +75,11 @@ namespace Boopy.Quest
         }
 
         /// <summary>Keeps a frame's pose and depth, so items grounded in it can be placed in the room.</summary>
-        public void Remember(string observationId, Snapshot snapshot) => snapshots[observationId] = snapshot;
+        public void Remember(string observationId, Snapshot snapshot, Point2? pointedAt = null)
+        {
+            snapshots[observationId] = snapshot;
+            if (pointedAt != null) pointed[observationId] = pointedAt; else pointed.Remove(observationId);
+        }
 
         /// <summary>Current-view envelopes of actual conversation evidence, labels and global controls.</summary>
         public void AppendPresentationKeepouts(List<LabelRect> occupied, ContextConsole controls)
@@ -126,6 +141,349 @@ namespace Boopy.Quest
             return Anchor(head, center, controls.LayoutCenterOffset);
         }
 
+        /// <summary>True while a recording shows: Boopy keeps to his home on it.</summary>
+        public bool OnRecording => picture != null && picture.Showing;
+
+        /// <summary>
+        /// Boopy's home on a recording: where the console goes, which home that is, and what it still crowds when no home is
+        /// clear (null when it is clear).
+        /// </summary>
+        public readonly struct RecordingSpot
+        {
+            public RecordingSpot(Vector3 position, string name, string? crowds, bool mirrored)
+            {
+                Position = position; Name = name; Crowds = crowds; Mirrored = mirrored;
+            }
+            public Vector3 Position { get; }
+            public string Name { get; }
+            public string? Crowds { get; }
+            /// <summary>Boopy sits right of his caption there, away from a subject on its left.</summary>
+            public bool Mirrored { get; }
+            public bool Clear => Crowds == null;
+            public override string ToString() => Name + (Mirrored ? ", Boopy right of his line" : ", Boopy left of his line")
+                + (Crowds == null ? ", clear" : ", not clear: it crowds " + Crowds);
+        }
+
+        /// <summary>The objects the outline run proposed on a recorded frame; Boopy's line keeps off them while that frame is held.</summary>
+        public void SetOutlined(string frameId, IReadOnlyList<RecordedOutlineObject> objects)
+        {
+            outlinedFrame = frameId; outlinedObjects = objects;
+        }
+
+        /// <summary>
+        /// Over a recording, Boopy's home on it. What of him is drawn (his body, his caption and its hint, and their shadows)
+        /// stays inside the frame's sharp part and clear of every keep-out (<see cref="RecordingKeepouts"/>), as seen from the
+        /// eye at the placement, by one caption line (the keepout margin when that is more). The homes are tried in order:
+        /// right of the frame's middle and a little down, as in the room, lower right, left, lower left, below, upper right,
+        /// upper left; then spots across the sharp part, nearest the first home first. With none clear, the spot that covers
+        /// the least of a person, then the least of the rest, and the spot says so: Boopy is never hidden over a recording.
+        /// At each, Boopy sits on the side of his caption away from the subject (its outline or pin, else its word). The
+        /// answer depends only on what is drawn and the keep-outs, never on where he sits now. Null with no recording shown.
+        /// </summary>
+        public RecordingSpot? RecordingHome(ContextConsole controls)
+        {
+            if (picture == null || !picture.Showing) return null;
+            var sharp = picture.Sharp;
+            var (plain, plainCaption, beside, besideCaption) = Footprints(controls);
+            var gap = Mathf.Max(SpatialTheme.KeepoutMargin * controls.ComfortScale, controls.CaptionLineHeight) / LabelDistance;
+            var found = RecordingKeepouts();
+            subjectAcross = found.Where(keepout => keepout.What == "the pin" || keepout.What == "the subject's shape").Concat(found)
+                .Select(keepout => (float?)keepout.Area.center.x).FirstOrDefault();
+            var keepouts = found.Select(keepout => (Area: Grown(keepout.Area, gap), keepout.What)).ToList();
+            var key = HomeKey(plain, plainCaption, beside, besideCaption, keepouts);
+            if (key == homeKey && homeFound != null) return homeFound;
+            var homes = new List<(string Name, float X, float Y)>
+            {
+                ("right", ConsoleHome.X, ConsoleHome.Y), ("lower right", ConsoleHome.X, -sharp.Down), ("left", -ConsoleHome.X, ConsoleHome.Y),
+                ("lower left", -ConsoleHome.X, -sharp.Down), ("below", 0f, -sharp.Down), ("upper right", ConsoleHome.X, sharp.Up),
+                ("upper left", -ConsoleHome.X, sharp.Up),
+            };
+            const int Across = 12, Upward = 6;
+            homes.AddRange(Enumerable.Range(0, (Across + 1) * (Upward + 1))
+                .Select(at => (X: Mathf.Lerp(-sharp.Left, sharp.Right, at % (Across + 1) / (float)Across), Y: Mathf.Lerp(-sharp.Down, sharp.Up, at / (Across + 1) / (float)Upward)))
+                .OrderBy(at => (at.X - ConsoleHome.X) * (at.X - ConsoleHome.X) + (at.Y - ConsoleHome.Y) * (at.Y - ConsoleHome.Y))
+                .Select(at => ($"the spot at {at.X:+0.00;-0.00} across, {at.Y:+0.00;-0.00} up", at.X, at.Y)));
+            RecordingSpot? least = null, any = null;
+            var leastOverlap = (Person: float.MaxValue, All: float.MaxValue);
+            foreach (var (name, x, y) in homes)
+            {
+                // Boopy goes on the side of his caption away from the subject: right of it when the caption, fitted there,
+                // is right of the subject. A spot where neither side is away from it is passed over.
+                foreach (var mirrored in subjectAcross == null ? new[] { false } : new[] { false, true })
+                {
+                    var shape = mirrored ? beside : plain;
+                    var line = mirrored ? besideCaption : plainCaption;
+                    var (position, seen) = Fit(shape, x, y, sharp);
+                    any ??= new RecordingSpot(position, name, "the subject's side", mirrored);
+                    if (subjectAcross is float middle && seen.center.x + (line - shape.center.x) / LabelDistance > middle != mirrored) continue;
+                    var crowded = keepouts.Where(keepout => keepout.Area.Overlaps(seen)).ToList();
+                    if (crowded.Count == 0) return Found(key, new RecordingSpot(position, name, null, mirrored));
+                    var overlap = (Person: crowded.Where(keepout => keepout.What == "a person").Sum(keepout => Overlap(keepout.Area, seen)),
+                        All: crowded.Sum(keepout => Overlap(keepout.Area, seen)));
+                    if (overlap.Person < leastOverlap.Person || overlap.Person == leastOverlap.Person && overlap.All < leastOverlap.All)
+                    {
+                        leastOverlap = overlap;
+                        least = new RecordingSpot(position, name, string.Join(" and ", crowded.Select(keepout => keepout.What).Distinct()), mirrored);
+                    }
+                    break;
+                }
+            }
+            return Found(key, least ?? any);
+        }
+
+        // How long a reply's layout must hold still before Boopy chooses his home for it: its parts are all known by then.
+        private const float SettleSeconds = .25f;
+        // When Boopy last moved on the recording, which side of the subject he left then, and whether this reply's home is chosen.
+        private float movedAt = float.NegativeInfinity, clock, stableSince;
+        private bool? sideLeft;
+        private bool homeChosen;
+        private int stableKey;
+        // The subject's middle across, as last seen from the recording's eye; the frame's middle without one.
+        private float? subjectAcross;
+
+        /// <summary>
+        /// Over a recording, Boopy keeps to his home on it (DESIGN, ROOT). It is chosen once a reply's parts are all known
+        /// (<paramref name="settled"/>: nothing more is arriving, and the layout has held still for a quarter second), and
+        /// he goes there by fade and stays. After that he moves only when where he is stops being clear of the keep-outs or
+        /// inside the sharp part, at most once a second and never back to the side he just left within 2 s. With no home
+        /// clear his caption wraps narrower first. The log names each move. He is never hidden there: the console stays
+        /// placed, his line stays with him, and it faces the eye. False with no recording shown.
+        /// </summary>
+        public bool KeepRecordingHome(ContextConsole controls, float now, bool settled)
+        {
+            if (!KeepPlaced(controls)) return false;
+            clock = now;
+            if (controls.Relocating || controls.Visiting) return true;
+            controls.FaceWearer();
+            if (!settled || RecordingHome(controls) is not RecordingSpot home) return true;
+            if (homeKey != stableKey) { stableKey = homeKey; stableSince = now; return true; }
+            var clearHere = PlaceClear(controls);
+            if (now - stableSince < SettleSeconds || homeChosen && clearHere || now - movedAt < 1f) return true;
+            // One step a frame: the narrower caption and its shadows are drawn, and measured, on the next.
+            if (!home.Clear && controls.NarrowCaption()) return true;
+            homeChosen = true;
+            // Within 3 cm of his home is there, while where he is stays clear; out of bounds even a centimetre is not.
+            if (Vector3.Distance(home.Position, controls.transform.position) <= (clearHere ? .03f : .001f) && home.Mirrored == controls.Mirrored) return true;
+            var here = RightOfSubject(controls.transform.position);
+            if (RightOfSubject(home.Position) == sideLeft && sideLeft != here && now - movedAt < 2f) { homeChosen = false; return true; }
+            Move(controls, home, here);
+            return true;
+        }
+
+        private void Move(ContextConsole controls, RecordingSpot home, bool here)
+        {
+            sideLeft = here; movedAt = clock;
+            controls.Relocate(home.Position, home.Mirrored);
+            Debug.Log("Boopy: home on the recording " + home + ".");
+        }
+
+        // Over a recording the console stays placed and shown, wherever it is; false with no recording shown.
+        private bool KeepPlaced(ContextConsole controls)
+        {
+            if (picture == null || !picture.Showing) return false;
+            console = controls;
+            ConsolePlaced = true; followingConsole = true;
+            return true;
+        }
+
+        // Whether the console, as drawn where it is, still lies inside the frame's sharp part and clear of every keep-out.
+        private bool PlaceClear(ContextConsole controls)
+        {
+            var (plain, _, beside, _) = Footprints(controls);
+            var seen = Seen(controls.Mirrored ? beside : plain, controls.transform.position);
+            var sharp = picture!.Sharp;
+            var gap = Mathf.Max(SpatialTheme.KeepoutMargin * controls.ComfortScale, controls.CaptionLineHeight) / LabelDistance;
+            return seen.xMin >= -sharp.Left - 1e-3f && seen.xMax <= sharp.Right + 1e-3f && seen.yMin >= -sharp.Down - 1e-3f && seen.yMax <= sharp.Up + 1e-3f
+                && !RecordingKeepouts().Any(keepout => Grown(keepout.Area, gap).Overlaps(seen));
+        }
+
+        // Whether a place lies right of the subject's middle (else of the frame's) as seen from the recording's eye.
+        private bool RightOfSubject(Vector3 position)
+        {
+            var seen = Quaternion.Inverse(picture!.Facing) * (position - picture.Eye);
+            return seen.x / seen.z > (subjectAcross ?? 0f);
+        }
+
+        /// <summary>
+        /// What Boopy keeps clear of on a recording, as seen from the eye at its placement in tangents across and up: each
+        /// shown subject's outline (its extent), each pin where the person pointed, and each shown word block. A loose model
+        /// box is no shape Boopy knows, so it keeps nothing clear.
+        /// </summary>
+        public List<(Rect Area, string What)> RecordingKeepouts()
+        {
+            var keepouts = new List<(Rect Area, string What)>();
+            if (picture == null || !picture.Showing) return keepouts;
+            if (renderedView != null)
+                foreach (var item in renderedView.Items)
+                {
+                    if (!overlays.TryGetValue(item.Id, out var outline) || !outline.gameObject.activeInHierarchy
+                        || !Geometry.TryContour(item.Grounding, out var shape) || PictureOf(item) is not PicturePlane plane) continue;
+                    keepouts.Add((SeenOnPicture(plane, shape.Min(point => point.X), shape.Min(point => point.Y), shape.Max(point => point.X), shape.Max(point => point.Y)),
+                        "the subject's shape"));
+                }
+            // Every other thing the reply places on this picture (a person, a tent), by its outline's extent or its box, and every
+            // object the outline run proposed on the held frame; but not one covering more than a third of the frame (the
+            // dune): there would be nowhere left (DESIGN, ROOT).
+            if (renderedView != null)
+            {
+                var subject = task != null ? PresentedSubject(renderedView) : focusedItemId ?? PresentedSubject(renderedView);
+                foreach (var item in renderedView.Items)
+                {
+                    if (item.Id == subject || !groundedItems.Contains(item.Id) || PictureOf(item) is not PicturePlane plane) continue;
+                    var shape = Geometry.Outline(item.Grounding);
+                    if (shape.Length == 0) continue;
+                    float x0 = shape.Min(point => point.X), y0 = shape.Min(point => point.Y), x1 = shape.Max(point => point.X), y1 = shape.Max(point => point.Y);
+                    if ((x1 - x0) * (y1 - y0) > 1f / 3f) continue;
+                    keepouts.Add((SeenOnPicture(plane, x0, y0, x1, y1), Person(item.Label) ? "a person" : "a thing in the reply"));
+                }
+            }
+            if (picture.Scene?.FrameId is string held && held == outlinedFrame)
+                foreach (var outlined in outlinedObjects)
+                    if (outlined.Extent() is Box2 extent && (extent.X1 - extent.X0) * (extent.Y1 - extent.Y0) <= 1f / 3f)
+                        keepouts.Add((SeenOnPicture(picture.Plane, extent.X0, extent.Y0, extent.X1, extent.Y1), "an outlined object"));
+            foreach (var pin in pins.Values)
+                if (pin.gameObject.activeInHierarchy) keepouts.Add((SeenFromEye(pin.transform, pin.Size), "the pin"));
+            foreach (var word in words.Values)
+                if (word.gameObject.activeInHierarchy) keepouts.Add((SeenFromEye(word.transform, word.Size), "the word"));
+            return keepouts;
+        }
+
+        /// <summary>
+        /// What is drawn under <paramref name="root"/>, each part as the eight world corners of its own bounds on its own
+        /// axes. For the console over a recording that is Boopy, his caption and its hint, and their shadows; a text with no
+        /// words draws nothing.
+        /// </summary>
+        public static IEnumerable<Vector3[]> DrawnParts(Component root) => Drawn(root).Select(part => part.Corners);
+
+        /// <summary>As <see cref="DrawnParts"/>, each with its renderer.</summary>
+        public static IEnumerable<(Renderer Part, Vector3[] Corners)> Drawn(Component root)
+        {
+            foreach (var part in root.GetComponentsInChildren<Renderer>())
+            {
+                if (!part.enabled || !part.gameObject.activeInHierarchy) continue;
+                if (part.TryGetComponent<TMP_Text>(out var text) && string.IsNullOrEmpty(text.text)) continue;
+                var bounds = part.localBounds;
+                if (bounds.size.sqrMagnitude < 1e-10f) continue;
+                var corners = new Vector3[8];
+                for (var i = 0; i < 8; i++)
+                    corners[i] = part.transform.TransformPoint(bounds.center + Vector3.Scale(bounds.extents,
+                        new Vector3((i & 1) == 0 ? -1f : 1f, (i & 2) == 0 ? -1f : 1f, (i & 4) == 0 ? -1f : 1f)));
+                yield return (part, corners);
+            }
+        }
+
+        // The console's drawn parts in metres along its own right and up from its position, with Boopy left of his caption
+        // (plain) and right of it (beside), each with its caption's middle across. Only the side he sits on is measured; the
+        // other is exact all the same: his body mirrors about the pair's middle, and the caption's block moves along, its
+        // words left-aligned in it as they are. With nothing drawn, the layout box on both sides.
+        private static (Rect Plain, float PlainCaption, Rect Beside, float BesideCaption) Footprints(ContextConsole controls)
+        {
+            var at = controls.transform;
+            Rect? Measure(IEnumerable<Vector3[]> parts)
+            {
+                var offsets = parts.SelectMany(part => part)
+                    .Select(corner => new Vector2(Vector3.Dot(corner - at.position, at.right), Vector3.Dot(corner - at.position, at.up))).ToList();
+                return offsets.Count == 0 ? null : Rect.MinMaxRect(offsets.Min(offset => offset.x), offsets.Min(offset => offset.y), offsets.Max(offset => offset.x), offsets.Max(offset => offset.y));
+            }
+            bool Under(Renderer part, Component? root) => root != null && part.transform.IsChildOf(root.transform);
+            Rect? Union(Rect? a, Rect? b) => a is not Rect one ? b : b is not Rect two ? one
+                : Rect.MinMaxRect(Mathf.Min(one.xMin, two.xMin), Mathf.Min(one.yMin, two.yMin), Mathf.Max(one.xMax, two.xMax), Mathf.Max(one.yMax, two.yMax));
+            var drawn = Drawn(controls).ToList();
+            var body = Measure(drawn.Where(part => Under(part.Part, controls.Companion)).Select(part => part.Corners));
+            var line = Measure(drawn.Where(part => Under(part.Part, controls.Caption)).Select(part => part.Corners));
+            // Anything else drawn stays where it is on either side.
+            var rest = Measure(drawn.Where(part => !Under(part.Part, controls.Companion) && !Under(part.Part, controls.Caption)).Select(part => part.Corners));
+            if (body == null && line == null && rest == null)
+            {
+                var half = controls.LayoutSize / 2f;
+                var layout = new Rect(-half.x, controls.LayoutCenterOffset - half.y, 2f * half.x, 2f * half.y);
+                return (layout, layout.center.x, layout, layout.center.x);
+            }
+            var axis = controls.MirrorAxis; var shift = controls.MirrorShift;
+            Rect? Mirror(Rect? side) => side is Rect r ? Rect.MinMaxRect(2f * axis - r.xMax, r.yMin, 2f * axis - r.xMin, r.yMax) : (Rect?)null;
+            Rect? Along(Rect? side, float by) => side is Rect r ? new Rect(r.x + by, r.y, r.width, r.height) : (Rect?)null;
+            var (plainBody, plainLine, besideBody, besideLine) = controls.Mirrored
+                ? (Mirror(body), Along(line, -shift), body, line) : (body, line, Mirror(body), Along(line, shift));
+            var plain = Union(Union(plainBody, plainLine), rest)!.Value; var beside = Union(Union(besideBody, besideLine), rest)!.Value;
+            return (plain, plainLine?.center.x ?? plain.center.x, beside, besideLine?.center.x ?? beside.center.x);
+        }
+
+        // The console with its footprint's middle at tangents (x, y) from the recording's eye, facing that eye, moved inside
+        // the frame's sharp part where it would cross its edge (centred on it when it is wider): where it goes, and its
+        // footprint as seen from the eye.
+        private (Vector3 Position, Rect Seen) Fit(Rect footprint, float x, float y, (float Left, float Right, float Up, float Down) sharp)
+        {
+            var aim = new Vector2(x, y) - footprint.center / LabelDistance;
+            var position = Vector3.zero; var seen = default(Rect);
+            for (var pass = 0; pass < 3; pass++)
+            {
+                position = picture!.Eye + picture.Facing * new Vector3(aim.x, aim.y, 1f).normalized * LabelDistance;
+                seen = Seen(footprint, position);
+                var shift = new Vector2(Inward(seen.xMin, seen.xMax, -sharp.Left, sharp.Right), Inward(seen.yMin, seen.yMax, -sharp.Down, sharp.Up));
+                if (shift.sqrMagnitude < 1e-10f) break;
+                aim += shift;
+            }
+            return (position, seen);
+        }
+
+        private RecordingSpot? Found(int key, RecordingSpot? spot) { homeKey = key; homeFound = spot; return spot; }
+
+        // What a home is found for: what of the console is drawn, the keep-outs, and the recording as placed and held.
+        private int HomeKey(Rect plain, float plainCaption, Rect beside, float besideCaption, List<(Rect Area, string What)> keepouts)
+        {
+            static int Mm(float value) => Mathf.RoundToInt(value * 1000f);
+            var hash = new HashCode();
+            foreach (var value in new[] { plain.xMin, plain.yMin, plain.xMax, plain.yMax, plainCaption, beside.xMin, beside.yMin, beside.xMax, beside.yMax, besideCaption,
+                picture!.Eye.x, picture.Eye.y, picture.Eye.z, picture.Facing.x, picture.Facing.y, picture.Facing.z, picture.Facing.w,
+                picture.Sharp.Left, picture.Sharp.Right, picture.Sharp.Up, picture.Sharp.Down })
+                hash.Add(Mm(value));
+            hash.Add(picture.Scene?.FrameId);
+            foreach (var (area, what) in keepouts) { hash.Add(Mm(area.xMin)); hash.Add(Mm(area.yMin)); hash.Add(Mm(area.xMax)); hash.Add(Mm(area.yMax)); hash.Add(what); }
+            return hash.ToHashCode();
+        }
+
+        // How far a span moves to lie inside low to high; a span wider than that is centred on it.
+        private static float Inward(float from, float to, float low, float high) =>
+            to - from > high - low ? (low + high - from - to) / 2f : from < low ? low - from : to > high ? high - to : 0f;
+
+        // A footprint (metres along the console's right and up) of a console at a position facing the recording's eye, as seen
+        // from that eye in tangents across and up.
+        private Rect Seen(Rect footprint, Vector3 position)
+        {
+            var toward = position - picture!.Eye;
+            var right = Vector3.Cross(Vector3.up, toward).normalized; var up = Vector3.Cross(toward.normalized, right);
+            var away = Quaternion.Inverse(picture.Facing);
+            var corners = new[] { footprint.min, new Vector2(footprint.xMax, footprint.yMin), footprint.max, new Vector2(footprint.xMin, footprint.yMax) }
+                .Select(corner => away * (toward + right * corner.x + up * corner.y)).ToArray();
+            return Rect.MinMaxRect(corners.Min(corner => corner.x / corner.z), corners.Min(corner => corner.y / corner.z),
+                corners.Max(corner => corner.x / corner.z), corners.Max(corner => corner.y / corner.z));
+        }
+
+        // A rectangle on a picture (image coordinates from its top-left) as seen from the recording's eye, in tangents.
+        private Rect SeenOnPicture(PicturePlane plane, float x0, float y0, float x1, float y1)
+        {
+            var away = Quaternion.Inverse(picture!.Facing);
+            var corners = new[] { plane.At(x0, y0), plane.At(x1, y0), plane.At(x1, y1), plane.At(x0, y1) }
+                .Select(corner => away * (new Vector3(corner.X, corner.Y, corner.Z) - picture.Eye)).ToArray();
+            return Rect.MinMaxRect(corners.Min(corner => corner.x / corner.z), corners.Min(corner => corner.y / corner.z),
+                corners.Max(corner => corner.x / corner.z), corners.Max(corner => corner.y / corner.z));
+        }
+
+        private static Rect Grown(Rect area, float by) => Rect.MinMaxRect(area.xMin - by, area.yMin - by, area.xMax + by, area.yMax + by);
+
+        private static float Overlap(Rect a, Rect b) =>
+            Mathf.Max(0f, Mathf.Min(a.xMax, b.xMax) - Mathf.Max(a.xMin, b.xMin)) * Mathf.Max(0f, Mathf.Min(a.yMax, b.yMax) - Mathf.Max(a.yMin, b.yMin));
+
+        /// <summary>A flat thing's rectangle as seen from the eye at the recording's placement, in tangents across and up.</summary>
+        public Rect SeenFromEye(Transform thing, Vector2 size)
+        {
+            if (picture == null) return default;
+            var corners = new[] { -1f, 1f }.SelectMany(x => new[] { -1f, 1f }.Select(y => Quaternion.Inverse(picture.Facing)
+                * (thing.position + thing.right * (x * size.x / 2f) + thing.up * (y * size.y / 2f) - picture.Eye))).ToArray();
+            var across = corners.Select(corner => corner.x / corner.z).ToArray(); var upward = corners.Select(corner => corner.y / corner.z).ToArray();
+            return Rect.MinMaxRect(across.Min(), upward.Min(), across.Max(), upward.Max());
+        }
+
         /// <summary>
         /// A turn opens at the pinch: the layout frame is taken now, and the console goes to its home in it, or the nearest
         /// spot clear of the objects shown, by fade if it moves. Until the turn closes only the reply's own objects move it.
@@ -139,7 +497,16 @@ namespace Boopy.Quest
             if (renderedView != null) ProtectObjects(renderedView);
             turnOpen = true;
             ConsolePlaced = true;
-            // A recorded scene fills the view as the room would, so its turn takes the same home as a turn in the room.
+            // Over a recording the console takes its home on the recording, inside its sharp part, never hidden; in the room,
+            // its home in this view, or the nearest spot clear of the objects shown.
+            // A new reply: its home is chosen again once its parts are known.
+            if (RecordingHome(controls) is RecordingSpot home)
+            {
+                homeChosen = false;
+                if (Vector3.Distance(home.Position, controls.Destination) > .03f || home.Mirrored != controls.Mirrored)
+                    Move(controls, home, RightOfSubject(controls.transform.position));
+                return;
+            }
             var place = HomeFor(head, controls);
             if (!FollowFootprintClear(controls, place))
                 foreach (var bounds in new[] { ViewBounds, Expanded() })
@@ -164,6 +531,7 @@ namespace Boopy.Quest
         public void ReanchorConsole(ContextConsole controls, Vector3 home)
         {
             console = controls;
+            if (KeepPlaced(controls)) return;
             if (!FollowFootprintClear(controls, home)) { HoldConsole(controls); return; }
             followingConsole = true;
             ConsolePlaced = true;
@@ -174,6 +542,7 @@ namespace Boopy.Quest
         public bool MoveConsole(ContextConsole controls, Vector3 position)
         {
             console = controls;
+            if (KeepPlaced(controls)) return true;
             var candidateClear = head == null || FollowFootprintClear(controls, position);
             var currentClear = head == null || FollowFootprintClear(controls, controls.transform.position);
             var decision = ProjectedKeepout.Decide(candidateClear, currentClear);
@@ -332,6 +701,7 @@ namespace Boopy.Quest
             var referent = outlined.FirstOrDefault();
             referentPoint = referent == null ? null : AnchorOf(referent);
             DrawOutlines(outlined, view.ReferentId);
+            ShowPins(onPicture);
             foreach (var item in onPicture) ShowWord(item);
             EnsureLayoutFrame();
             if (!layoutReady) return;
@@ -430,15 +800,25 @@ namespace Boopy.Quest
             if (!words.TryGetValue(item.Id, out var word)) { word = WordBlock.Create(transform); words[item.Id] = word; }
             var shown = Shown(item);
             var term = task?.Term;
-            var remember = term != null && term.NotHeardLastTime && !task!.RepliesToAnswer;
+            // What Boopy remembers of the last attempt at this term, on his line's own turn only.
+            var memoryLine = term == null || task!.RepliesToAnswer ? null
+                : term.NotHeardLastTime ? WordBlock.Memory : term.HeardLastTime ? WordBlock.HeardMemory : null;
             var eyes = head.position;
             var center = new Vector3(plane.Center.X, plane.Center.Y, plane.Center.Z);
-            word.Show(term?.Text, shown.Label, term != null ? task!.Detail : null, remember, Vector3.Distance(eyes, center), reducedMotion);
+            // The guess reads as Boopy's line says it: "Tent", not "tent" (DESIGN).
+            word.Show(term?.Text, Capitalized(shown.Label), term != null ? task!.Detail : null, memoryLine, Vector3.Distance(eyes, center), reducedMotion);
             var outline = Geometry.Outline(item.Grounding);
             if (outline.Length == 0) { word.Hide(); return; }
             float x0 = outline.Min(point => point.X), x1 = outline.Max(point => point.X), y0 = outline.Min(point => point.Y), y1 = outline.Max(point => point.Y);
             var w = word.Size.x / plane.Width; var h = word.Size.y / plane.Height;
             var gap = SpatialTheme.Gap * Vector3.Distance(eyes, center) / plane.Height;
+            // On a loose model box the word sits on the pin where the person pointed, half a line from it (DESIGN).
+            if (pins.TryGetValue(item.Id, out var pin) && pin.gameObject.activeSelf && pointed.TryGetValue(item.Grounding.ObservationId!, out var pointedAt))
+            {
+                var rx = pin.Size.x / 2f / plane.Width; var ry = pin.Size.y / 2f / plane.Height;
+                x0 = pointedAt.X - rx; x1 = pointedAt.X + rx; y0 = pointedAt.Y - ry; y1 = pointedAt.Y + ry;
+                gap = (word.Lines.Count > 0 ? word.Lines[0].height : word.Size.y) / 2f / plane.Height;
+            }
             var middle = (x0 + x1) / 2f; var level = (y0 + y1) / 2f;
             // The picture covers the view, so part of it lies past the view's edge: the word stays in the part well in view.
             var (vx0, vy0, vx1, vy1) = picture != null && picture.Showing ? picture.Readable : (0f, 0f, 1f, 1f);
@@ -465,6 +845,31 @@ namespace Boopy.Quest
                 word.Read(darkest, brightest);
             }
         }
+
+        private static readonly HashSet<string> People = new HashSet<string> { "person", "people", "man", "men", "woman", "women", "child", "boy", "girl" };
+        // "man in blue robe" is a person too.
+        private static bool Person(string label) => label.ToLowerInvariant().Split(' ', '-').Any(People.Contains);
+
+        /// <summary>
+        /// The still's darkest and brightest luminance under a thing on the recording, by where its corners land on the
+        /// picture from the recording's eye (AUDIT: each caption line's contrast is measured there). While the clip plays the
+        /// frame under it is not measured, so it reads as the worst case, (0, 1); so does a thing off the picture.
+        /// </summary>
+        public (float Darkest, float Brightest) GroundUnder(Vector3[] corners)
+        {
+            if (picture == null || !picture.Showing || picture.Playing) return (0f, 1f);
+            var plane = picture.Plane; var eye = ToNumerics(picture.Eye);
+            float x0 = 1f, y0 = 1f, x1 = 0f, y1 = 0f; var hit = false;
+            foreach (var corner in corners)
+            {
+                if (!plane.TryImage(eye, ToNumerics(corner - picture.Eye), out var x, out var y, out _)) continue;
+                x0 = Mathf.Min(x0, x); y0 = Mathf.Min(y0, y); x1 = Mathf.Max(x1, x); y1 = Mathf.Max(y1, y); hit = true;
+            }
+            return hit ? picture.LuminanceRange(x0, y0, x1, y1) : (0f, 1f);
+        }
+
+        private static string Capitalized(string label) =>
+            label.Length == 0 ? label : char.ToUpperInvariant(label[0]) + label.Substring(1);
 
         // A line is calm when the still under it spans at most this much luminance (5th to 95th percentile): sky or sand
         // gradients pass, an arm or a head against the sky does not.
@@ -514,12 +919,40 @@ namespace Boopy.Quest
         }
 
         /// <summary>The available contour, or box, with each point placed from its own coarse depth sample.</summary>
+        /// <summary>
+        /// The pin on each subject of a recorded picture whose only shape is the model's loose box, where the person pointed
+        /// on that observation; none where the point is unknown or a real outline shows.
+        /// </summary>
+        private void ShowPins(List<Item> onPicture)
+        {
+            var loose = onPicture.Where(item => !Geometry.TryContour(item.Grounding, out _) && item.Grounding.ObservationId != null
+                && pointed.ContainsKey(item.Grounding.ObservationId)).ToList();
+            foreach (var gone in pins.Keys.Where(id => loose.All(item => item.Id != id)).ToList())
+            {
+                Discard(pins[gone].gameObject); pins.Remove(gone);
+            }
+            if (head == null) return;
+            foreach (var item in loose)
+            {
+                if (PictureOf(item) is not PicturePlane plane) continue;
+                var at = pointed[item.Grounding.ObservationId!];
+                if (!pins.TryGetValue(item.Id, out var pin)) { pin = BoopPin.Create(transform); pins[item.Id] = pin; }
+                var away = N.Vector3.Normalize(N.Vector3.Cross(plane.Right, plane.Up));
+                var spot = plane.At(at.X, at.Y, -away, .002f);
+                var right = new Vector3(plane.Right.X, plane.Right.Y, plane.Right.Z); var up = new Vector3(plane.Up.X, plane.Up.Y, plane.Up.Z);
+                var position = new Vector3(spot.X, spot.Y, spot.Z);
+                pin.Show(position, Quaternion.LookRotation(Vector3.Cross(right, up), up), Vector3.Distance(head.position, position), reducedMotion);
+            }
+        }
+
         private void DrawOutlines(List<Item> worldItems, string? referentId)
         {
             if (room == null) return;
+            // On a recorded picture only a real outline is drawn: a loose model box claims a shape Boopy does not know (DESIGN).
             var items = worldItems
                 .Where(item => Geometry.Outline(item.Grounding).Length >= 3 &&
-                    item.Grounding.ObservationId != null && snapshots.ContainsKey(item.Grounding.ObservationId)).ToList();
+                    item.Grounding.ObservationId != null && snapshots.ContainsKey(item.Grounding.ObservationId)
+                    && (PictureOf(item) == null || Geometry.TryContour(item.Grounding, out _))).ToList();
             foreach (var gone in overlays.Keys.Where(id => items.All(item => item.Id != id)).ToList())
             {
                 overlays[gone].gameObject.SetActive(false);
@@ -709,6 +1142,8 @@ namespace Boopy.Quest
 
         private bool ReserveConsole(List<LabelRect> occupied)
         {
+            // Over a recording the console keeps its home on it, never hidden; the room's keepouts are the room's.
+            if (console != null && KeepPlaced(console)) return true;
             ConsolePlaced = false;
             if (console == null) return false;
             if (turnOpen) return ReserveTurnPlace(console, occupied);
@@ -899,12 +1334,15 @@ namespace Boopy.Quest
             protectedAreas.Clear();
             protectedWorld.Clear();
             layoutReady = false;
-            ConsolePlaced = false;
+            // Over a recording Boopy stays where he is, shown.
+            if (!OnRecording) ConsolePlaced = false;
             referentPoint = null;
             foreach (var overlay in overlays.Values) { overlay.gameObject.SetActive(false); if (Application.isPlaying) Destroy(overlay.gameObject); else DestroyImmediate(overlay.gameObject); }
             overlays.Clear();
             foreach (var word in words.Values) { word.gameObject.SetActive(false); Discard(word.gameObject); }
             words.Clear();
+            foreach (var pin in pins.Values) { pin.gameObject.SetActive(false); Discard(pin.gameObject); }
+            pins.Clear(); pointed.Clear();
             accents.Clear(); focusedItemId = null; renderedView = null; renderedSessionId = null; renderedReferentId = null; groundedItems.Clear();
             task = null;
         }

@@ -119,14 +119,20 @@ enables it. Boxes stay approximate until a mask exists.
 
 With the service's recorded-scene routes on (`BOOPY_RECORDED_SCENE=1`), the Mac can show a still of
 your own recording. The headset reads it over the same USB connection every few seconds and shows it
-full screen, edge to edge and fixed to your view as your head turns; point at it with your hand (the
-Quest's own pointing ray) and pinch to talk about that still. A held Touch controller works too: its
+as it was captured, fixed in the world: placed in front of you at eye level once you wear the
+headset (and again when you recenter), at the true scale its camera saw it (the scene's
+`projection`), whole, its edge fading into a blurred and dimmed copy of itself all around you. A clip plays its own
+video, streamed from the Mac's `video.url` over the same reverse, at its own frame rate and without
+sound. Point at it with your hand (the Quest's own pointing ray): a quick tap boops with no words,
+and pinch and hold to talk. A boop stops a clip on the analyzed frame nearest that moment; the next
+tap after the answer plays it on. A held Touch controller works too: its
 trigger is the pinch and it points like a hand, because the headset tracks no hand while a controller
 is in it. A dot shows where the hand or controller points (dimmed in the room when nothing is ahead,
-and never on the subject's word). The turn sends which still it is and the point your hand or controller aimed at on it (0
+and never on the subject's word). The turn sends which frame it is and the point your hand or controller aimed at on it (0
 to 1 from its top-left corner, sent as the gaze point, the one point a recorded frame takes), never
-pixels, and the reply's outline is drawn on the picture. The still stays in the headset's memory only: no footage file is on
-the headset or in the APK. In the editor, `Boopy.Quest.Editor.RecordedSceneValidation.Render` writes
+pixels, and the reply's outline is drawn on the picture. Stills stay in the headset's memory only and
+the video streams from the Mac: no footage file is on the headset or in the APK. Android's own video
+player keeps the platform's cleartext rule, so the build allows plain HTTP to 127.0.0.1 only. In the editor, `Boopy.Quest.Editor.RecordedSceneValidation.Render` writes
 stills of a synthetic picture; with `BOOPY_RECORDED_FRAME` set to the absolute path of a JPEG still and
 `BOOPY_RENDER_DIR` to a private folder, it also renders that still, with no outline on it.
 `Boopy.Quest.Editor.RecordedLookRender.Render` draws four frames of the look on a subject (first
@@ -151,6 +157,37 @@ adb shell am start -n com.boopy.quest/com.unity3d.player.UnityPlayerGameActivity
 ```
 
 Launch it again without the extra to get Boopy back.
+
+## A boop from adb
+
+To run a whole turn on a recording with the headset unworn, a development build takes its recording
+from the shell. `boopy.place` places the read recording and plays it. A new `boopy.boop.id` boops once,
+at `boopy.boop.x` and `boopy.boop.y` on the recording (0 to 1 from its top-left), as a tap there would,
+on the clip at `boopy.boop.t` seconds when given. It keeps the tap rule: the first one after Boopy's
+answer plays the clip on and clears his line, the word and the shape, and the next one boops. Each
+waits until a recording is read, any earlier capture is settled and no turn is running, places the
+recording first if nobody has worn the headset, and logs what it does or waits for ("tap by adb after
+the answer" or "tap by adb: a boop"), and the launch's referrer ("adb hook from com.android.shell",
+or "no referrer"). Each time Boopy moves on the recording the log names his home, his side of his
+line and whether it is clear ("home on the recording left, Boopy left of his line, clear").
+
+```bash
+adb shell am start -n com.boopy.quest/com.unity3d.player.UnityPlayerGameActivity --ez boopy.place true
+```
+
+```bash
+adb shell am start -n com.boopy.quest/com.unity3d.player.UnityPlayerGameActivity --es boopy.boop.id 1 --ef boopy.boop.x 0.674 --ef boopy.boop.y 0.264 --ef boopy.boop.t 5.47
+```
+
+`boopy.hold.ms` holds as a pinch would for that many milliseconds, at the boop's point when given: a
+turn about the recording when nothing is open, or the answer once Boopy has asked. It records from the
+microphone, or with `boopy.hold.wav` sends that WAV (a bare file name in the app's own data folder) in
+its place, and logs only the sound's peak and RMS level in dBFS. A new intent to the running app is
+taken as it is (Unity's activity sets it as its intent), each once.
+
+```bash
+adb shell am start -n com.boopy.quest/com.unity3d.player.UnityPlayerGameActivity --ei boopy.hold.ms 2500 --es boopy.hold.wav answer.wav
+```
 
 ## Check first on the headset
 

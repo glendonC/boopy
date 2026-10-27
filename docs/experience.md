@@ -66,26 +66,68 @@ Nothing reaches the person's own assistant. A later Talk turn
 returns to the conversation's own line and follow-up questions. Without a task, the
 conversation looks as before.
 
-The Mac can show a recorded scene: one still of the person's own recording, chosen on the Mac. The
-headset shows it full screen, as a full-screen video is: it fills the view edge to edge, scaled to
-cover the whole view and cropped by the view's edge where it runs past, so nothing shows around it,
-and it stays fixed to the view as the head turns. The headset takes it away when the Mac clears it.
-No words sit on it, and it never passes for the room as it is now: one small cue stays in the
-lower-left of the view the whole time (the upper-left when the subject's word is there). For a clip
-it is a player's thin bar, stopped where the still is, with the play triangle; for a photo it is the
-word "Recorded".
+The Mac can show a recorded scene: one of the person's own recordings, chosen on the Mac. The
+headset shows it exactly as it was captured, fixed in the world: placed in front of the person at
+eye level, facing them, once the headset is worn (and again on the system recenter), at the true
+scale its camera saw it (the scene's measured projection, from the eye at that placement), the whole
+frame with no crop and no zoom. A clip plays its own video at its own frame rate, looping, without
+sound. The frame's outer edge (about 10 degrees) dissolves into the same footage, heavily blurred,
+near its own brightness and mirrored on past its edges, on a sphere around the person that lines up
+with it; from about 8 degrees past the frame it eases into a far field of the same footage at a few
+texels, a calm gradient of the scene's own sky and sand, so no subject repeats as a shape. The eye
+finds no edge, and no black and no room shows in any direction. A recording with
+no measured projection is not guessed at: it is fitted whole into the view. The headset takes it
+away when the Mac clears it. No words sit on it, and it never passes for the room as it is now: one
+small cue sits on the frame, in its lower-left a few degrees inside its edge (the upper-left when
+the subject's word is there). For a clip it is a player's thin bar filled to where the clip is, with
+the play triangle while it is stopped; for a photo it is the word "Recorded".
 While it shows, the person points at it with a hand (the Quest's own pointing ray) or a held
 controller, and one small dot shows where the ray lands on the picture; it gives way while the ray
-is on the subject's word, so it never sits on the letters. Every Talk turn is about
-that still: the turn names the still and the point the talking hand or controller aimed at (else
-the middle of the view), never sends a frame of the room, and the room's live outlines are off.
-Boopy's line and the controls ride on the recording where they sit in the view in the room. The reply's outline lies on the picture, with a
+is on the subject's word, so it never sits on the letters. A quick tap boops there with no words
+(Boopy answers as for "What is this?"); holding lets the person speak. A boop on a playing clip
+stops it on the analyzed frame nearest that moment, and the turn is about that frame. One rule
+holds for every tap, by hand or by the development hook: the first tap after Boopy's answer plays
+the clip on and clears his line, the word and the shape; the next tap boops. Each boop on a recording, a tap or a hold while Boopy has not
+asked, starts its own conversation, so each can open its own task and word; a hold once he asks
+is the answer, in the same conversation. Every turn names the frame and the point the hand or controller
+aimed at (else the middle of the view), never sends a frame of the room, and the room's live
+outlines are off. A failure says its real reason in plain words, and the Mac is never said to be
+connecting once it has answered.
+Over a recording the console shows no panel, card or button: Boopy sits on the recording, never
+hidden, his caption always with him. All of him and his line, the hint and the line's shadows
+included, stay inside the frame's sharp part and at least one caption line clear of the subject's
+outline or pin, of its word, of every other person or thing the reply places on the frame, and of
+every object the outline run proposed on the held frame (but not one that covers more than a third
+of the frame, such as the dune), as seen from where the person stands. He chooses his home once a reply has fully arrived
+and its layout holds still, goes there by fade and stays; he moves again only when where he is stops
+being clear, at most once a second, and never back to the side he just left within 2 seconds. He takes the first such home: right of
+the frame's middle and a little down, else lower right, left, lower left, below, upper right, upper
+left, else the nearest clear spot across the frame; when none is clear, the spot that covers the
+least of a person, then the least of the rest.
+A long line pages; his line is a caption beside him with no box, each line on a soft shadow right
+behind its strokes that fades out past them. Every line reads at 4.5:1 or more over the footage
+under it, measured from the still's own pixels there as the word's ink is: Graphite words on a soft
+Frost glow where the footage is bright enough, else Frost words on a Graphite shadow made stronger,
+line by line, until that line clears 4.5:1 against the brightest footage under it. While the clip
+plays, the frame under the line is not measured, so it is taken at its brightest. Once he asks, a small "Hold to
+answer" sits under it, and holding answers. A capture left unresolved from before is settled
+quietly with the Mac when a recording shows, never shown as a card over it. The reply's outline lies on the picture, with a
 dark edge so it reads on bright sand and sky, and the subject's word sits right above it (below it
-when above would leave the view), always a few degrees inside the view's edge, with no box: in a practice task the outside word, Boopy's guess under it, and where the word
-came from. When the person answers, Boopy shows what it heard: the word lights up once and Boopy
+when above would leave the sharp frame), always a few degrees inside the frame's edge, never on the
+blurred footage around it, with no box: in a practice task the outside word, Boopy's guess under it
+with its first letter capital as his line says it ("Tent"), and where the word came from. Where the
+model's only shape for the subject is its loose box, no box is drawn: that box is not a shape Boopy
+knows. A small Ember ring, about 1.8 degrees across on a thin Graphite halo, marks the exact spot the
+person pointed at; it pulses once as it appears (a cut with reduced motion) and stays while the word
+shows, and the word sits on it, half a line above it (else below it, else beside it). Where the word
+needs a backing to read, it is the caption's soft shading behind each line, with no edge or corner.
+Boopy sits on the side of his caption away from the subject, and his caption always faces the eye;
+when no home on the frame fits it, it wraps narrower, then pages two lines at a time, before he
+settles for a crowded spot. When the person answers, Boopy shows what it heard: the word lights up once and Boopy
 hops when it heard the word, the word lights up and Boopy points at it when it did not catch it,
 and Boopy tilts toward the person when it heard none of that language. On a later turn the word
-says "Didn't hear it last time" under it. Another still from the Mac replaces the picture between
+says "Didn't hear it last time" under it, with an Ember underline, or "Heard it last time" in the
+same place and type, with none. Another still from the Mac replaces the picture between
 turns and takes the old still's outline and word with it. A recorded still is never the room as it
 is now, and the headset keeps it in memory only.
 
