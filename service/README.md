@@ -16,7 +16,10 @@ it never calls Grok or NVIDIA. The older activity file loop remains in `src/acti
 - whisper.cpp with `large-v3-turbo` and the Silero VAD model. A build under
   `~/.halcyonic/speech` is used when present. Otherwise set the `BOOPY_WHISPER_*` variables.
 - An interpreter: Ollama with a local vision model (default `qwen3.6:35b-a3b-nvfp4`), or a Meta
-  Model API key for Muse Spark, or the recorded fixture.
+  Model API key for Muse Spark, or the recorded fixture. An answer whose JSON misses the output
+  schema is asked for once more with the same inputs, within 15 s of the turn's start, and the
+  journal records `interpretation.retried`; a second miss, or any other failure, ends the turn
+  with "Could not interpret that. Please try again."
 - Optional recorded-media inspect/decode requires existing FFmpeg and FFprobe at
   `/opt/homebrew/bin/ffmpeg` and `/opt/homebrew/bin/ffprobe`. Version 8.1.1 is runtime verified.
   The real codec tests also require the installed `libx264`, `libx265` and AAC encoders. No tool

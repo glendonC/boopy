@@ -9,6 +9,7 @@ import { Projection } from '../session.ts';
 import { startRequest, testBoopy } from '../testing.ts';
 import { FixtureInterpreter } from './fixture.ts';
 import { OllamaInterpreter } from './ollama.ts';
+import { InterpretError, ModelOutputError } from './output.ts';
 
 test('actual isolated connection refusal is a sanitized typed latest-turn failure and survives replay', async () => {
   const listener = createServer();
@@ -127,5 +128,77 @@ test('only explicit refusal on loopback Ollama gets the local-unavailable classi
     } finally {
       journal.close();
     }
+  }
+});
+
+test('an answer that misses the schema is tried once more with the same inputs, and both tries are journaled', async () => {
+  const fixture = new FixtureInterpreter();
+  const said: string[] = [];
+  let misses = 1;
+  const { boopy, journal } = testBoopy({
+    interpreter: {
+      provider: 'synthetic',
+      model: 'synthetic',
+      async interpret(input) {
+        said.push(input.said);
+        if (misses > 0) {
+          misses -= 1;
+          // Ollama's qwen once sent a string where the schema wants an object.
+          throw new ModelOutputError(
+            "The model's JSON does not match: Invalid input: expected object, received string",
+            '{"synthetic": true}',
+          );
+        }
+        return fixture.interpret(input);
+      },
+    },
+  });
+  try {
+    const view = await boopy.start(startRequest('What is this?'));
+    assert.equal(view.interpretationFailure ?? null, null);
+    assert.ok(view.items.some((item) => item.id === view.referentId));
+    assert.deepEqual(said, ['What is this?', 'What is this?']);
+    assert.deepEqual(
+      journal
+        .all()
+        .map((event) => event.type)
+        .filter((type) => type.startsWith('interpretation.')),
+      ['interpretation.retried', 'interpretation.proposed'],
+    );
+
+    // Missing it twice ends the turn with today's honest line, after exactly two tries.
+    misses = 2;
+    said.length = 0;
+    const twice = await boopy.start(startRequest('What is this?'));
+    assert.equal(twice.interpretationFailure?.code, 'interpreter_failed');
+    assert.equal(twice.notice, 'Could not interpret that. Please try again.');
+    assert.equal(said.length, 2);
+  } finally {
+    journal.close();
+  }
+});
+
+test('a failure that is not a schema miss is not retried', async () => {
+  let calls = 0;
+  const { boopy, journal } = testBoopy({
+    interpreter: {
+      provider: 'synthetic',
+      model: 'synthetic',
+      async interpret() {
+        calls += 1;
+        throw new InterpretError('Ollama answered 500.', '');
+      },
+    },
+  });
+  try {
+    const view = await boopy.start(startRequest('What is this?'));
+    assert.equal(view.interpretationFailure?.code, 'interpreter_failed');
+    assert.equal(calls, 1);
+    assert.equal(
+      journal.all().some((event) => event.type === 'interpretation.retried'),
+      false,
+    );
+  } finally {
+    journal.close();
   }
 });

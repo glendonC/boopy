@@ -104,12 +104,12 @@ export function parseModelText(text: string): ModelOutput {
   const start = body.indexOf('{');
   const end = body.lastIndexOf('}');
   if (start < 0 || end <= start)
-    throw new InterpretError('The model returned no JSON object.', text);
+    throw new ModelOutputError('The model returned no JSON object.', text);
   let value: unknown;
   try {
     value = JSON.parse(body.slice(start, end + 1));
   } catch {
-    throw new InterpretError('The model returned JSON that does not parse.', text);
+    throw new ModelOutputError('The model returned JSON that does not parse.', text);
   }
   let parsed = ModelOutput.safeParse(value);
   // Follow-ups are an optional extra, like a choice: a malformed list is dropped, never reshaped,
@@ -123,7 +123,7 @@ export function parseModelText(text: string): ModelOutput {
   )
     parsed = ModelOutput.safeParse({ ...value, followUps: null });
   if (!parsed.success) {
-    throw new InterpretError(
+    throw new ModelOutputError(
       `The model's JSON does not match: ${parsed.error.issues[0]?.message}`,
       text,
     );
@@ -141,6 +141,11 @@ export class InterpretError extends Error {
     super(message);
     this.raw = raw;
   }
+}
+
+/** The model answered, but not with JSON that matches the schema: worth one more try. */
+export class ModelOutputError extends InterpretError {
+  override name = 'ModelOutputError';
 }
 
 const clamp = (value: number) => Math.min(1, Math.max(0, value));

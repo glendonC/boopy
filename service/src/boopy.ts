@@ -39,8 +39,12 @@ import {
 } from './evidence-contract.ts';
 import { momentPicture } from './grok-bot.ts';
 import { cueReferent } from './interpret/cue-referent.ts';
-import { type Interpreter, InterpreterUnavailableError } from './interpret/interpreter.ts';
-import { choiceForResponse, normalize } from './interpret/output.ts';
+import {
+  type Interpreter,
+  InterpreterUnavailableError,
+  type InterpretInput,
+} from './interpret/interpreter.ts';
+import { choiceForResponse, ModelOutputError, normalize } from './interpret/output.ts';
 import type { Journal, MediaStore, Recorded } from './journal.ts';
 import { nearest, type TextReader } from './ocr.ts';
 import { buildPackage, verificationOf } from './package.ts';
@@ -109,6 +113,8 @@ const randomId = (prefix: string) =>
 
 /** Lines of OCR text given to a model at most, nearest the cue first. */
 const PROMPT_LINES = 40;
+/** A model answer that misses the schema is tried once more only this soon into the turn. */
+const RETRY_WITHIN_MS = 15_000;
 
 /** Why a recorded frame is looked at: never as the person's surroundings at this moment. */
 const RECORDED_REASON =
@@ -1388,7 +1394,7 @@ export class Boopy {
     const started = performance.now();
     try {
       this.#processing(sessionId, 'interpreting', heard.utteranceId, observationId);
-      const result = await interpreter.interpret({
+      const request: InterpretInput = {
         ...(teachable === undefined ? {} : { teachable: teachable.words }),
         inputSource: session.utterances.find((utterance) => utterance.id === heard.utteranceId)
           ?.source,
@@ -1451,6 +1457,26 @@ export class Boopy {
           status: item.status,
           ...(item.note !== undefined && { note: item.note }),
         })),
+      };
+      // A local model now and then answers with JSON that misses the schema. One more try with the
+      // same inputs, journaled, while the turn is still young; any other failure is not retried.
+      const result = await interpreter.interpret(request).catch(async (failure: unknown) => {
+        const elapsedMs = Math.round(performance.now() - started);
+        if (!(failure instanceof ModelOutputError) || elapsedMs > RETRY_WITHIN_MS) throw failure;
+        this.#record({
+          type: 'interpretation.retried',
+          session: sessionId,
+          actor: 'system',
+          data: {
+            observationId,
+            utteranceId: heard.utteranceId,
+            provider: interpreter.provider,
+            model: interpreter.model,
+            reason: 'output-not-schema',
+            elapsedMs,
+          },
+        });
+        return interpreter.interpret(request);
       });
       const latencyMs = Math.round(performance.now() - started);
       const normalized = normalize(result.output, {

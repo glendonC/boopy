@@ -219,6 +219,18 @@ export type BoopyEvent =
       }
     >
   | Event<
+      'interpretation.retried',
+      {
+        readonly observationId: string;
+        readonly utteranceId: string;
+        readonly provider: string;
+        readonly model: string;
+        /** The model answered with JSON that does not match the schema; it is asked once more. */
+        readonly reason: 'output-not-schema';
+        readonly elapsedMs: number;
+      }
+    >
+  | Event<
       'interpretation.failed',
       {
         readonly observationId: string;
