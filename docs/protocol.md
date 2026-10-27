@@ -34,8 +34,11 @@ The assistant cannot set status, delivery, or continuity. Every task view says:
 - continuity is local only
 - delivery is not sent
 
-An extra field claiming a live assistant connection is rejected. An accepted assistant result
-is marked as a local stand-in.
+The service, never the assistant, adds `"sentTo": "grok-bot"` to a view once a moment for its
+task has started going to the person's own Grok Bot (see
+[Moments to the person's Grok Bot](#moments-to-the-persons-grok-bot)). `delivery` stays
+`not-sent`, because no reply comes back. An extra field claiming a live assistant connection is
+rejected. An accepted assistant result is marked as a local stand-in.
 
 Status lines: `checking`, `cant-read-label`, `wrong-item`, `try-again`, `not-sent`,
 `still-checking`, `continue-later`.
@@ -272,4 +275,24 @@ The task routes are on the loopback headset API, behind the same Host check as t
 headset routes. Every task route refuses a request that carries a browser `Origin`.
 
 Task events do not create conversation items or dialogue in the session. The headset reads the
-session's task and sends answers to the Mac. Nothing on this path reaches an outside assistant.
+session's task and sends answers to the Mac. Without the person's opt-in below, nothing on this
+path reaches an outside assistant.
+
+## Moments to the person's Grok Bot
+
+Code: `service/src/grok-bot.ts` and the task routes. Setup is in
+[the service README](../service/README.md#moments-to-your-grok-bot).
+
+- It is opt-in: the person names their own Grok Bot routine's webhook in a file on the Mac
+  (`BOOPY_GROK_BOT_WEBHOOK_FILE`). Without it nothing is sent.
+- It is one way. A task's opening sends a moment, with a small picture of the view and what the
+  person pointed at marked; each answer Boopy assesses sends a follow-up moment with the same
+  `momentId` and no picture. Each is one POST with a 10 s bound and no retry. An opening waits at
+  most 3 s for its send to start; answers never wait.
+- "Sent to your Grok Bot" means the routine's run started. The Bot's reply stays in its own chat,
+  and Boopy never reads it back.
+- "Not sent to your AI" stays when there is no webhook file, when the send failed, and when the
+  send had not started by the time the line was shown; a send that starts later shows on the
+  task's next read.
+- The journal keeps the outcome (`grokbot.delivery.started` with the Bot's run id when it gives
+  one, or `grokbot.delivery.failed` with the HTTP status only), never the URL or the key.

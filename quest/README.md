@@ -88,13 +88,16 @@ returns an actual answer with an optional local voice. One active source annotat
 
 When that first answer is about a grounded subject, the headset shows the session's task from the
 Mac. The chip on the outlined subject shows the task's label and stays proposed. The line beside
-the companion shows Boopy's words under "Boopy · Not sent to your AI". Only while the line asks you something
-is the first tile of the row under it **Answer**, the prompt the Mac sends, with Talk's mic, in
-**Talk**'s place. Pinch it, speak, then tap **Finish**. The line reads "Saving on your Mac…"
-while the Mac records your words on the task, then shows them under "You, as heard · Not sent to your AI",
-and **Talk** is the first tile again. When the line asks nothing, Talk stays first. Nothing reaches your own assistant. A first answer that
-offers a choice shows its choice and no task. A later Talk turn returns to the conversation's
-own line.
+the companion shows Boopy's words under "Boopy · Not sent to your AI", or "Boopy · Sent to your Grok
+Bot" once the task's moment has started going to your own Grok Bot. Only while the line asks you
+something is the first tile of the row under it **Answer**, the prompt the Mac sends, with Talk's
+mic, in **Talk**'s place. Pinch it, speak, then tap **Finish**. The line reads "Saving on your
+Mac…" while the Mac records your words on the task, then shows them under "You, as heard · Not
+sent to your AI" (or "· Sent to your Grok Bot"), and **Talk** is the first tile again. When the
+line asks nothing, Talk stays first. Without your opt-in on the Mac, nothing reaches your own
+assistant; with it, moments go one way to your Grok Bot, and Boopy never reads its reply. A
+first answer that offers a choice shows its choice and no task. A later Talk turn returns to the
+conversation's own line.
 
 Without a task, a response may offer up to two contextual questions, each on its own page behind
 Boopy's line. Pinch the line's panel to page to one, then tap **Ask**: the same conversation

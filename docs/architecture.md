@@ -70,8 +70,11 @@ request, a small set of interface parts, and actions such as a spoken answer, wr
 save for later, retry, or cancel. After a capture, the headset reads the session's task. The
 service opens it from the first completed visual turn, with that turn's stored frame digest
 and the person's words. Its one result is a local stand-in built from Boopy's own reply. The
-headset sends a spoken answer as audio, and the Mac transcribes it. Results stay local and
-unsent. Nothing on this path reaches an outside assistant. See [Interaction](protocol.md).
+headset sends a spoken answer as audio, and the Mac transcribes it. Results stay local, and no
+assistant's reply comes back on this path. Only when the person opts in with their own Grok
+Bot routine's webhook file does each task's opening, and each assessed answer, also go out to
+that Bot as a one-way moment; Boopy never reads the Bot's reply. See
+[Interaction](protocol.md#moments-to-the-persons-grok-bot).
 
 **Activity files** are the older arrange and sequence loop. Boopy can write a request, import
 a reply from a file the person chose, or ask the pinned local model. The local model is not
@@ -94,7 +97,8 @@ with the practice account. Capture, correction, and commit work without it.
    Zetaris.
 4. Decide: a word shows only for exactly one item whose label or alias matches the guess. Otherwise
    Boopy says plainly that it has no word.
-5. Act: the task's line names the guess and the word, as Boopy's own stand-in, not sent to anyone.
+5. Act: the task's line names the guess and the word, as Boopy's own stand-in. It is sent to no
+   one, unless the person opted in to moments to their own Grok Bot, which then gets a copy.
 6. Update: a spoken answer is heard, not heard, or unclear against the word, never graded; the
    attempt and Boopy's reply are journaled together, and the practice table is rewritten.
 

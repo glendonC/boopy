@@ -13,8 +13,8 @@ The interface should be quiet: a few precise marks, readable type, and no dashbo
    captioned. Waiting is silent.
 4. The person answers, picks, confirms, or does the task. A correction is given only when the
    answer needs one.
-5. The result should continue with the same assistant. Until that delivery exists, the
-   interface says it was not sent.
+5. The result should continue with the same assistant. Today one assistant gets it, one way:
+   the person's own Grok Bot, when they opt in. Otherwise the interface says it was not sent.
 
 The interface stays in the person's language.
 
@@ -49,20 +49,26 @@ in front only after a turn of more than 30 degrees, while the person is not look
 After a first turn about a grounded subject, the headset asks the Mac for the session's task.
 A first turn that offers a choice opens no task; the choice stays on the console.
 The task uses the same parts: the chip on the outlined subject and Boopy's line on the console.
-The line's speaker reads "Boopy · Not sent to your AI". Only while the line asks the person something is the
-row's first tile Answer, with Talk's mic and labeled with the prompt the Mac sends, in Talk's
-place. Once the line shows the person's answer, or when the line asks nothing, Talk is the first
-tile again.
+The line's speaker reads "Boopy · Not sent to your AI", or "Boopy · Sent to your Grok Bot" once
+the moment's send to the person's own Grok Bot has started (see below). Only while the line asks
+the person something is the row's first tile Answer, with Talk's mic and labeled with the
+prompt the Mac sends, in Talk's place. Once the line shows the person's answer, or when the line
+asks nothing, Talk is the first tile again.
 A task without its chip or its line, with no answer and not marked wrong item, is not shown:
 the conversation keeps its own line and chip. A wrong item clears the chip and the outline and
 says "Wrong item."
 Answering aloud records the words on the task, on the Mac. While the answer saves, the line
 reads "Saving on your Mac…". The line then shows those words
-exactly, under "You, as heard · Not sent to your AI", because the Mac's recognizer gives no confidence.
+exactly, under "You, as heard · Not sent to your AI" (or "· Sent to your Grok Bot"), because the
+Mac's recognizer gives no confidence.
 If the task changed on the Mac before the answer arrived, the answer is not recorded: the
 headset shows the Mac's task and says "That answer was not recorded." If it cannot read the
 Mac's task then, it says "That answer was not recorded. Reconnect before answering again."
-Nothing reaches the person's own assistant. A later Talk turn
+Without the person's opt-in, nothing reaches their own assistant. With it, each task a boop
+opens goes to their Grok Bot as a moment, with a small picture of the view and the subject
+marked, and each assessed answer follows; "Sent to your Grok Bot" means the Bot's run
+started. The Bot's reply stays in its own chat, and Boopy never reads it back. A failed send, or
+one that had not started when the line was shown, keeps "Not sent to your AI". A later Talk turn
 returns to the conversation's own line and follow-up questions. Without a task, the
 conversation looks as before.
 
