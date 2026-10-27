@@ -115,6 +115,22 @@ namespace Boopy.Client.Tests
         }
 
         [Test]
+        public void ATaskFromABoopWithNoWordsKeepsItsUtteranceEmpty()
+        {
+            var view = InteractionPresentation.Read(View(
+                "tsk_sahara_later", "continue_saved_task", "src_sahara_still", "", 1, false, LessonComponents));
+            Assert.That(view.Utterance, Is.EqualTo(""), "Nothing was said, so nothing is quoted.");
+            Assert.That(view.Dialogue, Is.EqualTo("이 사진에 뭐가 있어요?"));
+            Assert.That(view.AnswerLabel, Is.Not.Null);
+            var missing = JObject.Parse(OpenSave());
+            missing.Remove("utterance");
+            Assert.Throws<ArgumentException>(() => InteractionPresentation.Read(missing.ToString()));
+            var unset = JObject.Parse(OpenSave());
+            unset["utterance"] = JValue.CreateNull();
+            Assert.Throws<ArgumentException>(() => InteractionPresentation.Read(unset.ToString()));
+        }
+
+        [Test]
         public void ProjectsSubjectChipDialogueAndVoiceReply()
         {
             var view = InteractionPresentation.Read(Lesson());
@@ -505,6 +521,7 @@ namespace Boopy.Client.Tests
             Assert.That(term.Via, Is.EqualTo("zetaris-local"));
             Assert.That(term.Reviewed, Is.False);
             Assert.That(term.NotHeardLastTime, Is.False);
+            Assert.That(term.HeardLastTime, Is.False, "A task journaled before heardLastTime reads as not heard before.");
             Assert.That(InteractionPresentation.Read(Practice(TermPart.Replace("\"gloss\": \"camel\"", "\"gloss\": null"))).Term!.Gloss, Is.Null);
             Assert.That(InteractionPresentation.Read(Lesson()).Term, Is.Null);
             Assert.That(InteractionPresentation.Read(Lesson()).Detail, Is.EqualTo(""));
@@ -519,8 +536,23 @@ namespace Boopy.Client.Tests
                 TermPart.Replace("\"via\": \"zetaris-local\"", "\"via\": \"internet\""),
                 TermPart.Replace("\"text\": \"낙타\", ", ""),
                 TermPart.Replace("\"notHeardLastTime\": false", "\"notHeardLastTime\": \"no\""),
+                TermPart.Replace("\"notHeardLastTime\": false", "\"notHeardLastTime\": false, \"heardLastTime\": \"yes\""),
+                TermPart.Replace("\"notHeardLastTime\": false", "\"notHeardLastTime\": true, \"heardLastTime\": true"),
             })
                 Assert.Throws<ArgumentException>(() => InteractionPresentation.Read(Practice(term)));
+        }
+
+        [Test]
+        public void PracticeTask_ReadsATermHeardLastTime()
+        {
+            var heard = InteractionPresentation.Read(Practice(
+                TermPart.Replace("\"notHeardLastTime\": false", "\"notHeardLastTime\": false, \"heardLastTime\": true"),
+                "Camel, I think. Last time I heard 낙타. Can you say it again?")).Term!;
+            Assert.That(heard.HeardLastTime, Is.True);
+            Assert.That(heard.NotHeardLastTime, Is.False);
+            var not = InteractionPresentation.Read(Practice(
+                TermPart.Replace("\"notHeardLastTime\": false", "\"notHeardLastTime\": false, \"heardLastTime\": false"))).Term!;
+            Assert.That(not.HeardLastTime, Is.False);
         }
 
         [Test]

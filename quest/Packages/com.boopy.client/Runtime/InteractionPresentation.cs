@@ -120,7 +120,10 @@ namespace Boopy.Client
                 throw new ArgumentException("Task source revision is missing.");
             var sourceRevision = Whole(source["sourceRevision"], "sourceRevision", 0);
             var sha256 = RequiredString(source, "sha256");
-            var utterance = RequiredString(view, "utterance");
+            // "" is a task opened from a boop with no words: nothing was said, so there is nothing to quote.
+            if (view["utterance"]?.Type != JTokenType.String)
+                throw new ArgumentException("Missing utterance.");
+            var utterance = view["utterance"]!.Value<string>() ?? "";
             var intent = RequiredString(view, "intent");
             var taskId = RequiredString(view, "taskId");
             var sessionId = RequiredString(view, "sessionId");
@@ -313,11 +316,18 @@ namespace Boopy.Client
                 throw new ArgumentException("An outside term comes through Zetaris on the Mac.");
             if (component["notHeardLastTime"]?.Type != JTokenType.Boolean)
                 throw new ArgumentException("Missing notHeardLastTime.");
+            // A task journaled before the Mac kept it carries no heardLastTime: that is false, never refused.
+            var heard = component["heardLastTime"];
+            if (heard != null && heard.Type != JTokenType.Boolean)
+                throw new ArgumentException("heardLastTime is not true or false.");
+            var heardLastTime = heard?.Value<bool>() ?? false;
+            if (heardLastTime && component["notHeardLastTime"]!.Value<bool>())
+                throw new ArgumentException("A term is never both heard and not heard last time.");
             var gloss = component["gloss"];
             string? glossText = gloss == null || gloss.Type == JTokenType.Null ? null : RequiredString(component, "gloss");
             return new TaskTerm(RequiredString(component, "text"), RequiredString(component, "language"), glossText,
                 RequiredString(component, "sourceId"), RequiredString(component, "revision"), RequiredString(component, "retrievedAt"),
-                RequiredString(component, "license"), "zetaris-local", component["notHeardLastTime"]!.Value<bool>());
+                RequiredString(component, "license"), "zetaris-local", component["notHeardLastTime"]!.Value<bool>(), heardLastTime);
         }
 
         private static string WithoutOnePeriod(string prompt)
@@ -396,7 +406,7 @@ namespace Boopy.Client
     public sealed class TaskTerm
     {
         internal TaskTerm(string text, string language, string? gloss, string sourceId, string revision, string retrievedAt,
-            string license, string via, bool notHeardLastTime)
+            string license, string via, bool notHeardLastTime, bool heardLastTime = false)
         {
             Text = text;
             Language = language;
@@ -407,6 +417,7 @@ namespace Boopy.Client
             License = license;
             Via = via;
             NotHeardLastTime = notHeardLastTime;
+            HeardLastTime = heardLastTime;
         }
 
         public string Text { get; }
@@ -422,6 +433,8 @@ namespace Boopy.Client
         public bool Reviewed => false;
         /// <summary>This subject's term was not heard on the person's most recent attempt at it.</summary>
         public bool NotHeardLastTime { get; }
+        /// <summary>This subject's term was heard on the person's most recent attempt at it; false when the Mac did not say.</summary>
+        public bool HeardLastTime { get; }
     }
 
     /// <summary>The one interactive component already on the view. Agent presence is not an action.</summary>
