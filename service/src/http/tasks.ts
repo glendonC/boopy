@@ -104,14 +104,30 @@ export type PracticeLink = {
 
 type Planned = NonNullable<ReturnType<typeof standIn>> & { readonly retrieval?: unknown };
 
+/** How long an opening waits for its moment's delivery to start before it answers anyway. */
+const OPENING_WAIT_MS = 3000;
+/**
+ * An opening answers by this long after its request came in, so a slow pick eats into the wait
+ * and never into the headset's own 10 s limit.
+ */
+const OPENING_DEADLINE_MS = 6000;
+
+/** Settles when the work does or when the time is up, whichever comes first. */
+async function within(work: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([work, new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))]);
+  clearTimeout(timer);
+}
+
 /**
  * The headset's task routes. Every view says local-only and not-sent: nothing here reaches the
  * person's own assistant. The one result a capture gets is a labeled local stand-in projected from
  * Boopy's own turn. Under the person's practice goal, with a practice link, that result carries the
  * outside term for Boopy's guess from one Zetaris pick, and an answer is assessed against it.
  * Reading a task only reads the journal. With the person's own Grok Bot named, each opening and
- * each assessed answer is also sent there as a moment, in the background, and a view says sentTo
- * only once a delivery for its task has started.
+ * each assessed answer is also sent there as a moment (an opening waits up to 3 s for its send to
+ * start, and answers by 6 s after its request), and a view says sentTo only once a delivery for its
+ * task has started.
  */
 export function registerTaskRoutes(
   app: FastifyInstance,
@@ -145,6 +161,7 @@ export function registerTaskRoutes(
   // One task per session in this version: an existing one is returned and the body's ids unused.
   // A task still waiting for its first result is never served without it.
   app.post('/v1/sessions/:sessionId/task', small, async (request) => {
+    const began = performance.now();
     const body = OpenRequest.parse(request.body);
     const sessionId = (request.params as { sessionId: string }).sessionId;
     const facts = boopy.taskTurn(sessionId);
@@ -164,8 +181,11 @@ export function registerTaskRoutes(
             planned.retrieval,
           );
     if (outcome?.status === 'accepted' && planned !== null) {
-      momentSoon(outcome.task, 0, null, memoryLine(planned, outcome.task));
-      return outcome.task;
+      const sending = momentSoon(outcome.task, 0, null, memoryLine(planned, outcome.task));
+      // A send still running when the wait ends goes on, and journals its outcome once.
+      const wait = Math.min(OPENING_WAIT_MS, OPENING_DEADLINE_MS - (performance.now() - began));
+      if (sending !== undefined && wait > 0) await within(sending, wait);
+      return shown(outcome.task);
     }
     if (outcome === undefined || existing !== undefined)
       throw new BoopyError(
@@ -298,18 +318,20 @@ export function registerTaskRoutes(
     return { open: plan.open, result: decided.result, retrieval };
   };
 
-  // Each moment goes to the person's own Grok Bot in the background: the turn never waits for it.
-  // An opening and each answer after it share one momentId; an answer's carries no picture.
+  // Each moment goes to the person's own Grok Bot in the background. Only the opening waits, at
+  // most OPENING_WAIT_MS and never past OPENING_DEADLINE_MS from its request, so its own view can
+  // say it was sent; answers never wait. An opening and
+  // each answer after it share one momentId; an answer's carries no picture.
   const momentSoon = (
     task: TaskView,
     attempt: number,
     heard: boolean | null,
     memory: string | null,
-  ) => {
-    if (grokBot === undefined) return;
+  ): Promise<void> | undefined => {
+    if (grokBot === undefined) return undefined;
     const term = tasks.practice(task.taskId);
     const annotation = task.components.find((part) => part.type === 'annotation');
-    void (async () => {
+    return (async () => {
       const { picture, recorded, pointed } = await boopy.momentPicture(task.sessionId);
       await grokBot.send({
         momentId: `mom_${task.taskId.slice(4)}`,

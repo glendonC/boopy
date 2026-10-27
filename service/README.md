@@ -329,7 +329,7 @@ The service refuses a file others can read, a URL that is not https, and any oth
 journaled.
 
 A moment goes out when a task opens and again, with the same `momentId`, after each answer Boopy
-assesses, in the background, so a turn never waits: one POST, a 10 s bound, no retry. Its JSON body holds `source`
+assesses: one POST, a 10 s bound, no retry. Answers never wait for it; an opening waits at most 3 s. Its JSON body holds `source`
 `"Boopy"`, `kind` `"moment"`, `momentId`, one plain `message` sentence for the Bot to read first,
 `subject` (Boopy's guess), `term` (`text`, `language`, `source`), `heard` (`true`, `false`, or
 `null` before an answer), `memory` (the line Boopy's memory of earlier practice shaped, if any),
@@ -340,8 +340,9 @@ metadata. No transcript, capture time or place is sent.
 The journal records `grokbot.delivery.started` (with the Bot's run id when it gives one) or
 `grokbot.delivery.failed` (the HTTP status only). A started delivery means the Bot's run began,
 not that it finished. Only after one has started for a task does that task's view carry
-`"sentTo": "grok-bot"`. An opening's own response comes before its moment is sent, so the headset
-sees the field when it next reads the task.
+`"sentTo": "grok-bot"`. The opening's own response carries the field when its delivery started
+within 3 s; a delivery that failed or is still running then leaves it off, and one that starts
+later shows on the task's next read.
 
 ## Check
 

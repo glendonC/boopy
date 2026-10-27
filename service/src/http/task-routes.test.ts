@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { Boopy } from '../boopy.ts';
 import type { SessionView } from '../contracts.ts';
+import { type deliver, GrokBotMoments } from '../grok-bot.ts';
 import { TaskStore } from '../interaction/tasks.ts';
 import { FixtureInterpreter } from '../interpret/fixture.ts';
 import type { ModelOutput } from '../interpret/output.ts';
@@ -79,6 +80,8 @@ function setup(
     readonly segmenter?: Segmenter | undefined;
     readonly recognizer?: false;
     readonly practice?: PracticeLink;
+    /** A stand-in for the Grok Bot delivery; with it, each moment goes there and not off the Mac. */
+    readonly grokBot?: typeof deliver;
   } = {},
 ) {
   const journal = Journal.open(':memory:');
@@ -117,8 +120,25 @@ function setup(
   }) as typeof fetch;
   const tasks = new TaskStore(journal);
   // With a practice link, the task routes are registered here with it, on the same headset app.
-  const app = headsetApp(boopy, { logger: false, ...(options.practice ? {} : { tasks }) });
-  if (options.practice) registerTaskRoutes(app, tasks, boopy, options.practice);
+  const grokBot =
+    options.grokBot === undefined
+      ? undefined
+      : new GrokBotMoments(
+          journal,
+          {
+            url: 'https://bot.example.invalid/hook',
+            auth: 'bearer',
+            key: 'crsr_synthetic',
+            timeoutMs: 10_000,
+          },
+          options.grokBot,
+        );
+  const app = headsetApp(boopy, {
+    logger: false,
+    ...(options.practice ? {} : { tasks }),
+    ...(grokBot === undefined ? {} : { grokBot }),
+  });
+  if (options.practice) registerTaskRoutes(app, tasks, boopy, options.practice, grokBot);
   const post = (url: string, payload: unknown, headers: Record<string, string> = {}) =>
     app.inject({
       method: 'POST',
@@ -667,6 +687,75 @@ const NAMES_NONE: Change = (output) => ({
   ...output,
   referent: { ...output.referent, key: null },
   response: 'It looks like a photo of a desert.',
+});
+
+describe('the opening moment sent to the Grok Bot', () => {
+  const after = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const deliveries = (journal: Journal) =>
+    journal.all().filter((event) => event.type.startsWith('grokbot.'));
+
+  it('says Sent to your Grok Bot in its own view when the delivery starts quickly', async () => {
+    const ctx = setup((output) => output, {
+      grokBot: async () => {
+        await after(50);
+        return { outcome: 'started', runUuid: 'run-0001' };
+      },
+    });
+    try {
+      const { task } = await ctx.opened();
+      assert.equal(task.sentTo, 'grok-bot');
+      assert.equal(deliveries(ctx.journal).length, 1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('answers after about 3 s without it while the delivery hangs, which then journals once', async () => {
+    let finish: () => void = () => {};
+    const landed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const ctx = setup((output) => output, {
+      grokBot: async () => {
+        await after(5000);
+        finish();
+        return { outcome: 'started', runUuid: null };
+      },
+    });
+    try {
+      const began = performance.now();
+      const { task } = await ctx.opened();
+      const waited = performance.now() - began;
+      assert.ok(waited >= 2900 && waited < 4500, String(waited));
+      assert.equal(task.sentTo, undefined);
+      assert.equal(deliveries(ctx.journal).length, 0);
+      await landed;
+      await after(20);
+      assert.deepEqual(
+        deliveries(ctx.journal).map((event) => event.type),
+        ['grokbot.delivery.started'],
+      );
+      assert.equal((await ctx.get(`/v1/tasks/${OPEN.taskId}`)).json().sentTo, 'grok-bot');
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('a failed delivery leaves the opening view without it', async () => {
+    const ctx = setup((output) => output, {
+      grokBot: async () => ({ outcome: 'failed', status: 400 }),
+    });
+    try {
+      const { task } = await ctx.opened();
+      assert.equal(task.sentTo, undefined);
+      assert.deepEqual(
+        deliveries(ctx.journal).map((event) => event.type),
+        ['grokbot.delivery.failed'],
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
 });
 
 describe('a subject from the person’s near cue', () => {
@@ -1565,6 +1654,47 @@ describe('practice through the task routes', () => {
     }
     throw new Error('The practice stage was not recorded.');
   }
+
+  it('a slow pick shortens the wait for a hanging send, so the opening answers by about 6 s', async () => {
+    const after = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const zetaris = link(async (call) => {
+      await after(4500);
+      return result(call.request, [pickedRow(guessOf(call.request))]);
+    }, 10_000);
+    let finish: () => void = () => {};
+    const landed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const ctx = setup(ASKS, {
+      practice: zetaris.practice,
+      grokBot: async () => {
+        await after(5000);
+        finish();
+        return { outcome: 'started', runUuid: null };
+      },
+    });
+    try {
+      goal(ctx.tasks);
+      const session = await ctx.start();
+      const began = performance.now();
+      const response = await ctx.post(`/v1/sessions/${session.id}/task`, OPEN);
+      const waited = performance.now() - began;
+      assert.equal(response.statusCode, 200, response.body);
+      assert.ok(waited >= 5900 && waited < 7000, String(waited));
+      assert.equal(response.json().sentTo, undefined);
+      await landed;
+      await after(20);
+      assert.deepEqual(
+        ctx.journal
+          .all()
+          .filter((event) => event.type.startsWith('grokbot.'))
+          .map((event) => event.type),
+        ['grokbot.delivery.started'],
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
 
   it('without a goal nothing about outside words happens, and no lookup runs', async () => {
     const zetaris = link((call) => result(call.request, [pickedRow(guessOf(call.request))]));
