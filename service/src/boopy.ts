@@ -28,7 +28,7 @@ import {
   StartRequestId,
   StartSessionRequest as StartSessionSchema,
 } from './contracts.ts';
-import type { BoopyEvent, Correction, TextLine, TurnStage } from './events.ts';
+import type { BoopyEvent, Correction, ReferentPoint, TextLine, TurnStage } from './events.ts';
 import { fromView, gazeView, intoView, pointFromView, prepareEvidence } from './evidence.ts';
 import {
   type EvidenceRef,
@@ -1324,13 +1324,15 @@ export class Boopy {
     // A recorded frame has no room depth to single out a small subject, so the model sees the view
     // around the person's gaze instead, unless they asked about the whole scene. Its answer is
     // mapped back into the frame's coordinates.
+    // It is cut from the recording's sharper display still when there is one: same shape, so the
+    // same normalized region, with twice the detail of the 1280 still.
     const view =
       observation.recorded !== undefined &&
       gaze !== null &&
       pointer === null &&
       selectedTarget === undefined &&
       scope !== 'scene'
-        ? await gazeView(jpeg, gaze)
+        ? await gazeView(this.#displayStill(observation) ?? jpeg, gaze)
         : null;
     const inView = (point: Point | null): Point | null =>
       point === null || view === null
@@ -1429,22 +1431,47 @@ export class Boopy {
         scope,
         text: lines,
       });
+      // An item can share its grounding with another (a question about an object does), so each
+      // grounding is mapped back once.
+      const mapped = new Set<Grounding>();
       if (view !== null)
         for (const item of normalized.items) {
           const grounding = item.grounding;
+          if (mapped.has(grounding)) continue;
+          mapped.add(grounding);
           if (grounding.box !== undefined) grounding.box = fromView(grounding.box, view.region);
           if (grounding.point !== undefined)
             grounding.point = pointFromView(grounding.point, view.region);
           if (grounding.contour !== undefined)
             grounding.contour = grounding.contour.map((point) => pointFromView(point, view.region));
         }
+      // A boop with no words on a recorded frame asks about the thing at the point, never the
+      // scene. When the model answered with the scene or named no subject, the Mac takes the
+      // smallest object the model placed over the gaze, else the recording's own outline there, and
+      // says only that guess; with neither, Boopy says it is unsure. The model's answer stays in raw.
+      const pointing =
+        heard.text === '' &&
+        observation.recorded !== undefined &&
+        gaze !== null &&
+        selectedTarget === undefined &&
+        (normalized.scope === 'scene' || normalized.referentId === null);
+      const atPoint = pointing
+        ? this.#pointedReferent(normalized.items, observation, interpretationId, heard, gaze)
+        : null;
+      if (atPoint?.added !== undefined) normalized.items.push(atPoint.added);
+      const referentId = pointing ? (atPoint?.itemId ?? null) : normalized.referentId;
       // A subject the model did not name may come from the person's near cue, never on a turn
       // about the whole scene or a selected record. Its reply and follow-ups stay unattached.
       const fromCue =
-        selectedTarget === undefined && scope !== 'scene' && normalized.referentId === null
+        selectedTarget === undefined && scope !== 'scene' && referentId === null && !pointing
           ? cueReferent(normalized.items, observation)
           : null;
-      const answer = result.output.response?.trim() ?? '';
+      const pointedLabel = normalized.items.find((item) => item.id === atPoint?.itemId)?.label;
+      const answer = !pointing
+        ? (result.output.response?.trim() ?? '')
+        : pointedLabel === undefined
+          ? "I'm not sure what that is."
+          : `${pointedLabel.charAt(0).toUpperCase()}${pointedLabel.slice(1)}, I think.`;
       if (answer !== '') {
         const answerId = `${interpretationId}.__reply`;
         normalized.items.push({
@@ -1459,7 +1486,7 @@ export class Boopy {
           emphasis: false,
           interpretationId,
         });
-        const answeredReferent = selectedTarget?.id ?? normalized.referentId;
+        const answeredReferent = selectedTarget?.id ?? referentId;
         if (answeredReferent != null)
           normalized.relations.push({
             id: `${interpretationId}.__reply-about`,
@@ -1468,9 +1495,10 @@ export class Boopy {
             kind: 'about',
           });
       }
-      const actionTarget = selectedTarget?.id ?? normalized.referentId;
+      const actionTarget = selectedTarget?.id ?? referentId;
+      // The model's follow-ups and choices were about its own answer, which a pointing boop drops.
       const actions: ContextualAction[] =
-        answer === ''
+        answer === '' || pointing
           ? []
           : [...new Set((result.output.followUps ?? []).map((s) => s.question.trim()))]
               .filter(
@@ -1486,7 +1514,7 @@ export class Boopy {
                 targetItemId: actionTarget,
                 observationId,
               }));
-      const proposedChoice = choiceForResponse(result.output);
+      const proposedChoice = pointing ? undefined : choiceForResponse(result.output);
       const choice: ChoiceCard | undefined =
         proposedChoice !== undefined
           ? {
@@ -1513,6 +1541,10 @@ export class Boopy {
           model: interpreter.model,
           latencyMs,
           ...normalized,
+          referentId,
+          ...(pointing
+            ? { referentPoint: atPoint?.referentPoint ?? { cue: 'gaze', from: 'nothing' } }
+            : {}),
           ...(fromCue === null
             ? {}
             : { referentId: fromCue.itemId, referentCue: fromCue.referentCue }),
@@ -1566,6 +1598,96 @@ export class Boopy {
       });
       this.#notices.set(sessionId, message);
     }
+  }
+
+  /**
+   * The sharper still the headset shows for a recorded frame, while its recording is still the one
+   * shown; null otherwise, so the 1280 still is used.
+   */
+  #displayStill(observation: Observation): Buffer | null {
+    const recorded = this.#deps.recorded;
+    const frame = observation.recorded;
+    if (recorded == null || frame === undefined) return null;
+    if (recorded.scene()?.recordingId !== frame.recordingId) return null;
+    try {
+      return recorded.frame(frame.frameId);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The subject at a pointing boop's gaze: the smallest object box the model placed over it, else
+   * the smallest of the recording's own outlines on this frame around it, added as a proposed item
+   * that keeps the outline's label, confidence and worker. Null when nothing is at the point.
+   */
+  #pointedReferent(
+    items: readonly Item[],
+    observation: Observation,
+    interpretationId: string,
+    heard: Heard,
+    gaze: Point,
+  ): { itemId: string; referentPoint: ReferentPoint; added?: Item } | null {
+    const holds = (box: Box) =>
+      gaze.x >= box.x0 && gaze.x <= box.x1 && gaze.y >= box.y0 && gaze.y <= box.y1;
+    const area = (box: Box) => (box.x1 - box.x0) * (box.y1 - box.y0);
+    const placed = items
+      .filter(
+        (item) =>
+          item.kind === 'object' &&
+          item.grounding.kind === 'box' &&
+          item.grounding.observationId === observation.id &&
+          item.grounding.box !== undefined &&
+          holds(item.grounding.box),
+      )
+      .sort((a, b) => area(a.grounding.box as Box) - area(b.grounding.box as Box))[0];
+    if (placed !== undefined)
+      return { itemId: placed.id, referentPoint: { cue: 'gaze', from: 'model-object' } };
+    const recorded = observation.recorded;
+    const outlines =
+      recorded === undefined
+        ? null
+        : (this.#deps.recorded?.frameOutlines(recorded.recordingId, recorded.frameId) ?? null);
+    if (outlines === null || outlines.provider !== 'local') return null;
+    const outline = outlines.frame.objects
+      .filter((object) => holds(object.box) && insidePolygon(gaze, object.contour))
+      .sort((a, b) => area(a.box) - area(b.box))[0];
+    if (outline === undefined) return null;
+    const label = outline.label.trim().slice(0, 120);
+    const spatial: SpatialEvidence = {
+      provider: 'local',
+      model: outlines.model,
+      concept: label,
+      latencyMs: outlines.frame.latencyMs,
+      confidence: outline.confidence,
+      verification: 'proposed',
+      outcome: 'contour',
+      frameSha256: observation.frameSha256,
+      utteranceId: heard.utteranceId,
+      from: 'recorded-outline',
+    };
+    const grounding = Grounding.safeParse({
+      kind: 'box',
+      observationId: observation.id,
+      box: outline.box,
+      contour: outline.contour,
+      spatial,
+    });
+    if (label === '' || !grounding.success) return null;
+    const added: Item = {
+      id: `${interpretationId}.at-point`,
+      kind: 'object',
+      label,
+      statement: `The recording's own outline at the point you tapped: ${label}.`,
+      grounding: grounding.data,
+      confidence: outline.confidence,
+      why: 'The model named nothing at the point, and the outline pass had this there.',
+      origin: 'model',
+      status: 'proposed',
+      emphasis: false,
+      interpretationId,
+    };
+    return { itemId: added.id, referentPoint: { cue: 'gaze', from: 'recorded-outline' }, added };
   }
 
   async #refineGrounding(
@@ -1939,6 +2061,21 @@ export class Boopy {
     });
     this.#notices.set(sessionId, 'Ready on your Mac. Not sent.');
   }
+}
+
+/** Whether a point lies inside a closed outline (even-odd rule). */
+function insidePolygon(point: Point, contour: readonly Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = contour.length - 1; i < contour.length; j = i++) {
+    const a = contour[i] as Point;
+    const b = contour[j] as Point;
+    if (
+      a.y > point.y !== b.y > point.y &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x
+    )
+      inside = !inside;
+  }
+  return inside;
 }
 
 function actionNotice(action: string, label: string): string {

@@ -126,7 +126,8 @@ describe('local stand-in for a first completed turn', () => {
       ['words on two lines', { ...facts, turn: { ...turn, words: 'What is\nthis?' } }],
       ['words over 400 characters', { ...facts, turn: { ...turn, words: 'a'.repeat(401) } }],
       ['words that NFC would change', { ...facts, turn: { ...turn, words: 'Café?' } }],
-      ['no words', { ...facts, turn: { ...turn, words: '' } }],
+      // A boop with no words is exactly "", which opens a task; blank words are not.
+      ['blank words', { ...facts, turn: { ...turn, words: '   ' } }],
     ];
     for (const [name, value] of cases) assert.equal(standIn(SESSION, IDS, value), null, name);
     assert.equal(standIn('ses capture', IDS, facts), null);

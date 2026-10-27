@@ -11,6 +11,7 @@ import { HandoffPreparation } from '../handoff-preparation.ts';
 import { TaskStore } from '../interaction/tasks.ts';
 import { FixtureInterpreter } from '../interpret/fixture.ts';
 import type { Interpreter, InterpretInput } from '../interpret/interpreter.ts';
+import type { ModelOutput } from '../interpret/output.ts';
 import { lensProjection, RecordedScenes } from '../recorded-source.ts';
 import { startRequest, testBoopy } from '../testing.ts';
 import { connectorApp } from './connector.ts';
@@ -60,10 +61,15 @@ class CapturingInterpreter implements Interpreter {
   readonly provider = 'fixture';
   readonly model = 'recorded-desert-trip';
   readonly inputs: InterpretInput[] = [];
+  /** Rewrites what the fixture would say about a turn, as a real model might answer. */
+  change: ((output: ModelOutput) => ModelOutput) | null = null;
   readonly #fixture = new FixtureInterpreter();
   async interpret(input: InterpretInput) {
     this.inputs.push(input);
-    return this.#fixture.interpret(input);
+    const result = await this.#fixture.interpret(input);
+    if (this.change === null) return result;
+    const output = this.change(result.output);
+    return { output, raw: JSON.stringify(output) };
   }
 }
 
@@ -683,6 +689,165 @@ describe('a turn on a recorded frame', () => {
     // A tap is a boop on a recorded frame only; in the room it is refused.
     const room = await post({ ...startRequest('x'), speech: { gesture: 'tap' } });
     assert.equal(room.statusCode, 400, room.body);
+  });
+
+  // A model may answer a wordless boop with the whole scene, as one did on the camp's tents.
+  const aboutTheScene =
+    (boxes?: number[]) =>
+    (output: ModelOutput): ModelOutput => ({
+      ...output,
+      scope: 'scene',
+      referent: { key: null, basis: 'scene', alternatives: [] },
+      response: 'A wide desert camp at dusk, with a person walking past a row of huts.',
+      items: output.items.map((item) => (boxes === undefined ? item : { ...item, box: boxes })),
+    });
+
+  it('a tap that the model answers with the whole scene asks about the object at the point', async (context) => {
+    if (missing) return context.skip(missing);
+    const { headset, journal, interpreter, scene } = await shown();
+    interpreter.change = aboutTheScene();
+    const tapped = await headset.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: HOST,
+      payload: { ...boop(scene), speech: { gesture: 'tap' } },
+    });
+    assert.equal(tapped.statusCode, 200, tapped.body);
+    const view = tapped.json();
+    const referent = view.items.find((item: { id: string }) => item.id === view.referentId);
+    // The fixture's photo box holds the gaze point; its camels box is the smaller one beside it.
+    assert.equal(referent?.label, 'Desert photo');
+    assert.equal(referent?.status, 'proposed');
+    assert.equal(referent?.confidence, 0.85);
+    assert.equal(view.dialogue?.text, 'Desert photo, I think.');
+    const proposed = journal.all().find((event) => event.type === 'interpretation.proposed');
+    assert.ok(proposed?.type === 'interpretation.proposed');
+    assert.equal(proposed.data.referentId, referent.id);
+    assert.deepEqual(proposed.data.referentPoint, { cue: 'gaze', from: 'model-object' });
+    // The model's own scene answer is kept for audit, never shown as the reply.
+    assert.match(proposed.data.raw, /wide desert camp/);
+    const task = await headset.inject({
+      method: 'POST',
+      url: `/v1/sessions/${view.id}/task`,
+      headers: { ...HOST, 'content-type': 'application/json' },
+      payload: { eventId: 'evt_tap_open', taskId: 'tsk_tap' },
+    });
+    assert.equal(task.statusCode, 200, task.body);
+    assert.equal(task.json().utterance, '');
+    assert.equal(
+      task.json().components.find((part: { type: string }) => part.type === 'annotation')?.text,
+      'Desert photo',
+    );
+  });
+
+  it("a tap the model placed nothing at takes the recording's own outline there", async (context) => {
+    if (missing) return context.skip(missing);
+    // A local outline pass that places one camel, named as the interpreter's noun.
+    const box = { x0: 0.1, y0: 0.1, x1: 0.3, y1: 0.3 };
+    const { headset, local, sha256, scenes, interpreter, journal } = await setup({
+      provider: 'local',
+      model: 'synthetic-outliner',
+      observe: async () => ({
+        objects: [
+          {
+            label: 'camel',
+            confidence: 0.6,
+            origin: 'proposed',
+            box,
+            contour: [
+              { x: box.x0, y: box.y1 },
+              { x: (box.x0 + box.x1) / 2, y: box.y0 },
+              { x: box.x1, y: box.y1 },
+            ],
+          },
+        ],
+        latencyMs: 3,
+      }),
+    });
+    const imported = await local('POST', '/v1/local-recorded/imports', {
+      sha256,
+      extension: 'mov',
+      sampling: { mode: 'stills', count: 4 },
+    });
+    const recordingId = imported.json().recordingId;
+    await local('POST', '/v1/local-recorded/scene', { recordingId });
+    await local('POST', '/v1/local-recorded/outlines', { recordingId });
+    while (scenes.recordings()[0]?.outlines.running)
+      await new Promise((done) => setTimeout(done, 10));
+    const scene = scenes.scene();
+    assert.ok(scene);
+    interpreter.change = aboutTheScene([0, 0, 40, 40]);
+    const at = boop(scene);
+    const tapped = await headset.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: HOST,
+      payload: {
+        ...at,
+        cues: { gaze: { point: { x: 0.2, y: 0.25 }, onSurface: false } },
+        speech: { gesture: 'tap' },
+      },
+    });
+    assert.equal(tapped.statusCode, 200, tapped.body);
+    const view = tapped.json();
+    const referent = view.items.find((item: { id: string }) => item.id === view.referentId);
+    assert.equal(referent?.label, 'camel');
+    assert.equal(referent?.confidence, 0.6);
+    assert.equal(referent?.origin, 'model');
+    assert.equal(referent?.status, 'proposed');
+    assert.equal(referent?.grounding.spatial.from, 'recorded-outline');
+    assert.equal(view.dialogue?.text, 'Camel, I think.');
+    const proposed = journal.all().find((event) => event.type === 'interpretation.proposed');
+    assert.ok(proposed?.type === 'interpretation.proposed');
+    assert.deepEqual(proposed.data.referentPoint, { cue: 'gaze', from: 'recorded-outline' });
+  });
+
+  it('a tap on nothing the model or the outlines placed gets one short honest line', async (context) => {
+    if (missing) return context.skip(missing);
+    const { headset, interpreter, scene } = await shown();
+    // Every box in the far corner of the view, away from the gaze point.
+    interpreter.change = aboutTheScene([0, 0, 40, 40]);
+    const tapped = await headset.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: HOST,
+      payload: { ...boop(scene), speech: { gesture: 'tap' } },
+    });
+    assert.equal(tapped.statusCode, 200, tapped.body);
+    const view = tapped.json();
+    assert.equal(view.referentId, null);
+    assert.equal(view.dialogue?.text, "I'm not sure what that is.");
+    // A later tap in a session whose first turn had a subject is still about its own point.
+    interpreter.change = null;
+    const asked = await headset.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: HOST,
+      payload: boop(scene),
+    });
+    assert.ok(asked.json().referentId);
+    interpreter.change = aboutTheScene([0, 0, 40, 40]);
+    const later = await headset.inject({
+      method: 'POST',
+      url: `/v1/sessions/${asked.json().id}/utterances`,
+      headers: HOST,
+      payload: {
+        recordedFrame: boop(scene).recordedFrame,
+        attention: boop(scene).attention,
+        cues: boop(scene).cues,
+        speech: { gesture: 'tap' },
+      },
+    });
+    assert.equal(later.statusCode, 200, later.body);
+    assert.equal(later.json().referentId, null);
+    assert.equal(later.json().dialogue?.text, "I'm not sure what that is.");
+    const task = await headset.inject({
+      method: 'POST',
+      url: `/v1/sessions/${view.id}/task`,
+      headers: { ...HOST, 'content-type': 'application/json' },
+      payload: { eventId: 'evt_tap_open', taskId: 'tsk_tap' },
+    });
+    assert.equal(task.statusCode, 409, task.body);
   });
 
   it('refuses a recorded frame mixed with a room frame, a pointer, a surface or another source', async (context) => {

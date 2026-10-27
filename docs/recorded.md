@@ -51,8 +51,9 @@ every kept frame: long side 2560 pixels, or the source's own size when smaller, 
 helper from the original (upright, standard range, no metadata) and journaled once as
 `recorded.display.made`. Import makes them; `pnpm replay display --data-dir DIR --recording ID`
 makes them for a recording imported earlier. The headset is served the rendition, and the scene view
-gives its size and digest; the interpreter, the gaze crop and the outlines keep the 1280 stills.
-Normalized points mean the same place in both, since a rendition keeps its still's shape.
+gives its size and digest; the interpreter and the outlines keep the 1280 stills, and the gaze
+crop is cut from the rendition when there is one, for twice the detail around the point. Normalized
+points mean the same place in both, since a rendition keeps its still's shape.
 
 For playback, every clip also gets its video once (at import, or by `replay display` for a
 recording imported earlier): the video track alone, re-encoded by the helper as H.264 in standard
@@ -163,6 +164,15 @@ held boop whose recording has no words counts the same way. Boopy answers as it 
 this?" about the subject at the gaze point. The journal keeps that nothing was said: the utterance
 has empty text and source `pointing` for a tap, or `speech` with the audio's digest. A tap without a
 recorded frame is refused (400), and a live turn with no words is still refused with 422 `no_words`.
+
+Such a boop is about the thing at the point, never the whole scene, in its first turn or a later
+one. When the model answers with the scene or names no subject, the Mac takes the smallest object
+box the model placed over the gaze, else the recording's own outline around it, added as a proposed
+item that keeps the outline's label and confidence. Boopy then says only that guess ("Tents, I
+think."). With neither, it says "I'm not sure what that is." and the boop has no subject; an
+earlier turn's subject never carries over. The interpretation records `referentPoint` (`from`:
+`model-object`, `recorded-outline` or `nothing`), and keeps the model's own answer in `raw`. A task
+opened from such a boop has `utterance` `""`: nothing is put in the person's mouth.
 
 ## Outlines over a recording
 

@@ -26,6 +26,15 @@ import type { Reading } from './utterance.ts';
 /** Who caused an event: the person, Boopy itself, a model, or an agent reading context. */
 export type Actor = 'person' | 'system' | `model:${string}` | `agent:${string}`;
 
+/**
+ * How the Mac chose the subject at a pointing boop's gaze: the model's own box, the recording's
+ * outline, or nothing found there, which leaves the boop with no subject.
+ */
+export interface ReferentPoint {
+  readonly cue: 'gaze';
+  readonly from: 'model-object' | 'recorded-outline' | 'nothing';
+}
+
 /** A line of text read by OCR, with its box in the frame. */
 export interface TextLine {
   readonly text: string;
@@ -190,6 +199,8 @@ export type BoopyEvent =
         readonly referentId: string | null;
         /** Set when the Mac, not the model, chose the subject from the person's near cue. */
         readonly referentCue?: import('./interpret/cue-referent.ts').ReferentCue;
+        /** Set on a pointing boop whose subject the Mac, not the model, chose at the gaze. */
+        readonly referentPoint?: ReferentPoint;
         readonly intentId: string | null;
         readonly items: readonly Item[];
         readonly relations: readonly Relation[];

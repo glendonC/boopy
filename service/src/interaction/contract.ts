@@ -177,13 +177,16 @@ export const UserAction = z.discriminatedUnion('type', [
 ]);
 export type UserAction = z.infer<typeof UserAction>;
 
+/** What the person said as a task opened: their words, or exactly nothing for a boop by pointing. */
+export const openingWords = z.union([z.literal(''), personLine]);
+
 export const OpenTask = z.strictObject({
   eventId: EventId,
   sessionId: SessionId,
   taskId: TaskId,
   source: SourceRef,
   intent: Intent,
-  utterance: personLine,
+  utterance: openingWords,
 });
 export type OpenTask = z.infer<typeof OpenTask>;
 
@@ -247,7 +250,7 @@ export const OpenedData = z.strictObject({
   sessionId: SessionId,
   source: SourceRef,
   intent: Intent,
-  utterance: personLine,
+  utterance: openingWords,
   revision: z.literal(0),
   outcome: z.literal('accepted'),
 });

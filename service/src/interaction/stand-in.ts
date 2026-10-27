@@ -32,7 +32,7 @@ const CLOSING = /[\p{Pe}\p{Pf}"']+$/u;
  * The opening and the first result for a session's first completed visual turn, or null when the
  * session lacks something they need. Boopy's latest reply must answer that turn without a choice
  * card, the selected subject must stand on that turn's view, and the person's words must already
- * be one line of at most 400 characters. A label or reply the display rules refuse is left out,
+ * be one line of at most 400 characters, or none at all for a boop by pointing. A label or reply the display rules refuse is left out,
  * never shortened or rewritten. An answer is offered only under a shown line that asks the person
  * something, so a reply that is left out opens no task. The result id comes from the reply, so a
  * retry names the same result. When the Mac chose the subject from the person's cue, the model
@@ -60,7 +60,7 @@ export function standIn(
     referent.grounding.observationId !== turn.observationId ||
     !EvidenceId.safeParse(referent.id).success ||
     !Sha256.safeParse(turn.frameSha256).success ||
-    !unchanged(personLine, turn.words)
+    !(turn.words === '' || unchanged(personLine, turn.words))
   )
     return null;
   const sourceId = `src_${turn.observationId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)}`;

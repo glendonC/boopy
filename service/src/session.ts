@@ -386,6 +386,7 @@ function acceptProposal(
     readonly intentId: string | null;
     readonly items: readonly Item[];
     readonly relations: readonly Relation[];
+    readonly referentPoint?: unknown;
   },
 ): void {
   const referenced = new Set(session.utterances.map((utterance) => utterance.targetItemId));
@@ -407,6 +408,9 @@ function acceptProposal(
   session.intentId = keptIntent?.id ?? proposal.intentId;
   if (proposal.referentId !== null && exists.has(proposal.referentId)) {
     session.referentId = proposal.referentId;
+  } else if (proposal.referentPoint !== undefined) {
+    // A pointing boop is about its own point; an earlier turn's subject never carries over to it.
+    session.referentId = null;
   } else if (session.referentId !== null && !exists.has(session.referentId)) {
     session.referentId = null;
   }
