@@ -740,6 +740,30 @@ describe('a turn on a recorded frame', () => {
     );
   });
 
+  it('a spoken What is this? follows the point too, while a question about the place does not', async (context) => {
+    if (missing) return context.skip(missing);
+    const { headset, interpreter, scene } = await shown();
+    interpreter.change = aboutTheScene();
+    const post = (said: string) =>
+      headset.inject({
+        method: 'POST',
+        url: '/v1/sessions',
+        headers: HOST,
+        payload: { ...boop(scene), speech: { text: said } },
+      });
+    const asked = (await post('What is this?')).json();
+    assert.equal(
+      asked.items.find((item: { id: string }) => item.id === asked.referentId)?.label,
+      'Desert photo',
+    );
+    assert.equal(asked.dialogue?.text, 'Desert photo, I think.');
+    const place = (await post('What is this place?')).json();
+    assert.equal(
+      place.dialogue?.text,
+      'A wide desert camp at dusk, with a person walking past a row of huts.',
+    );
+  });
+
   it("a tap the model placed nothing at takes the recording's own outline there", async (context) => {
     if (missing) return context.skip(missing);
     // A local outline pass that places one camel, named as the interpreter's noun.

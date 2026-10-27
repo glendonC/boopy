@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { needsTarget, readUtterance } from './utterance.ts';
+import { asksWhatItIs, needsTarget, readUtterance } from './utterance.ts';
 
 describe('readUtterance', () => {
   const cases: [string, boolean, ReturnType<typeof readUtterance>][] = [
@@ -161,5 +161,30 @@ describe('readUtterance', () => {
     }
     for (const words of ['Add?', 'Do not add iPhone.', 'Can you add iPhone?', 'Add ...'])
       assert.deepEqual(readUtterance(words, false), { kind: 'ask' });
+  });
+});
+
+describe('asksWhatItIs', () => {
+  it('knows the closed list of questions about the pointed thing, and nothing else', () => {
+    for (const said of [
+      'What is this?',
+      "what's that",
+      'What’s this thing?',
+      'What are those?',
+      'What am I looking at?',
+      '이게 뭐야?',
+      '저건 뭐예요？',
+      '뭐야',
+    ])
+      assert.equal(asksWhatItIs(said), true, said);
+    for (const said of [
+      '',
+      'What is this place?',
+      'What is happening here?',
+      'Describe the scene',
+      'What is this in Korean?',
+      '여기는 어디예요?',
+    ])
+      assert.equal(asksWhatItIs(said), false, said);
   });
 });

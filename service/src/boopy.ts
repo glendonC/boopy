@@ -61,7 +61,12 @@ import {
 } from './session.ts';
 import type { SpeechEngine } from './speech.ts';
 import type { SpeechOutput } from './speech-output.ts';
-import { normalize as normalizeWords, type Reading, readUtterance } from './utterance.ts';
+import {
+  asksWhatItIs,
+  normalize as normalizeWords,
+  type Reading,
+  readUtterance,
+} from './utterance.ts';
 
 /** A refusal the HTTP layer turns into a status code and a line for the person. */
 export class BoopyError extends Error {
@@ -1445,12 +1450,12 @@ export class Boopy {
           if (grounding.contour !== undefined)
             grounding.contour = grounding.contour.map((point) => pointFromView(point, view.region));
         }
-      // A boop with no words on a recorded frame asks about the thing at the point, never the
-      // scene. When the model answered with the scene or named no subject, the Mac takes the
+      // A boop with no words, or words that only ask what it is, on a recorded frame asks about
+      // the thing at the point, never the scene. When the model answered with the scene or named no subject, the Mac takes the
       // smallest object the model placed over the gaze, else the recording's own outline there, and
       // says only that guess; with neither, Boopy says it is unsure. The model's answer stays in raw.
       const pointing =
-        heard.text === '' &&
+        (heard.text === '' || asksWhatItIs(heard.text)) &&
         observation.recorded !== undefined &&
         gaze !== null &&
         selectedTarget === undefined &&

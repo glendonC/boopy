@@ -59,6 +59,38 @@ const ADD =
 const ORIGINAL_ADD =
   /^(?:and\s+also|also|add|plus|include|i\s+also\s+want\s+to|i['‘’]?d\s+also\s+like\s+to|also\s+i\s+want\s+to)\b[,\s]*([\s\S]*)$/i;
 
+// Words that only ask what the pointed thing is, so the point, not the scene, is the subject. A
+// closed list: other wording, such as a question about the place, is the model's to read.
+const WHAT_IT_IS = new Set([
+  ...['this', 'that', 'it', 'this thing', 'that thing'].flatMap((thing) => [
+    `what is ${thing}`,
+    `what's ${thing}`,
+  ]),
+  'what are these',
+  'what are those',
+  'what is this called',
+  "what's this called",
+  'what is that called',
+  "what's that called",
+  'what am i looking at',
+  ...['이게', '이거', '이건', '저게', '저거', '저건'].flatMap((thing) =>
+    ['뭐야', '뭐예요', '뭐에요', '뭐지'].map((what) => `${thing} ${what}`),
+  ),
+  '뭐야',
+  '뭐예요',
+  '이게 무엇인가요',
+  '이것은 무엇입니까',
+]);
+
+/** Whether the words only ask what the thing the person points at is. */
+export function asksWhatItIs(text: string): boolean {
+  return WHAT_IT_IS.has(
+    normalize(text)
+      .replace(/[?？]+$/u, '')
+      .trim(),
+  );
+}
+
 /** Lowercase, plain apostrophes, no trailing punctuation or space. */
 export function normalize(text: string): string {
   return text

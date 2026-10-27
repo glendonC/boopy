@@ -166,7 +166,9 @@ has empty text and source `pointing` for a tap, or `speech` with the audio's dig
 recorded frame is refused (400), and a live turn with no words is still refused with 422 `no_words`.
 
 Such a boop is about the thing at the point, never the whole scene, in its first turn or a later
-one. When the model answers with the scene or names no subject, the Mac takes the smallest object
+one. So is one whose words only ask what the thing is, from a closed list ("What is this?", "What's
+that?", "이게 뭐야?"); a question in other words, such as "What is this place?", is answered as the
+model reads it. When the model answers with the scene or names no subject, the Mac takes the smallest object
 box the model placed over the gaze, else the recording's own outline around it, added as a proposed
 item that keeps the outline's label and confidence. Boopy then says only that guess ("Tents, I
 think."). With neither, it says "I'm not sure what that is." and the boop has no subject; an
