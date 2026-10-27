@@ -169,8 +169,9 @@ Such a boop is about the thing at the point, never the whole scene, in its first
 one. So is one whose words only ask what the thing is, from a closed list ("What is this?", "What's
 that?", "이게 뭐야?"); a question in other words, such as "What is this place?", is answered as the
 model reads it. When the model answers with the scene or names no subject, the Mac takes the smallest object
-box the model placed over the gaze, else the recording's own outline around it, added as a proposed
-item that keeps the outline's label and confidence. Whoever chose the subject, Boopy says only that
+box the model placed over the gaze, else the recording's own outline around it (one the
+interpreter proposed, or a person from the general list, never another general-list thing), added
+as a proposed item that keeps the outline's label and confidence. Whoever chose the subject, Boopy says only that
 guess ("Tent, I think."), never the model's own sentences, which can state unchecked things as
 fact. The guess is named as the word Boopy can teach that the model's label names. The label as it
 is may match any English label or alias in the snapshot; every looser step matches item labels

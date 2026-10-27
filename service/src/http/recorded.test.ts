@@ -977,6 +977,59 @@ describe('a turn on a recorded frame', () => {
     assert.deepEqual(proposed.data.referentPoint, { cue: 'gaze', from: 'recorded-outline' });
   });
 
+  it('a tap the model placed nothing at takes a general-list person, never another general-list thing', async (context) => {
+    if (missing) return context.skip(missing);
+    // The local pass outlines, from its general list only, a window on the left and a person on
+    // the right.
+    const shape = (x0: number, x1: number) => ({
+      box: { x0, y0: 0.1, x1, y1: 0.5 },
+      contour: [
+        { x: x0, y: 0.5 },
+        { x: (x0 + x1) / 2, y: 0.1 },
+        { x: x1, y: 0.5 },
+      ],
+    });
+    const { headset, local, sha256, scenes, interpreter } = await setup({
+      provider: 'local',
+      model: 'synthetic-outliner',
+      observe: async () => ({
+        objects: [
+          { label: 'window', confidence: 0.6, origin: 'base', ...shape(0.05, 0.35) },
+          { label: 'person', confidence: 0.7, origin: 'base', ...shape(0.6, 0.9) },
+        ],
+        latencyMs: 3,
+      }),
+    });
+    const imported = await local('POST', '/v1/local-recorded/imports', {
+      sha256,
+      extension: 'mov',
+      sampling: { mode: 'stills', count: 4 },
+    });
+    const recordingId = imported.json().recordingId;
+    await local('POST', '/v1/local-recorded/scene', { recordingId });
+    await local('POST', '/v1/local-recorded/outlines', { recordingId });
+    while (scenes.recordings()[0]?.outlines.running)
+      await new Promise((done) => setTimeout(done, 10));
+    const scene = scenes.scene();
+    assert.ok(scene);
+    interpreter.change = aboutTheScene([0, 0, 40, 40]);
+    const tap = async (x: number) =>
+      (
+        await headset.inject({
+          method: 'POST',
+          url: '/v1/sessions',
+          headers: HOST,
+          payload: {
+            ...boop(scene),
+            cues: { gaze: { point: { x, y: 0.4 }, onSurface: false } },
+            speech: { gesture: 'tap' },
+          },
+        })
+      ).json();
+    assert.equal((await tap(0.2)).dialogue?.text, "I'm not sure what that is.");
+    assert.equal((await tap(0.75)).dialogue?.text, 'Person, I think.');
+  });
+
   it('a tap on nothing the model or the outlines placed gets one short honest line', async (context) => {
     if (missing) return context.skip(missing);
     const { headset, interpreter, scene } = await shown();

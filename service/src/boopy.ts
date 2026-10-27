@@ -1663,8 +1663,9 @@ export class Boopy {
 
   /**
    * The subject at a pointing boop's gaze: the smallest object box the model placed over it, else
-   * the smallest of the recording's own outlines on this frame around it, added as a proposed item
-   * that keeps the outline's label, confidence and worker. Null when nothing is at the point.
+   * the smallest of the recording's own outlines on this frame around it (a proposed noun's, or a
+   * person's from the general list), added as a proposed item that keeps the outline's label,
+   * confidence and worker. Null when nothing is at the point.
    */
   #pointedReferent(
     items: readonly Item[],
@@ -1694,8 +1695,16 @@ export class Boopy {
         ? null
         : (this.#deps.recorded?.frameOutlines(recorded.recordingId, recorded.frameId) ?? null);
     if (outlines === null || outlines.provider !== 'local') return null;
+    // The same outlines the scene route serves: the interpreter's proposed nouns and the general
+    // list's people, never another general-list thing such as a desert "window".
     const outline = outlines.frame.objects
-      .filter((object) => holds(object.box) && insidePolygon(gaze, object.contour))
+      .filter(
+        (object) =>
+          (object.origin === 'proposed' ||
+            (object.origin === 'base' && object.label === 'person')) &&
+          holds(object.box) &&
+          insidePolygon(gaze, object.contour),
+      )
       .sort((a, b) => area(a.box) - area(b.box))[0];
     if (outline === undefined) return null;
     const label = outline.label.trim().slice(0, 120);
