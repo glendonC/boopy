@@ -220,4 +220,8 @@ time. A frame whose run failed has no outlines, and no outline moves to another 
 }
 ```
 
+It serves the outlines whose noun the interpreter proposed, and from the general list only its
+people (`origin: "base"`, label `person`), so the headset keeps its text off a person the model did
+not name. Those people are never drawn or named; nothing else from the general list is served.
+
 The headset draws a frame's outlines only on that frame, never on the next one.

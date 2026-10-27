@@ -989,9 +989,11 @@ export class RecordedScenes {
   }
 
   /**
-   * The shown clip's outlines, each on its own frame and in frame order, all proposed. Only
-   * outlines whose noun the local interpreter proposed for this recording are served, so the
-   * general list never names a desert "window"; a photo has none (its boop draws its own).
+   * The shown clip's outlines, each on its own frame and in frame order, all proposed. Served are
+   * the outlines whose noun the local interpreter proposed for this recording, and the general
+   * list's people (origin "base", label "person"), so the headset keeps its text off them; those
+   * people are never drawn or named, and nothing else from the general list is served, so it never
+   * names a desert "window". A photo has none (its boop draws its own).
    */
   outlines(): {
     samples: (OutlinedFrame & {
@@ -1015,7 +1017,11 @@ export class RecordedScenes {
           : [
               {
                 ...outlined,
-                objects: outlined.objects.filter((object) => object.origin === 'proposed'),
+                objects: outlined.objects.filter(
+                  (object) =>
+                    object.origin === 'proposed' ||
+                    (object.origin === 'base' && object.label === 'person'),
+                ),
                 seconds: frame.seconds,
                 provider: run.provider,
                 model: run.model,

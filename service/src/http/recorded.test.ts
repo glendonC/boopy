@@ -393,6 +393,62 @@ describe('outlines for a recording', () => {
   });
 });
 
+describe('people the general list outlines', () => {
+  it('are served beside the proposed outlines as keep-outs, and nothing else from that list is', async (context) => {
+    if (missing) return context.skip(missing);
+    // The worker outlines a proposed camel, and from its general list a person and a window.
+    const shape = (x0: number, x1: number) => ({
+      box: { x0, y0: 0.2, x1, y1: 0.6 },
+      contour: [
+        { x: x0, y: 0.6 },
+        { x: (x0 + x1) / 2, y: 0.2 },
+        { x: x1, y: 0.6 },
+      ],
+    });
+    const scene = {
+      provider: 'local',
+      model: 'synthetic-outliner',
+      observe: async () => ({
+        objects: [
+          { label: 'camel', confidence: 0.6, origin: 'proposed', ...shape(0.1, 0.3) },
+          { label: 'person', confidence: 0.7, origin: 'base', ...shape(0.4, 0.5) },
+          { label: 'window', confidence: 0.5, origin: 'base', ...shape(0.6, 0.8) },
+        ],
+        latencyMs: 3,
+      }),
+    };
+    const { headset, local, sha256, scenes } = await setup(scene);
+    const imported = await local('POST', '/v1/local-recorded/imports', {
+      sha256,
+      extension: 'mov',
+      sampling: { mode: 'stills', count: 2 },
+    });
+    const recordingId = imported.json().recordingId;
+    await local('POST', '/v1/local-recorded/scene', { recordingId });
+    await local('POST', '/v1/local-recorded/outlines', { recordingId });
+    while (scenes.recordings()[0]?.outlines.running)
+      await new Promise((done) => setTimeout(done, 10));
+    const answer = await headset.inject({
+      method: 'GET',
+      url: '/v1/recorded-scene/outlines',
+      headers: HOST,
+    });
+    const samples = answer.json().samples;
+    assert.ok(samples.length > 0);
+    for (const sample of samples)
+      assert.deepEqual(
+        sample.objects.map((object: { label: string; origin: string }) => [
+          object.label,
+          object.origin,
+        ]),
+        [
+          ['camel', 'proposed'],
+          ['person', 'base'],
+        ],
+      );
+  });
+});
+
 describe('playback of a recorded clip', () => {
   it('serves the shown clip as captured, by range, with no tag, and with its lens field of view', async (context) => {
     if (missing) return context.skip(missing);
