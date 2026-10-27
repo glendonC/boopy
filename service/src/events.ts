@@ -300,6 +300,9 @@ export type BoopyEvent =
         readonly attempt: number;
         readonly taskId: string;
         readonly runUuid: string | null;
+        /** The picture's and the whole body's bytes; absent on deliveries journaled before them. */
+        readonly pictureBytes?: number | null;
+        readonly bodyBytes?: number;
       }
     >
   | Event<
@@ -309,6 +312,9 @@ export type BoopyEvent =
         readonly attempt: number;
         readonly taskId: string;
         readonly status: number | null;
+        /** The picture's and the whole body's bytes; absent on deliveries journaled before them. */
+        readonly pictureBytes?: number | null;
+        readonly bodyBytes?: number;
       }
     >;
 

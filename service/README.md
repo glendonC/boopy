@@ -341,10 +341,18 @@ assesses: one POST, a 10 s bound, no retry. Answers never wait for it; an openin
 `recorded` (`true` for recorded footage), and on the opening's moment `image`: the view around
 where you looked, with what you pointed at marked as the headset marks it (the subject's traced
 outline, else a small ring at the pointed spot, never the model's loose box, and no text), as a
-JPEG of about 40 KB or less with no capture metadata. No transcript, capture time or place is sent.
+whole JPEG (it ends in its FFD9 marker) with no capture metadata. No transcript, capture time or
+place is sent.
+
+The whole body stays within `BOOPY_GROK_BOT_BODY_BYTES` (default 4000 bytes), because the Bot
+reads no further than about that: a longer body reached it cut off, with a broken picture. The
+picture starts 480 pixels wide at JPEG quality 70, 55 and 40, then steps down to 320, 240, 200
+and 160, each at 55, 40 and 30, keeping the mark's 4 px stroke, until the body fits. If none fits, the moment goes
+without a picture.
 
 The journal records `grokbot.delivery.started` (with the Bot's run id when it gives one) or
-`grokbot.delivery.failed` (the HTTP status only). A started delivery means the Bot's run began,
+`grokbot.delivery.failed` (the HTTP status only), each with `pictureBytes` (null without a
+picture) and `bodyBytes`: sizes only, never the picture. A started delivery means the Bot's run began,
 not that it finished. Only after one has started for a task does that task's view carry
 `"sentTo": "grok-bot"`. The opening's own response carries the field when its delivery started
 within 3 s; a delivery that failed or is still running then leaves it off, and one that starts

@@ -272,3 +272,14 @@ describe('Zetaris practice configuration', () => {
       assert.throws(() => loadConfig({ ...env, ...practice, ...wrong }));
   });
 });
+
+it('reads the Grok Bot body budget, 4000 bytes unless BOOPY_GROK_BOT_BODY_BYTES says otherwise', () => {
+  const env = { BOOPY_INTERPRETER: 'fixture', BOOPY_LOG: '0' };
+  assert.equal(loadConfig(env).grokBotBodyBytes, 4000);
+  assert.equal(loadConfig({ ...env, BOOPY_GROK_BOT_BODY_BYTES: '65536' }).grokBotBodyBytes, 65536);
+  for (const wrong of ['', '4k', '-4000', '999', '4000.5', '1e4'])
+    assert.throws(
+      () => loadConfig({ ...env, BOOPY_GROK_BOT_BODY_BYTES: wrong }),
+      /BOOPY_GROK_BOT_BODY_BYTES must be/,
+    );
+});

@@ -37,7 +37,7 @@ import {
   SupersedeRequest,
   type Supersession,
 } from './evidence-contract.ts';
-import { momentPicture } from './grok-bot.ts';
+import type { PictureSource } from './grok-bot.ts';
 import { cueReferent } from './interpret/cue-referent.ts';
 import {
   type Interpreter,
@@ -255,10 +255,11 @@ export class Boopy {
 
   /**
    * What a moment sent to the person's own Bot shows: the view around where they looked, else
-   * around the booped subject, on the turn's frame, with the subject's box drawn on it.
+   * around the booped subject, on the turn's frame, with the subject's traced outline drawn on it,
+   * else a small ring at the pointed spot, never the box. The moment sizes it to fit its body.
    */
   async momentPicture(sessionId: string): Promise<{
-    readonly picture: Buffer | null;
+    readonly picture: PictureSource | null;
     readonly recorded: boolean;
     readonly pointed: boolean;
   }> {
@@ -281,11 +282,11 @@ export class Boopy {
       (box === null ? { x: 0.5, y: 0.5 } : { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 });
     const jpeg = this.#deps.media.get(observation.frameSha256, 'jpg');
     return {
-      picture: await momentPicture(
+      picture: {
         jpeg,
         center,
-        grounding?.contour === undefined ? { ring: center } : { contour: grounding.contour },
-      ),
+        mark: grounding?.contour === undefined ? { ring: center } : { contour: grounding.contour },
+      },
       recorded: observation.recorded !== undefined,
       pointed,
     };

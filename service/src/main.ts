@@ -5,7 +5,7 @@ import { ActivityCalls } from './activity-call.ts';
 import { OllamaActivityAssistant } from './activity-ollama.ts';
 import { Boopy } from './boopy.ts';
 import { connectorToken, loadConfig } from './config.ts';
-import { GrokBotMoments, loadGrokBot } from './grok-bot.ts';
+import { deliver, GrokBotMoments, loadGrokBot } from './grok-bot.ts';
 import { HandoffPreparation } from './handoff-preparation.ts';
 import { connectorApp } from './http/connector.ts';
 import { headsetApp } from './http/headset.ts';
@@ -177,7 +177,12 @@ const practice: PracticeLink | undefined =
     : undefined;
 // The person's own Grok Bot: each boop moment goes there when they name a webhook file.
 const grokBot = config.grokBotWebhookFile
-  ? new GrokBotMoments(journal, await loadGrokBot(config.grokBotWebhookFile))
+  ? new GrokBotMoments(
+      journal,
+      await loadGrokBot(config.grokBotWebhookFile),
+      deliver,
+      config.grokBotBodyBytes,
+    )
   : undefined;
 const headset = headsetApp(boopy, {
   logger: config.logger,

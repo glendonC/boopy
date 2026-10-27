@@ -15,7 +15,9 @@ import {
   type Moment,
   momentMessage,
   momentPicture,
+  type PictureSource,
   webhookSignature,
+  wholeJpeg,
 } from './grok-bot.ts';
 import { Journal } from './journal.ts';
 
@@ -54,7 +56,7 @@ const moment = async (over: Partial<Moment> = {}): Promise<Moment> => ({
   memory: null,
   recorded: true,
   pointed: false,
-  picture: await momentPicture(await frame(), { x: 0.8, y: 0.4 }, { ring: { x: 0.8, y: 0.4 } }),
+  picture: { jpeg: await frame(), center: { x: 0.8, y: 0.4 }, mark: { ring: { x: 0.8, y: 0.4 } } },
   ...over,
 });
 
@@ -99,16 +101,24 @@ test('a moment goes once to the Bot with a Bearer key, and only a started run co
     // The view around the gaze, small enough to send, with no capture metadata.
     const image = Buffer.from(body.image.base64, 'base64');
     const shape = await sharp(image).metadata();
-    assert.ok(image.length <= 40_000 && shape.format === 'jpeg' && (shape.width ?? 0) <= 480);
+    assert.ok(shape.format === 'jpeg' && (shape.width ?? 0) <= 480);
     assert.equal(shape.exif, undefined);
     assert.equal(moments.started('tsk_camel_1'), true);
     const started = journal.all().filter((event) => event.type.startsWith('grokbot.'));
+    // The journal keeps the picture's size and the body's, never the picture.
     assert.deepEqual(
       started.map((event) => [event.type, event.data]),
       [
         [
           'grokbot.delivery.started',
-          { momentId: 'mom_camel_1', attempt: 0, taskId: 'tsk_camel_1', runUuid: 'run-0001' },
+          {
+            momentId: 'mom_camel_1',
+            attempt: 0,
+            taskId: 'tsk_camel_1',
+            runUuid: 'run-0001',
+            pictureBytes: image.length,
+            bodyBytes: Buffer.byteLength(first?.body ?? ''),
+          },
         ],
       ],
     );
@@ -226,7 +236,7 @@ test('the picture marks the subject by its outline, or by a ring at the point, n
   const jpeg = await frame();
   const gaze = { x: 0.5, y: 0.5 };
   // A subject with only the model's loose box: a ring at the gaze, and nothing on the box's edge.
-  const ringed = await momentPicture(jpeg, gaze, { ring: gaze });
+  const ringed = await picture({ jpeg, center: gaze, mark: { ring: gaze } });
   const box = { x0: 0.4, y0: 0.35, x1: 0.62, y1: 0.66 };
   assert.ok((await brightness(ringed, jpeg, gaze, { x: box.x0, y: 0.5 })) < 170);
   assert.ok((await brightness(ringed, jpeg, gaze, { x: 0.5, y: box.y0 })) < 170);
@@ -242,11 +252,131 @@ test('the picture marks the subject by its outline, or by a ring at the point, n
     { x: 0.5, y: 0.4 },
     { x: 0.55, y: 0.6 },
   ];
-  const traced = await momentPicture(jpeg, gaze, { contour });
+  const traced = await picture({ jpeg, center: gaze, mark: { contour } });
   assert.ok((await brightness(traced, jpeg, gaze, { x: 0.5, y: 0.6 })) > 200);
   assert.ok((await brightness(traced, jpeg, gaze, { x: 0.5, y: 0.53 })) < 170);
-  for (const picture of [ringed, traced]) {
-    assert.ok(picture.length <= 40_000);
-    assert.equal((await sharp(picture).metadata()).exif, undefined);
+  for (const each of [ringed, traced]) {
+    assert.ok(complete(each));
+    assert.equal((await sharp(each).metadata()).exif, undefined);
   }
+});
+
+/** The largest picture, with no budget to fit. */
+async function picture(source: PictureSource) {
+  const made = await momentPicture(source, () => true);
+  assert.ok(made !== null);
+  return made;
+}
+
+/** A whole JPEG: its start marker, and its end marker FFD9 last. */
+const complete = (jpeg: Buffer) =>
+  jpeg[0] === 0xff && jpeg[1] === 0xd8 && jpeg.at(-2) === 0xff && jpeg.at(-1) === 0xd9;
+
+/** A large frame full of small shapes, so its picture is too big for a small body. */
+async function busyFrame() {
+  const shapes = Array.from({ length: 300 }, (_, i) => {
+    const colors = ['#cc9966', '#66aa88', '#aa55cc', '#eeeeee', '#333355'];
+    return `<circle cx="${(i * 97) % 1600}" cy="${(i * 61) % 1200}" r="${6 + ((i * 13) % 30)}" fill="${colors[i % 5]}"/>`;
+  }).join('');
+  return sharp(
+    Buffer.from(
+      `<svg width="1600" height="1200" xmlns="http://www.w3.org/2000/svg"><rect width="1600" height="1200" fill="#7a8a6a"/>${shapes}</svg>`,
+    ),
+  )
+    .jpeg()
+    .toBuffer();
+}
+
+test('a body over its budget steps the picture down until it fits, whole and still marked', async () => {
+  const bot = await receiver(200, { success: true, runUuid: 'run-0002' });
+  const journal = Journal.open(':memory:');
+  const link: GrokBotLink = {
+    url: bot.url,
+    auth: 'bearer',
+    key: 'crsr_synthetic',
+    timeoutMs: 2000,
+  };
+  const gaze = { x: 0.5, y: 0.5 };
+  const source = { jpeg: await busyFrame(), center: gaze, mark: { ring: gaze } };
+  const sent = (index: number) => {
+    const body = bot.received[index]?.body ?? '';
+    const image = JSON.parse(body).image;
+    return { body, image: image === undefined ? null : Buffer.from(image.base64, 'base64') };
+  };
+  const data = (taskId: string) =>
+    journal
+      .all()
+      .find((event) => event.type === 'grokbot.delivery.started' && event.data.taskId === taskId)
+      ?.data;
+  try {
+    // With room, the picture is the largest step: 480 wide.
+    await new GrokBotMoments(journal, link, deliver, 1_000_000).send(
+      await moment({ momentId: 'mom_roomy_1', taskId: 'tsk_roomy_1', picture: source }),
+    );
+    const roomy = sent(0);
+    assert.ok(roomy.image !== null && complete(roomy.image));
+    assert.equal((await sharp(roomy.image).metadata()).width, 480);
+    assert.ok(Buffer.byteLength(roomy.body) > 4000);
+
+    // Under 4,000 bytes, it steps down until the whole body fits, and stays whole and marked.
+    await new GrokBotMoments(journal, link, deliver, 4000).send(
+      await moment({ momentId: 'mom_tight_1', taskId: 'tsk_tight_1', picture: source }),
+    );
+    const tight = sent(1);
+    assert.ok(Buffer.byteLength(tight.body) <= 4000, String(Buffer.byteLength(tight.body)));
+    assert.ok(tight.image !== null && complete(tight.image));
+    const width = (await sharp(tight.image).metadata()).width ?? 0;
+    assert.ok(width >= 160 && width <= 320, String(width));
+    const { region } = await gazeView(source.jpeg, gaze);
+    const ringEdge = { x: gaze.x + (18 / width) * (region.x1 - region.x0), y: gaze.y };
+    assert.ok((await brightness(tight.image, source.jpeg, gaze, ringEdge)) > 180);
+    assert.deepEqual(data('tsk_tight_1'), {
+      momentId: 'mom_tight_1',
+      attempt: 0,
+      taskId: 'tsk_tight_1',
+      runUuid: 'run-0002',
+      pictureBytes: tight.image.length,
+      bodyBytes: Buffer.byteLength(tight.body),
+    });
+
+    // When no step fits, the moment goes without a picture rather than with a broken one.
+    await new GrokBotMoments(journal, link, deliver, 1200).send(
+      await moment({ momentId: 'mom_none_1', taskId: 'tsk_none_1', picture: source }),
+    );
+    const none = sent(2);
+    assert.equal(none.image, null);
+    assert.equal(JSON.parse(none.body).momentId, 'mom_none_1');
+    assert.deepEqual(data('tsk_none_1'), {
+      momentId: 'mom_none_1',
+      attempt: 0,
+      taskId: 'tsk_none_1',
+      runUuid: 'run-0002',
+      pictureBytes: null,
+      bodyBytes: Buffer.byteLength(none.body),
+    });
+    assert.ok(!JSON.stringify(journal.all()).includes(tight.image.toString('base64').slice(0, 40)));
+  } finally {
+    await bot.close();
+  }
+});
+
+test('a picture is never sent unless its JPEG is whole', async () => {
+  const gaze = { x: 0.5, y: 0.5 };
+  const source = { jpeg: await frame(), center: gaze, mark: { ring: gaze } };
+  const seen: Buffer[] = [];
+  // Every step the fit is asked about is whole, and a fit that takes none gives no picture.
+  assert.equal(
+    await momentPicture(source, (each) => {
+      seen.push(each);
+      return false;
+    }),
+    null,
+  );
+  assert.equal(seen.length, 15);
+  assert.ok(seen.every(complete));
+  // A JPEG cut short, as the Bot's 2.7 KB copy of a 12 KB one was, is not whole.
+  const [first] = seen;
+  assert.ok(first !== undefined && wholeJpeg(first));
+  assert.equal(wholeJpeg(first.subarray(0, Math.floor(first.length / 2))), false);
+  assert.equal(wholeJpeg(Buffer.alloc(0)), false);
 });

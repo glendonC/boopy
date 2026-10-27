@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OllamaActivityAssistant } from './activity-ollama.ts';
+import { GROK_BOT_BODY_BYTES } from './grok-bot.ts';
 
 /** Headset 47900 and connector 47901, leaving 47800 and 47801 free. */
 export const HEADSET_PORT = 47900;
@@ -79,6 +80,8 @@ export interface Config {
    * BOOPY_GROK_BOT_WEBHOOK_FILE. Off without it, and nothing is sent.
    */
   readonly grokBotWebhookFile: string | null;
+  /** How many bytes of a moment's body the Bot reads, from BOOPY_GROK_BOT_BODY_BYTES. */
+  readonly grokBotBodyBytes: number;
 }
 
 const serviceRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -126,7 +129,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       env.BOOPY_GROK_BOT_WEBHOOK_FILE === undefined
         ? null
         : required(env, 'BOOPY_GROK_BOT_WEBHOOK_FILE'),
+    grokBotBodyBytes: bodyBytes(env.BOOPY_GROK_BOT_BODY_BYTES),
   };
+}
+
+/** A moment's body budget: a whole number of bytes, 1,000 or more, so a moment still fits. */
+function bodyBytes(value: string | undefined): number {
+  if (value === undefined) return GROK_BOT_BODY_BYTES;
+  const parsed = Number(value);
+  if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < 1_000)
+    throw new Error('BOOPY_GROK_BOT_BODY_BYTES must be a whole number of bytes, 1000 or more.');
+  return parsed;
 }
 
 function recordedSceneConfig(env: NodeJS.ProcessEnv): Config['recordedScene'] {

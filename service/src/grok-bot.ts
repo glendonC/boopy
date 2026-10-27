@@ -12,6 +12,12 @@ import type { Point } from './contracts.ts';
 import { gazeView } from './evidence.ts';
 import type { Journal } from './journal.ts';
 
+/**
+ * How many bytes of a webhook body the Bot reads: about 4 KB, from the 2.7 KB of picture it got
+ * out of a whole 12 KB one. BOOPY_GROK_BOT_BODY_BYTES sets another.
+ */
+export const GROK_BOT_BODY_BYTES = 4_000;
+
 export type GrokBotLink = {
   readonly url: string;
   /** crsr_ keys go as a Bearer token; whsec_ secrets sign each body (Standard Webhooks). */
@@ -106,23 +112,65 @@ export async function deliver(
 /** How the picture marks what the person pointed at: the subject's traced outline, or a ring. */
 export type PictureMark = { readonly contour: readonly Point[] } | { readonly ring: Point };
 
-/** The ring's radius and every stroke, in pixels of the picture (at most 480 on a side). */
+/** What a moment's picture is made from: the turn's frame, where the person looked, the mark. */
+export type PictureSource = {
+  readonly jpeg: Buffer;
+  readonly center: Point;
+  readonly mark: PictureMark;
+};
+
+/** The ring's radius and every stroke, in pixels of the picture at any width, so it stays legible. */
 const RING_RADIUS = 18;
 const STROKE = 4;
+
+/** Widths to try, largest first, each at falling JPEG quality, until the body fits its budget. */
+const PICTURE_STEPS: readonly { readonly width: number; readonly qualities: readonly number[] }[] =
+  [
+    { width: 480, qualities: [70, 55, 40] },
+    { width: 320, qualities: [55, 40, 30] },
+    { width: 240, qualities: [55, 40, 30] },
+    { width: 200, qualities: [55, 40, 30] },
+    { width: 160, qualities: [55, 40, 30] },
+  ];
+
+/** A whole JPEG: it starts with its start marker FFD8 and ends with its end marker FFD9. */
+export const wholeJpeg = (jpeg: Buffer) =>
+  jpeg.length >= 4 &&
+  jpeg[0] === 0xff &&
+  jpeg[1] === 0xd8 &&
+  jpeg[jpeg.length - 2] === 0xff &&
+  jpeg[jpeg.length - 1] === 0xd9;
 
 /**
  * The view around where the person looked, with what they pointed at marked as the headset marks
  * it: the subject's traced outline, else a small ring at the pointed spot, never the model's loose
- * box. No text. Re-encoded small enough to send (about 40 KB), with no capture metadata.
+ * box. No text and no capture metadata. The largest step that is a whole JPEG and that `fits`
+ * takes is the picture; when none does, there is no picture.
  */
 export async function momentPicture(
-  jpeg: Buffer,
-  center: Point,
+  source: PictureSource,
+  fits: (picture: Buffer) => boolean,
+): Promise<Buffer | null> {
+  const view = await gazeView(source.jpeg, source.center);
+  for (const step of PICTURE_STEPS) {
+    const marked = await markedView(view, source.mark, step.width);
+    for (const quality of step.qualities) {
+      const picture = await sharp(marked).jpeg({ quality }).toBuffer();
+      if (wholeJpeg(picture) && fits(picture)) return picture;
+    }
+  }
+  return null;
+}
+
+/** The view at most `side` pixels on a side, never enlarged, with the mark drawn on it. */
+async function markedView(
+  view: Awaited<ReturnType<typeof gazeView>>,
   mark: PictureMark,
+  side: number,
 ): Promise<Buffer> {
-  const view = await gazeView(jpeg, center);
   const small = await sharp(view.image)
-    .resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
+    .resize({ width: side, height: side, fit: 'inside', withoutEnlargement: true })
+    .png()
     .toBuffer({ resolveWithObject: true });
   const { width, height } = small.info;
   const r = view.region;
@@ -139,7 +187,7 @@ export async function momentPicture(
             ' ',
           )}" fill="none" stroke="#ffffff" stroke-width="${STROKE}" stroke-linejoin="round"/>`
       : `<circle cx="${at(mark.ring).x}" cy="${at(mark.ring).y}" r="${RING_RADIUS}" fill="none" stroke="#ffffff" stroke-width="${STROKE}"/>`;
-  const marked = await sharp(small.data)
+  return sharp(small.data)
     .composite([
       {
         input: Buffer.from(
@@ -149,13 +197,8 @@ export async function momentPicture(
         left: 0,
       },
     ])
+    .png()
     .toBuffer();
-  let picture = await sharp(marked).jpeg({ quality: 70 }).toBuffer();
-  for (const quality of [55, 40]) {
-    if (picture.length <= 40_000) break;
-    picture = await sharp(marked).jpeg({ quality }).toBuffer();
-  }
-  return picture;
 }
 
 export type Moment = {
@@ -177,7 +220,7 @@ export type Moment = {
   readonly recorded: boolean;
   /** The boop was made by pointing alone, with no words heard. */
   readonly pointed: boolean;
-  readonly picture: Buffer | null;
+  readonly picture: PictureSource | null;
 };
 
 const article = (noun: string) => (/^[aeiou]/i.test(noun) ? `an ${noun}` : `a ${noun}`);
@@ -201,22 +244,33 @@ export function momentMessage(moment: Moment): string {
   return `From my Boopy headset: ${seen} ${word}${said}`;
 }
 
-/** Sends moments in the background and journals each delivery's outcome, once per attempt. */
+/**
+ * Sends moments in the background and journals each delivery's outcome, once per attempt. The
+ * whole body stays within `bodyBytes`, because the Bot reads no further: the picture steps down
+ * until it fits, and a moment no picture fits goes without one.
+ */
 export class GrokBotMoments {
   readonly #journal: Journal;
   readonly #link: GrokBotLink;
   readonly #deliver: typeof deliver;
+  readonly #bodyBytes: number;
 
-  constructor(journal: Journal, link: GrokBotLink, send: typeof deliver = deliver) {
+  constructor(
+    journal: Journal,
+    link: GrokBotLink,
+    send: typeof deliver = deliver,
+    bodyBytes = GROK_BOT_BODY_BYTES,
+  ) {
     this.#journal = journal;
     this.#link = link;
     this.#deliver = send;
+    this.#bodyBytes = bodyBytes;
   }
 
   async send(moment: Moment): Promise<Delivery | null> {
     const id = `gbd_${moment.momentId.slice(4)}_${moment.attempt}`;
     if (this.#journal.has(id)) return null;
-    const body = JSON.stringify({
+    const fields = {
       source: 'Boopy',
       kind: 'moment',
       momentId: moment.momentId,
@@ -233,13 +287,32 @@ export class GrokBotMoments {
       heard: moment.heard,
       memory: moment.memory,
       recorded: moment.recorded,
-      ...(moment.picture === null
-        ? {}
-        : { image: { mediaType: 'image/jpeg', base64: moment.picture.toString('base64') } }),
-    });
+    };
+    const bodyWith = (picture: Buffer | null) =>
+      JSON.stringify({
+        ...fields,
+        ...(picture === null
+          ? {}
+          : { image: { mediaType: 'image/jpeg', base64: picture.toString('base64') } }),
+      });
+    const picture =
+      moment.picture === null
+        ? null
+        : await momentPicture(
+            moment.picture,
+            (each) => Buffer.byteLength(bodyWith(each)) <= this.#bodyBytes,
+          );
+    const body = bodyWith(picture);
     const delivery = await this.#deliver(this.#link, body);
     if (this.#journal.has(id)) return delivery;
-    const base = { momentId: moment.momentId, attempt: moment.attempt, taskId: moment.taskId };
+    // Sizes only, never the picture.
+    const base = {
+      momentId: moment.momentId,
+      attempt: moment.attempt,
+      taskId: moment.taskId,
+      pictureBytes: picture === null ? null : picture.length,
+      bodyBytes: Buffer.byteLength(body),
+    };
     this.#journal.append(
       delivery.outcome === 'started'
         ? {
