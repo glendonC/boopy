@@ -127,6 +127,57 @@ public sealed class RecordedSceneTests
             Is.EqualTo(12.232f));
     }
 
+    private const string Played = ",\"video\":{\"url\":\"/v1/recorded/rec_0123456789abcdef0123456789abcdef/video\",\"sha256\":\"" + VideoSha + "\"," +
+        "\"width\":1920,\"height\":1080,\"frameRate\":72,\"durationSeconds\":12.5}" +
+        ",\"projection\":{\"tanLeft\":0.9,\"tanRight\":0.8,\"tanUp\":0.5,\"tanDown\":0.55,\"source\":\"measured-device-profile\",\"profile\":\"quest3-capture-16x9\",\"centring\":\"inferred\"}";
+    private const string VideoSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    [Test] public void AClipCarriesItsVideoAndHowItsCameraSawAndPlaysFromUnderTheService()
+    {
+        var clip = Wire.Read<RecordedSceneEnvelope>(SceneJson().Replace(",\"frames\"", Played + ",\"frames\"")).Scene!;
+        Assert.That(RecordedScenes.Valid(clip), Is.True);
+        Assert.That((clip.Video!.Url, clip.Video.Sha256, clip.Video.Width, clip.Video.Height, clip.Video.FrameRate, clip.Video.DurationSeconds),
+            Is.EqualTo(("/v1/recorded/" + Recording + "/video", VideoSha, 1920, 1080, (float?)72f, (float?)12.5f)));
+        Assert.That((clip.Projection!.TanLeft, clip.Projection.TanRight, clip.Projection.TanUp, clip.Projection.TanDown), Is.EqualTo((.9f, .8f, .5f, .55f)));
+        Assert.That((clip.Projection.Source, clip.Projection.Profile, clip.Projection.Centring), Is.EqualTo(("measured-device-profile", "quest3-capture-16x9", "inferred")));
+        using (var client = new ServiceClient("http://127.0.0.1:47900"))
+            Assert.That(client.RecordedVideoUrl(clip.Video).ToString(), Is.EqualTo("http://127.0.0.1:47900/v1/recorded/" + Recording + "/video"));
+        // Never another host, a way out of the API, or a video on a photo; no frame rate, length or reach is no clip.
+        foreach (var path in new[] { "http://example.com/v1/x", "//example.com/v1/x", "/v1/../health", "/static/x", "/v1/a b" })
+        {
+            clip.Video.Url = path;
+            Assert.That(RecordedScenes.Valid(clip), Is.False, path);
+            using var client = new ServiceClient();
+            Assert.Throws<ArgumentException>(() => client.RecordedVideoUrl(clip.Video), path);
+        }
+        clip.Video.Url = "v1/recorded/" + Recording + "/video";
+        Assert.That(RecordedScenes.Valid(clip), Is.True);
+        clip.Video.FrameRate = 0f; Assert.That(RecordedScenes.Valid(clip), Is.False);
+        clip.Video.FrameRate = null; clip.Video.DurationSeconds = null; Assert.That(RecordedScenes.Valid(clip), Is.True, "A length or rate the Mac does not know stays unknown.");
+        clip.Video.Sha256 = "abc"; Assert.That(RecordedScenes.Valid(clip), Is.False);
+        clip.Video.Sha256 = VideoSha; clip.Projection.Source = "guess"; Assert.That(RecordedScenes.Valid(clip), Is.False, "A projection from nowhere.");
+        clip.Projection.Source = "lens-tag";
+        clip.Video.FrameRate = 30f; clip.Video.DurationSeconds = float.PositiveInfinity; Assert.That(RecordedScenes.Valid(clip), Is.False);
+        clip.Video.DurationSeconds = 12.5f; clip.Projection.TanUp = -.6f; Assert.That(RecordedScenes.Valid(clip), Is.False, "A frame of no height.");
+        clip.Projection.TanUp = float.NaN; Assert.That(RecordedScenes.Valid(clip), Is.False);
+        clip.Projection = null; Assert.That(RecordedScenes.Valid(clip), Is.True, "An unmeasured projection is not shown as measured.");
+        var photo = Wire.Read<RecordedSceneEnvelope>(SceneJson(kind: "photo", frames: "[]").Replace(",\"frames\"", Played + ",\"frames\"")).Scene!;
+        photo.SourceTimeSeconds = null;
+        Assert.That(RecordedScenes.Valid(photo), Is.False, "A photo has no video.");
+    }
+
+    [Test] public void ABoopUsesTheAnalyzedStillNearestThePlayersTime()
+    {
+        var frames = $"[{{\"frameId\":\"{Frame}\",\"seconds\":4.2,\"frameSha256\":\"{Sha(Jpeg)}\"}},{{\"frameId\":\"{Other}\",\"seconds\":5.2,\"frameSha256\":\"{Sha(Jpeg)}\"}}]";
+        var clip = Wire.Read<RecordedSceneEnvelope>(SceneJson(frames: frames)).Scene!;
+        Assert.That(RecordedScenes.Nearest(clip, 0)!.FrameId, Is.EqualTo(Frame));
+        Assert.That(RecordedScenes.Nearest(clip, 4.69)!.FrameId, Is.EqualTo(Frame));
+        Assert.That(RecordedScenes.Nearest(clip, 4.71)!.FrameId, Is.EqualTo(Other));
+        Assert.That(RecordedScenes.Nearest(clip, 60)!.FrameId, Is.EqualTo(Other));
+        clip.Frames.Clear();
+        Assert.That(RecordedScenes.Nearest(clip, 1), Is.Null);
+    }
+
     private static readonly PicturePlane Picture = new PicturePlane(new Vector3(0.2f, 1.4f, 1.8f), Vector3.UnitX, Vector3.UnitY, 1.2f, 1.6f);
 
     [Test] public void ImagePointsMapOntoThePictureWithTheOriginAtItsTopLeft()
@@ -177,6 +228,33 @@ public sealed class RecordedSceneTests
             Assert.That((await Refused(() => client.ReadRecordedSceneAsync())).Code, Is.EqualTo("recorded_scene_invalid"));
         using (var client = new ServiceClient(handler: new Transport { Status = HttpStatusCode.InternalServerError }))
             Assert.That((await Refused(() => client.ReadRecordedSceneAsync())).Code, Is.EqualTo("recorded_scene_failed"));
+    }
+
+    [Test] public async Task AFramesOutlinesAreItsOwnWellFormedObjects()
+    {
+        const string body = "{\"samples\":[" +
+            "{\"frameId\":\"" + Frame + "\",\"seconds\":4.2,\"provider\":\"local\",\"model\":\"m\",\"latencyMs\":1,\"leftOut\":0,\"verification\":\"proposed\",\"objects\":[" +
+            "{\"label\":\"tents\",\"confidence\":0.3,\"origin\":\"proposed\",\"box\":{\"x0\":0.1,\"y0\":0.2,\"x1\":0.5,\"y1\":0.6},\"contour\":[{\"x\":0.2,\"y\":0.3},{\"x\":0.4,\"y\":0.3},{\"x\":0.3,\"y\":0.5}]}," +
+            "{\"label\":\"dune\",\"confidence\":0.3,\"origin\":\"proposed\",\"box\":{\"x0\":0,\"y0\":0.3,\"x1\":1,\"y1\":1},\"contour\":[]}," +
+            "{\"label\":\"bad\",\"confidence\":0.3,\"origin\":\"proposed\",\"box\":{\"x0\":0.5,\"y0\":0.2,\"x1\":1.5,\"y1\":0.6},\"contour\":[]}]}," +
+            "{\"frameId\":\"rfr_other\",\"seconds\":4.3,\"provider\":\"local\",\"model\":\"m\",\"latencyMs\":1,\"leftOut\":0,\"verification\":\"proposed\",\"objects\":[" +
+            "{\"label\":\"tents\",\"confidence\":0.3,\"origin\":\"proposed\",\"box\":{\"x0\":0.6,\"y0\":0.2,\"x1\":0.7,\"y1\":0.3},\"contour\":[]}]}]}";
+        var transport = new Transport { Body = body };
+        using (var client = new ServiceClient(handler: transport))
+        {
+            var outlines = await client.ReadRecordedOutlinesAsync();
+            Assert.That(transport.Path, Is.EqualTo("/v1/recorded-scene/outlines"));
+            var on = outlines.On(Frame);
+            Assert.That(on.Select(outlined => outlined.Label), Is.EqualTo(new[] { "tents", "dune" }), "Only this frame's well-formed objects.");
+            var tents = on[0].Extent()!;
+            Assert.That((tents.X0, tents.Y0, tents.X1, tents.Y1), Is.EqualTo((.2f, .3f, .4f, .5f)), "A contour's extent, not its looser box.");
+            Assert.That(on[1].Extent()!.X1, Is.EqualTo(1f), "No contour: its box.");
+            Assert.That(outlines.On("rfr_none"), Is.Empty);
+        }
+        using (var client = new ServiceClient(handler: new Transport { Status = HttpStatusCode.NotFound }))
+            Assert.That((await client.ReadRecordedOutlinesAsync()).Samples, Is.Empty);
+        using (var client = new ServiceClient(handler: new Transport { Body = "<html>" }))
+            Assert.That((await Refused(() => client.ReadRecordedOutlinesAsync())).Code, Is.EqualTo("recorded_outlines_invalid"));
     }
 
     [Test] public async Task AStillIsTheExactBytesItsSceneNamed()

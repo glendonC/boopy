@@ -12,6 +12,11 @@ namespace Boopy.Client
 {
     public sealed partial class ServiceClient
     {
+        /// <summary>Where a clip's video plays from: its service path under this client's base, over the same USB reverse.</summary>
+        public Uri RecordedVideoUrl(RecordedVideo video) => RecordedScenes.IsServicePath(video.Url)
+            ? new Uri(http.BaseAddress!, video.Url.TrimStart('/'))
+            : throw new ArgumentException("A recorded video plays only from a path under the service.");
+
         /// <summary>The recorded scene the Mac shows, or null when it shows none, has the routes off or predates them.</summary>
         public async Task<RecordedSceneView?> ReadRecordedSceneAsync(CancellationToken cancel = default)
         {
@@ -40,6 +45,36 @@ namespace Boopy.Client
             catch (HttpRequestException)
             {
                 throw new ServiceException(503, "recorded_scene_failed", "The Mac connection was interrupted while reading the recorded scene.");
+            }
+        }
+
+        /// <summary>
+        /// The shown recording's outlines, by frame; none when the Mac has none, shows no clip, or predates the route. Read
+        /// only to keep Boopy's line off what is outlined.
+        /// </summary>
+        public async Task<RecordedOutlines> ReadRecordedOutlinesAsync(CancellationToken cancel = default)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+            deadline.CancelAfter(controlTimeout);
+            try
+            {
+                using var response = await http.GetAsync("v1/recorded-scene/outlines", deadline.Token).ConfigureAwait(false);
+                deadline.Token.ThrowIfCancellationRequested();
+                if (response.StatusCode == HttpStatusCode.NotFound) return new RecordedOutlines();
+                if (!response.IsSuccessStatusCode)
+                    throw new ServiceException((int)response.StatusCode, "recorded_outlines_failed", "Could not read the recording's outlines on the Mac.");
+                var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                deadline.Token.ThrowIfCancellationRequested();
+                try { return Wire.Read<RecordedOutlines>(text) ?? new RecordedOutlines(); }
+                catch (Newtonsoft.Json.JsonException) { throw new ServiceException(502, "recorded_outlines_invalid", "The Mac sent outlines in a shape the headset does not read."); }
+            }
+            catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
+            {
+                throw new ServiceException(408, "recorded_outlines_timeout", "Reading the recording's outlines on the Mac timed out.");
+            }
+            catch (HttpRequestException)
+            {
+                throw new ServiceException(503, "recorded_outlines_failed", "The Mac connection was interrupted while reading the outlines.");
             }
         }
 

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Boopy's Android network rule, given to the Meta SDK in place of its own: no cleartext, except to 127.0.0.1, where a
+     recording's video streams from the Mac over adb reverse into Android's own player (the app's HTTP client does not
+     keep this rule; the player does). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false"></base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

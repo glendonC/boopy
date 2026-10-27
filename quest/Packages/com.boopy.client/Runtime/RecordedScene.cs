@@ -26,6 +26,40 @@ namespace Boopy.Client
         public string FrameSha256 { get; set; } = "";
         /// <summary>Every sampled still of the recording, in order; empty for a photo.</summary>
         public List<RecordedFrameInfo> Frames { get; set; } = new List<RecordedFrameInfo>();
+        /// <summary>A clip's own video, to play as it was recorded; null for a photo or a clip the Mac serves none of.</summary>
+        public RecordedVideo? Video { get; set; }
+        /// <summary>How the source's camera saw the frame; null when it was not measured.</summary>
+        public RecordedProjection? Projection { get; set; }
+    }
+
+    /// <summary>
+    /// A clip's video on the Mac, as it was captured: the service path it is served at (with byte ranges), its digest, its
+    /// upright size, and its length and frame rate when known. The scene's frame times are times in it.
+    /// </summary>
+    public sealed class RecordedVideo
+    {
+        public string Url { get; set; } = "";
+        public string Sha256 { get; set; } = "";
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public float? DurationSeconds { get; set; }
+        public float? FrameRate { get; set; }
+    }
+
+    /// <summary>
+    /// The frame as its camera saw it, a rectilinear view: the tangents of the angles from the camera's forward axis to the
+    /// frame's left, right, top and bottom edges, so the headset can put the frame back at exactly those angles.
+    /// </summary>
+    public sealed class RecordedProjection
+    {
+        public float TanLeft { get; set; }
+        public float TanRight { get; set; }
+        public float TanUp { get; set; }
+        public float TanDown { get; set; }
+        /// <summary>"lens-tag" or "measured-device-profile"; with a profile's name, and whether its centre was measured.</summary>
+        public string Source { get; set; } = "";
+        public string? Profile { get; set; }
+        public string Centring { get; set; } = "";
     }
 
     /// <summary>When the recording was made, as its file says: a value only when known, and never trusted.</summary>
@@ -48,6 +82,61 @@ namespace Boopy.Client
         public RecordedSceneView? Scene { get; set; }
     }
 
+    /// <summary>
+    /// The outlines a local outline run proposed on the shown recording, by frame (docs/recorded.md): each frame's own and
+    /// never another's, and only proposed.
+    /// </summary>
+    public sealed class RecordedOutlines
+    {
+        public List<RecordedOutlineSample> Samples { get; set; } = new List<RecordedOutlineSample>();
+
+        /// <summary>The well-formed objects outlined on one frame; none for a frame the run left without outlines.</summary>
+        public IReadOnlyList<RecordedOutlineObject> On(string frameId)
+        {
+            var objects = new List<RecordedOutlineObject>();
+            foreach (var sample in Samples)
+                if (sample.FrameId == frameId && sample.Verification == "proposed")
+                    foreach (var outlined in sample.Objects)
+                        if (outlined.Extent() != null) objects.Add(outlined);
+            return objects;
+        }
+    }
+
+    public sealed class RecordedOutlineSample
+    {
+        public string FrameId { get; set; } = "";
+        public float? Seconds { get; set; }
+        public string Verification { get; set; } = "";
+        public List<RecordedOutlineObject> Objects { get; set; } = new List<RecordedOutlineObject>();
+    }
+
+    /// <summary>One object a run outlined on a frame: its label and box, and its contour when it has one.</summary>
+    public sealed class RecordedOutlineObject
+    {
+        public string Label { get; set; } = "";
+        public float Confidence { get; set; }
+        public string Origin { get; set; } = "";
+        public Box2? Box { get; set; }
+        public List<Point2>? Contour { get; set; }
+
+        /// <summary>The extent of its contour (three points or more), else of its box, in image coordinates; null when neither lies in the frame.</summary>
+        public Box2? Extent()
+        {
+            static bool In(float value) => !float.IsNaN(value) && value >= 0f && value <= 1f;
+            if (Contour != null && Contour.Count >= 3 && Contour.TrueForAll(point => point != null && In(point.X) && In(point.Y)))
+            {
+                var extent = new Box2 { X0 = 1f, Y0 = 1f, X1 = 0f, Y1 = 0f };
+                foreach (var point in Contour)
+                {
+                    extent.X0 = Math.Min(extent.X0, point.X); extent.Y0 = Math.Min(extent.Y0, point.Y);
+                    extent.X1 = Math.Max(extent.X1, point.X); extent.Y1 = Math.Max(extent.Y1, point.Y);
+                }
+                return extent;
+            }
+            return Box != null && In(Box.X0) && In(Box.Y0) && In(Box.X1) && In(Box.Y1) && Box.X0 < Box.X1 && Box.Y0 < Box.Y1 ? Box : null;
+        }
+    }
+
     /// <summary>The still a turn is about. The Mac makes the observation from its own copy; the headset sends no pixels.</summary>
     public sealed class RecordedFrameRef
     {
@@ -66,6 +155,21 @@ namespace Boopy.Client
         private static readonly Regex RecordingPattern = new Regex(@"^rec_[0-9a-f]{32}\z");
         private static readonly Regex FramePattern = new Regex(@"^rfr_[0-9a-f]{32}\z");
         private static readonly Regex DigestPattern = new Regex(@"^[0-9a-f]{64}\z");
+        // A path under the service's own API, never another host or a way out of it.
+        private static readonly Regex ServicePathPattern = new Regex(@"^/?v1/[A-Za-z0-9_\-./]+\z");
+        public const float MaxFrameRate = 240f, MaxTangent = 20f;
+
+        public static bool IsServicePath(string? path) =>
+            path != null && ServicePathPattern.IsMatch(path) && !path.Contains("..") && !path.Contains("//");
+
+        /// <summary>The analyzed still nearest a time in the clip, which a boop there is about; null when the clip lists none.</summary>
+        public static RecordedFrameInfo? Nearest(RecordedSceneView scene, double seconds)
+        {
+            RecordedFrameInfo? nearest = null;
+            foreach (var frame in scene.Frames)
+                if (nearest == null || Math.Abs(frame.Seconds - seconds) < Math.Abs(nearest.Seconds - seconds)) nearest = frame;
+            return nearest;
+        }
 
         public static bool IsRecordingId(string? id) => id != null && RecordingPattern.IsMatch(id);
         public static bool IsFrameId(string? id) => id != null && FramePattern.IsMatch(id);
@@ -87,6 +191,16 @@ namespace Boopy.Client
                 || (scene.DurationSeconds is float length && (float.IsNaN(length) || float.IsInfinity(length) || length < 0f
                     || (scene.SourceTimeSeconds is float held && held > length)))
                 || scene.CapturedAt == null || scene.Frames == null || scene.Frames.Count > MaxFrames) return false;
+            // A clip's video is under the service, a real size and frame rate and a length; only a clip has one.
+            if (scene.Video is RecordedVideo video && (scene.Kind != "video" || !IsServicePath(video.Url) || !IsDigest(video.Sha256)
+                || video.Width < 1 || video.Width > MaxSide || video.Height < 1 || video.Height > MaxSide
+                || (video.FrameRate is float rate && !(rate > 0f && rate <= MaxFrameRate))
+                || (video.DurationSeconds is float played && (!(played > 0f) || float.IsInfinity(played))))) return false;
+            // A projection reaches some way on each axis, with no edge past about 87 degrees, and says where it came from.
+            static bool Tangent(float value) => !float.IsNaN(value) && Math.Abs(value) <= MaxTangent;
+            if (scene.Projection is RecordedProjection seen && !(Tangent(seen.TanLeft) && Tangent(seen.TanRight) && Tangent(seen.TanUp)
+                && Tangent(seen.TanDown) && seen.TanLeft + seen.TanRight > .01f && seen.TanUp + seen.TanDown > .01f
+                && (seen.Source == "lens-tag" || seen.Source == "measured-device-profile"))) return false;
             // An unknown capture time has no value; a known one is never more than unverified.
             if (scene.CapturedAt.Trust == "unknown" ? scene.CapturedAt.Value != null
                 : scene.CapturedAt.Trust != "unverified" || (scene.CapturedAt.Value != null && scene.CapturedAt.Value.Trim().Length == 0)) return false;

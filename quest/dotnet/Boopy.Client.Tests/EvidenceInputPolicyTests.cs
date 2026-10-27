@@ -181,6 +181,20 @@ public class EvidenceInputPolicyTests
         Assert.That(utter.Cues.Pointer, Is.Null);
     }
 
+    // Only a session's first turn opens a task, so each boop on a recording starts its own session. A live turn, or a
+    // spoken-only one, continues the open session as before.
+    [Test] public void ASecondBoopOnARecordingStartsANewSession()
+    {
+        var boop = new EvidenceTurn(false);
+        Assert.That(boop.StartsSession(null, Recorded()), Is.True, "The first boop starts a session.");
+        Assert.That(boop.StartsSession("review", Recorded()), Is.True, "A second boop on a recording starts a new session.");
+        Assert.That(boop.StartsSession("committed", Recorded()), Is.True);
+        Assert.That(boop.StartsSession("review", null), Is.False, "A live turn continues the open session.");
+        Assert.That(boop.StartsSession(null, null), Is.True);
+        Assert.That(boop.StartsSession("committed", null), Is.True);
+        Assert.That(new EvidenceTurn(true).StartsSession("review", Recorded()), Is.False, "A spoken-only turn is about no still.");
+    }
+
     [Test] public void ASpokenOnlyTurnSendsNoRecordedStillAndAFrameAndAStillTogetherAreRefused()
     {
         var spoken = new EvidenceTurn(true).Start(new SpeechData { Text = "Synthetic recollection." }, RoomCues(), null, Recorded());

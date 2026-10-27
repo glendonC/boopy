@@ -38,6 +38,13 @@ namespace Boopy.Client
             OcrRequested = !SpokenOnly,
             SegmentationRequested = !SpokenOnly && targeted,
         };
+        /// <summary>
+        /// True when this turn starts a session rather than continuing <paramref name="sessionState"/>'s: there is none, it
+        /// was saved, or the turn is a boop on a recorded still. Only a session's first turn opens a task, so each boop on a
+        /// recording is its own session, with its own task and word. An answer to Boopy's question is a task answer, not a turn.
+        /// </summary>
+        public bool StartsSession(string? sessionState, RecordedFrameRef? recorded) =>
+            sessionState == null || sessionState == "committed" || (!SpokenOnly && recorded != null);
         public StartSessionRequest Start(SpeechData speech, Cues cues, FrameData? frame, RecordedFrameRef? recorded = null)
         {
             var still = Still(frame, recorded);
