@@ -48,6 +48,11 @@ export interface InterpretInput {
     readonly note?: string;
   };
   readonly language: string;
+  /**
+   * On a boop that only asks what the pointed thing is: the words Boopy can teach, from its term
+   * snapshot. A hint for the label, never a list the answer must come from.
+   */
+  readonly teachable?: readonly string[];
   readonly scope: 'auto' | 'scene';
   readonly gaze: Point | null;
   readonly pointer: Point | null;

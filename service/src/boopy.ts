@@ -46,6 +46,7 @@ import { nearest, type TextReader } from './ocr.ts';
 import { buildPackage, verificationOf } from './package.ts';
 import { bestOutline } from './recorded-outlines.ts';
 import type { RecordedScenes, ResolvedFrame } from './recorded-source.ts';
+import { matchKey, teachableLabel } from './references/wikidata.ts';
 import {
   MAX_SEGMENT_ITEMS,
   type Segmenter,
@@ -91,6 +92,13 @@ export interface BoopyDeps {
   readonly speechOutput?: SpeechOutput | null;
   /** Recorded footage the operator shows; a turn may name one of its frames instead of a frame. */
   readonly recorded?: RecordedScenes | null;
+  /** The words Boopy can teach, from the term snapshot it was started with. */
+  readonly teachable?: {
+    readonly words: readonly string[];
+    /** Its item labels alone, without the aliases. */
+    readonly labels: readonly string[];
+    readonly snapshotSha256: string;
+  };
   readonly service: string;
   readonly now?: () => Date;
   readonly newId?: (prefix: string) => string;
@@ -1361,12 +1369,22 @@ export class Boopy {
             return box === null ? [] : [{ ...line, box }];
           });
     const focus: Point = targetPoint ?? pointer ?? inView(gaze) ?? { x: 0.5, y: 0.5 };
+    // A pointing boop: on a recorded frame, with a gaze and no selected card, nothing said or only
+    // a question about what the pointed thing is. The model is told the words Boopy can teach.
+    const pointing =
+      (heard.text === '' || asksWhatItIs(heard.text)) &&
+      observation.recorded !== undefined &&
+      gaze !== null &&
+      selectedTarget === undefined;
+    const teachable =
+      pointing && (this.#deps.teachable?.words.length ?? 0) > 0 ? this.#deps.teachable : undefined;
     const interpreter = this.#deps.interpreter;
     const interpretationId = this.#newId('int');
     const started = performance.now();
     try {
       this.#processing(sessionId, 'interpreting', heard.utteranceId, observationId);
       const result = await interpreter.interpret({
+        ...(teachable === undefined ? {} : { teachable: teachable.words }),
         inputSource: session.utterances.find((utterance) => utterance.id === heard.utteranceId)
           ?.source,
         conversation: session.conversation
@@ -1450,28 +1468,36 @@ export class Boopy {
           if (grounding.contour !== undefined)
             grounding.contour = grounding.contour.map((point) => pointFromView(point, view.region));
         }
-      // A boop with no words, or words that only ask what it is, on a recorded frame asks about
-      // the thing at the point, never the scene. When the model answered with the scene or named no subject, the Mac takes the
-      // smallest object the model placed over the gaze, else the recording's own outline there, and
-      // says only that guess; with neither, Boopy says it is unsure. The model's answer stays in raw.
-      const pointing =
-        (heard.text === '' || asksWhatItIs(heard.text)) &&
-        observation.recorded !== undefined &&
+      // A pointing boop asks about the thing at the point, never the scene. When the model
+      // answered with the scene or named no subject, the Mac takes the smallest object the model
+      // placed over the gaze, else the recording's own outline there; with neither, Boopy says it
+      // is unsure. Either way Boopy says only its guess, and the model's own answer stays in raw.
+      const pick =
+        pointing &&
         gaze !== null &&
-        selectedTarget === undefined &&
         (normalized.scope === 'scene' || normalized.referentId === null);
-      const atPoint = pointing
+      const atPoint = pick
         ? this.#pointedReferent(normalized.items, observation, interpretationId, heard, gaze)
         : null;
       if (atPoint?.added !== undefined) normalized.items.push(atPoint.added);
-      const referentId = pointing ? (atPoint?.itemId ?? null) : normalized.referentId;
+      const referentId = pick ? (atPoint?.itemId ?? null) : normalized.referentId;
       // A subject the model did not name may come from the person's near cue, never on a turn
       // about the whole scene or a selected record. Its reply and follow-ups stay unattached.
       const fromCue =
         selectedTarget === undefined && scope !== 'scene' && referentId === null && !pointing
           ? cueReferent(normalized.items, observation)
           : null;
-      const pointedLabel = normalized.items.find((item) => item.id === atPoint?.itemId)?.label;
+      // The subject Boopy shows and picks a word with is the word it can teach that the label names
+      // ("tents" or "desert tent" is "tent"); any other label is kept. The model's stays in raw.
+      const pointedItem = pointing
+        ? normalized.items.find((item) => item.id === referentId)
+        : undefined;
+      if (pointedItem !== undefined)
+        pointedItem.label = teachableLabel(pointedItem.label, {
+          words: new Set((this.#deps.teachable?.words ?? []).map(matchKey)),
+          labels: new Set((this.#deps.teachable?.labels ?? []).map(matchKey)),
+        });
+      const pointedLabel = pointedItem?.label;
       const answer = !pointing
         ? (result.output.response?.trim() ?? '')
         : pointedLabel === undefined
@@ -1547,9 +1573,18 @@ export class Boopy {
           latencyMs,
           ...normalized,
           referentId,
-          ...(pointing
+          ...(pick
             ? { referentPoint: atPoint?.referentPoint ?? { cue: 'gaze', from: 'nothing' } }
             : {}),
+          ...(teachable === undefined
+            ? {}
+            : {
+                hint: {
+                  kind: 'teachable-words' as const,
+                  count: teachable.words.length,
+                  snapshotSha256: teachable.snapshotSha256,
+                },
+              }),
           ...(fromCue === null
             ? {}
             : { referentId: fromCue.itemId, referentCue: fromCue.referentCue }),

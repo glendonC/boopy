@@ -219,6 +219,65 @@ const Receipt = z.strictObject({
   rowSha256: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(10000),
 });
 
+/**
+ * The words Boopy can teach, for the interpreter to use as a label when one names what the person
+ * points at: every English label and alias in the snapshot, one per match key, in snapshot order.
+ */
+export function teachableWords(
+  rows: readonly TermRow[],
+  kinds: readonly ('label' | 'alias')[] = ['label', 'alias'],
+): string[] {
+  const seen = new Set<string>();
+  const words: string[] = [];
+  for (const row of rows) {
+    if (row.language !== 'en' || !(kinds as readonly string[]).includes(row.kind)) continue;
+    if (row.match_key === '' || seen.has(row.match_key)) continue;
+    seen.add(row.match_key);
+    words.push(row.text.trim().replace(/\s+/gu, ' '));
+  }
+  return words;
+}
+
+/** The phrase's last word made singular ("ies" to "y", then "es", then "s" dropped), if known. */
+function knownSingular(phrase: string, known: ReadonlySet<string>): string | null {
+  const match = /^(.*?)(\S+)$/su.exec(phrase);
+  if (match === null) return null;
+  const [, head = '', word = ''] = match;
+  const candidates = [
+    /ies$/iu.test(word) ? `${word.slice(0, -3)}${word.slice(-3) === 'IES' ? 'Y' : 'y'}` : null,
+    /es$/iu.test(word) ? word.slice(0, -2) : null,
+    /s$/iu.test(word) ? word.slice(0, -1) : null,
+  ];
+  for (const one of candidates)
+    if (one !== null && one !== '' && known.has(matchKey(`${head}${one}`))) return `${head}${one}`;
+  return null;
+}
+
+/**
+ * The word Boopy can teach that a model's label names, so "tents", "desert tent" or "camels in a
+ * line" find the snapshot's "tent" or "camel". The label as it is or in the singular may match any
+ * English label or alias, so "camels" finds the alias "camel". The looser steps match item labels
+ * only, never an alias, so "camera mount" never finds the alias "mount" of a mountain: the label
+ * without a trailing "in", "with", "of", "on", "at" or "from" phrase, then that phrase's last
+ * word, each as it is or in the singular. Any other label stays exactly as the model gave it ("horses" when no "horse" is).
+ */
+export function teachableLabel(
+  label: string,
+  known: { readonly words: ReadonlySet<string>; readonly labels: ReadonlySet<string> },
+): string {
+  const whole = label.trim().replace(/\s+/gu, ' ');
+  if (known.words.has(matchKey(whole))) return whole;
+  const head = whole.replace(/\s+(?:in|with|of|on|at|from)\s.*$/isu, '');
+  const last = head.split(' ').at(-1) ?? '';
+  const loose = (phrase: string) =>
+    phrase === ''
+      ? null
+      : known.labels.has(matchKey(phrase))
+        ? phrase
+        : knownSingular(phrase, known.labels);
+  return knownSingular(whole, known.words) ?? loose(head) ?? loose(last) ?? label;
+}
+
 /** Reads the table file back. Only the shape termCsv writes is accepted. */
 export function parseTermCsv(text: string): TermRow[] {
   const lines = text.split('\n');

@@ -170,9 +170,18 @@ one. So is one whose words only ask what the thing is, from a closed list ("What
 that?", "이게 뭐야?"); a question in other words, such as "What is this place?", is answered as the
 model reads it. When the model answers with the scene or names no subject, the Mac takes the smallest object
 box the model placed over the gaze, else the recording's own outline around it, added as a proposed
-item that keeps the outline's label and confidence. Boopy then says only that guess ("Tents, I
-think."). With neither, it says "I'm not sure what that is." and the boop has no subject; an
-earlier turn's subject never carries over. The interpretation records `referentPoint` (`from`:
+item that keeps the outline's label and confidence. Whoever chose the subject, Boopy says only that
+guess ("Tent, I think."), never the model's own sentences, which can state unchecked things as
+fact. The guess is named as the word Boopy can teach that the model's label names. The label as it
+is may match any English label or alias in the snapshot; every looser step matches item labels
+only, never an alias: the label in the singular, then without a trailing "in", "with", "of", "on",
+"at" or "from" phrase, then that phrase's last word. So "tents" and "desert tent" show and pick
+their word as "tent", while "camera mount" never finds a mountain's alias "mount". Any other label
+stays exactly as the model gave it, and the model's own label stays in `raw`. With no subject it says "I'm not sure what that is."; an earlier turn's subject never carries
+over. On such a boop the model is also given the words Boopy can teach: the English labels and
+aliases of the term snapshot practice uses. If one names the thing at the point, the model uses it
+as the label; if none does, it uses its own short noun. The interpretation records that it was
+given them (`hint`: `teachable-words`, their count and the snapshot's digest). The interpretation records `referentPoint` (`from`:
 `model-object`, `recorded-outline` or `nothing`), and keeps the model's own answer in `raw`. A task
 opened from such a boop has `utterance` `""`: nothing is put in the person's mouth.
 

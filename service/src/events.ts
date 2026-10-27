@@ -201,6 +201,12 @@ export type BoopyEvent =
         readonly referentCue?: import('./interpret/cue-referent.ts').ReferentCue;
         /** Set on a pointing boop whose subject the Mac, not the model, chose at the gaze. */
         readonly referentPoint?: ReferentPoint;
+        /** Set when the model was told the words Boopy can teach, from this term snapshot. */
+        readonly hint?: {
+          readonly kind: 'teachable-words';
+          readonly count: number;
+          readonly snapshotSha256: string;
+        };
         readonly intentId: string | null;
         readonly items: readonly Item[];
         readonly relations: readonly Relation[];

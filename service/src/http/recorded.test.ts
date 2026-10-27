@@ -106,7 +106,14 @@ const namingScene = {
   }),
 };
 
-async function setup(outline: boolean | typeof namingScene = false) {
+/** The words a synthetic term snapshot would let Boopy teach. */
+const TEACHABLE = {
+  words: ['Desert photo', 'tent'],
+  labels: ['Desert photo', 'tent'],
+  snapshotSha256: 'a'.repeat(64),
+};
+
+async function setup(outline: boolean | typeof namingScene = false, teachable?: typeof TEACHABLE) {
   const data = await mkdtemp(join(directory, 'data-'));
   await writeFile(join(data, 'connector-token'), TOKEN, { mode: 0o600 });
   const interpreter = new CapturingInterpreter();
@@ -120,7 +127,7 @@ async function setup(outline: boolean | typeof namingScene = false) {
       ? { outliner: { scene: outline === true ? namingScene : outline, interpreter } }
       : {}),
   });
-  const boopy = new Boopy({ ...test.deps, recorded: scenes });
+  const boopy = new Boopy({ ...test.deps, recorded: scenes, ...(teachable ? { teachable } : {}) });
   const preparation = new HandoffPreparation({
     journal: test.journal,
     outputRoot: join(data, 'handoffs'),
@@ -164,8 +171,8 @@ async function setup(outline: boolean | typeof namingScene = false) {
 }
 
 /** Imports the clip twice (two recordings) through the operator route, and shows the first. */
-async function shown() {
-  const parts = await setup();
+async function shown(teachable?: typeof TEACHABLE) {
+  const parts = await setup(false, teachable);
   const one = await parts.local('POST', '/v1/local-recorded/imports', {
     sha256: parts.sha256,
     extension: 'mov',
@@ -762,6 +769,94 @@ describe('a turn on a recorded frame', () => {
       place.dialogue?.text,
       'A wide desert camp at dusk, with a person walking past a row of huts.',
     );
+  });
+
+  it('a pointing boop says only the guess, also when the model named the subject, and is told the words Boopy can teach', async (context) => {
+    if (missing) return context.skip(missing);
+    const { headset, journal, interpreter, scene } = await shown(TEACHABLE);
+    // The fixture names its photo at the gaze itself, with a long reply of its own.
+    const tapped = await headset.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: HOST,
+      payload: { ...boop(scene), speech: { gesture: 'tap' } },
+    });
+    assert.equal(tapped.statusCode, 200, tapped.body);
+    assert.equal(tapped.json().dialogue?.text, 'Desert photo, I think.');
+    const proposed = journal.all().find((event) => event.type === 'interpretation.proposed');
+    assert.ok(proposed?.type === 'interpretation.proposed');
+    assert.equal(proposed.data.referentPoint, undefined);
+    assert.deepEqual(proposed.data.hint, {
+      kind: 'teachable-words',
+      count: 2,
+      snapshotSha256: TEACHABLE.snapshotSha256,
+    });
+    assert.deepEqual(interpreter.inputs.at(-1)?.teachable, TEACHABLE.words);
+    // A question about the place gets no hint and keeps the model's own answer.
+    const place = await headset.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: HOST,
+      payload: { ...boop(scene), speech: { text: 'What is this place?' } },
+    });
+    assert.equal(place.statusCode, 200, place.body);
+    assert.equal(interpreter.inputs.at(-1)?.teachable, undefined);
+    assert.notEqual(place.json().dialogue?.text, 'Desert photo, I think.');
+    const placed = journal
+      .all()
+      .filter((event) => event.type === 'interpretation.proposed')
+      .at(-1);
+    assert.ok(placed?.type === 'interpretation.proposed');
+    assert.equal(placed.data.hint, undefined);
+  });
+
+  it('a plural or a modified label is shown and picked as the word Boopy can teach, and kept in raw', async (context) => {
+    if (missing) return context.skip(missing);
+    const { headset, journal, interpreter, scene } = await shown(TEACHABLE);
+    interpreter.change = (output) => ({
+      ...output,
+      items: output.items.map((item) =>
+        item.key === 'photo' ? { ...item, label: 'Tents' } : item,
+      ),
+    });
+    const tapped = await headset.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: HOST,
+      payload: { ...boop(scene), speech: { gesture: 'tap' } },
+    });
+    assert.equal(tapped.statusCode, 200, tapped.body);
+    const view = tapped.json();
+    assert.equal(view.dialogue?.text, 'Tent, I think.');
+    const proposed = journal.all().find((event) => event.type === 'interpretation.proposed');
+    assert.ok(proposed?.type === 'interpretation.proposed');
+    assert.match(proposed.data.raw, /"label":"Tents"/);
+    const task = await headset.inject({
+      method: 'POST',
+      url: `/v1/sessions/${view.id}/task`,
+      headers: { ...HOST, 'content-type': 'application/json' },
+      payload: { eventId: 'evt_tents_open', taskId: 'tsk_tents' },
+    });
+    assert.equal(task.statusCode, 200, task.body);
+    // The annotation is the guess the term pick folds into its match key.
+    assert.equal(
+      task.json().components.find((part: { type: string }) => part.type === 'annotation')?.text,
+      'Tent',
+    );
+    // A modifier in front finds the same word.
+    interpreter.change = (output) => ({
+      ...output,
+      items: output.items.map((item) =>
+        item.key === 'photo' ? { ...item, label: 'desert tent' } : item,
+      ),
+    });
+    const modified = await headset.inject({
+      method: 'POST',
+      url: '/v1/sessions',
+      headers: HOST,
+      payload: { ...boop(scene), speech: { gesture: 'tap' } },
+    });
+    assert.equal(modified.json().dialogue?.text, 'Tent, I think.');
   });
 
   it("a tap the model placed nothing at takes the recording's own outline there", async (context) => {

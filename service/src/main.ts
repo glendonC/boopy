@@ -23,7 +23,7 @@ import { NvidiaEmbeddingWorker } from './memory/nvidia.ts';
 import { practiceRows } from './memory/practice.ts';
 import { VisionTextReader } from './ocr.ts';
 import { assertNoLiveCaptures, RecordedScenes } from './recorded-source.ts';
-import { readTermSnapshot } from './references/wikidata.ts';
+import { readTermSnapshot, teachableWords } from './references/wikidata.ts';
 import { pickTerm, stagePractice } from './references/zetaris.ts';
 import { SamSegmenter } from './segmentation.ts';
 import { WhisperEngine } from './speech.ts';
@@ -80,10 +80,27 @@ const recorded = config.recordedScene
       ...(sceneProvider ? { outliner: { scene: sceneProvider, interpreter } } : {}),
     })
   : null;
+// The term snapshot practice picks from; its English words are also what Boopy can teach.
+const practiceSettings = config.practice;
+const snapshot = practiceSettings
+  ? await readTermSnapshot(
+      join(practiceSettings.termsDirectory, 'wikidata_term.csv'),
+      join(practiceSettings.termsDirectory, 'wikidata_term.receipt.json'),
+    )
+  : null;
 const boopy = new Boopy({
   journal,
   media,
   recorded,
+  ...(snapshot === null
+    ? {}
+    : {
+        teachable: {
+          words: teachableWords(snapshot.rows),
+          labels: teachableWords(snapshot.rows, ['label']),
+          snapshotSha256: snapshot.fileSha256,
+        },
+      }),
   interpreter,
   speech: config.whisper === null ? null : new WhisperEngine(config.whisper),
   text: config.ocrBinary === null ? null : new VisionTextReader(config.ocrBinary),
@@ -130,38 +147,34 @@ const activityCalls = config.activityAssistant
   : undefined;
 const tasks = new TaskStore(journal);
 // Zetaris on this Mac for practice under the person's goal, checked against the import's receipt.
-const practiceSettings = config.practice;
-const practice: PracticeLink | undefined = practiceSettings
-  ? await (async () => {
-      const snapshot = await readTermSnapshot(
-        join(practiceSettings.termsDirectory, 'wikidata_term.csv'),
-        join(practiceSettings.termsDirectory, 'wikidata_term.receipt.json'),
-      );
-      return {
-        table: practiceSettings.table,
-        // With the opening's wait for the Grok Bot (at most 6 s from the request), an open stays
-        // inside the headset's own 10 s limit.
-        timeoutMs: 6_000,
-        pick: (request, signal) =>
-          pickTerm({
-            request,
-            credentialFile: practiceSettings.credentialFile,
-            snapshot,
-            signal,
-            // The caller's signal bounds each call; this is only a backstop.
-            timeoutMs: 60_000,
-          }),
-        stage: (rows, signal) =>
-          stagePractice({
-            table: practiceSettings.table,
-            rows,
-            credentialFile: practiceSettings.credentialFile,
-            signal,
-            timeoutMs: 60_000,
-          }),
-      } satisfies PracticeLink;
-    })()
-  : undefined;
+const practice: PracticeLink | undefined =
+  practiceSettings && snapshot
+    ? await (async () => {
+        return {
+          table: practiceSettings.table,
+          // With the opening's wait for the Grok Bot (at most 6 s from the request), an open stays
+          // inside the headset's own 10 s limit.
+          timeoutMs: 6_000,
+          pick: (request, signal) =>
+            pickTerm({
+              request,
+              credentialFile: practiceSettings.credentialFile,
+              snapshot,
+              signal,
+              // The caller's signal bounds each call; this is only a backstop.
+              timeoutMs: 60_000,
+            }),
+          stage: (rows, signal) =>
+            stagePractice({
+              table: practiceSettings.table,
+              rows,
+              credentialFile: practiceSettings.credentialFile,
+              signal,
+              timeoutMs: 60_000,
+            }),
+        } satisfies PracticeLink;
+      })()
+    : undefined;
 // The person's own Grok Bot: each boop moment goes there when they name a webhook file.
 const grokBot = config.grokBotWebhookFile
   ? new GrokBotMoments(journal, await loadGrokBot(config.grokBotWebhookFile))

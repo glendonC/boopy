@@ -8,6 +8,8 @@ import {
   REFERENCE_LANGUAGES,
   readTermSnapshot,
   TERM_COLUMNS,
+  teachableLabel,
+  teachableWords,
   termCsv,
   termReceipt,
   termReceiptFile,
@@ -193,4 +195,58 @@ test('the receipt binds the file and every row, and a changed file, row or count
   }
   assert.throws(() => parseTermCsv(csv.replace('"Q25391"', 'Q25391')));
   assert.throws(() => parseTermCsv(csv.replace(TERM_COLUMNS[0], 'id')));
+});
+
+test('the words Boopy can teach are the English labels and aliases, one per match key', () => {
+  const { rows } = buildTermRows(body(), 'Q25391', RETRIEVED);
+  assert.deepEqual(teachableWords(rows), ['Synthetic Dune', 'synthetic sand hill']);
+});
+
+test('a label finds the word Boopy can teach that it names, and is otherwise kept exactly', () => {
+  // As in the snapshot: tent and dune are item labels, while "camel" and "mount" are only aliases
+  // (of another label and of a mountain); person and glass are neither.
+  const labels = new Set(['tent', 'sand dune', 'dune', 'camelus', 'berry', 'box', 'mountain']);
+  const known = { labels, words: new Set([...labels, 'oases', 'mount', 'camp site', 'camel']) };
+  for (const [label, word] of [
+    ['tents', 'tent'],
+    ['Tents', 'Tent'],
+    ['desert tent', 'tent'],
+    ['Desert tents', 'tent'],
+    ['tent with a flag', 'tent'],
+    ['tents in a row', 'tent'],
+    ['sand dune', 'sand dune'],
+    ['sand dunes', 'sand dune'],
+    ['rolling dunes', 'dune'],
+    ['berries', 'berry'],
+    ['boxes', 'box'],
+    // An alias matches only as the whole label, or as its singular.
+    ['camels', 'camel'],
+    ['Camels', 'Camel'],
+    ['camel', 'camel'],
+    ['desert camel', 'desert camel'],
+    ['camels in a line', 'camels in a line'],
+    ['oases', 'oases'],
+    ['mount', 'mount'],
+    ['camp site', 'camp site'],
+    ['camera mount', 'camera mount'],
+    ['phone mounts', 'phone mounts'],
+    // Nothing known in any form, so kept as the model said it.
+    ['person in robes', 'person in robes'],
+    ['glasses', 'glasses'],
+    ['huts', 'huts'],
+    ['horses', 'horses'],
+    ['lens', 'lens'],
+    ['canvas', 'canvas'],
+    ['news', 'news'],
+    ['series', 'series'],
+    ['clothes', 'clothes'],
+    ['Christmas', 'Christmas'],
+    ['yurt', 'yurt'],
+  ])
+    assert.equal(teachableLabel(label as string, known), word, label);
+});
+
+test('the words Boopy can teach can be its item labels alone', () => {
+  const { rows } = buildTermRows(body(), 'Q25391', RETRIEVED);
+  assert.deepEqual(teachableWords(rows, ['label']), ['Synthetic Dune']);
 });
