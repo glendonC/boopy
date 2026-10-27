@@ -107,11 +107,24 @@ namespace Boopy.Quest
         private bool pictureObserved;
         // The last recorded-scene failure logged, so a Mac that stays away is logged once, not every five seconds.
         private string? recordedFailure;
-        // While a recording shows, the view is held where the eyes were when it appeared (HoldView), and the tracking space
-        // goes back to where it rested when it ends.
-        private OVRCameraRig? rig;
-        private Pose? heldView;
-        private Pose trackingRest;
+        // The analyzed still a boop stopped the clip at, read from the Mac while the person talks: a turn waits for it. Whether
+        // this pinch is the one that stopped the clip, so its tap boops instead of playing the clip on.
+        private Task? recordedHold;
+        private bool stoppedThisPinch;
+        // A read recording is placed in front of the person once the headset is worn with focus, and again on the system
+        // recenter. The last adb boop done, so each is done once, and when the launch is read for the next.
+        private bool placeRecording;
+        // Once worn, the recording waits for the head to settle: since when it has been worn, and steady, and how it was turned.
+        private float? wornSince, steadySince;
+        private Quaternion lastHead = Quaternion.identity;
+        private const float SteadyDegreesPerSecond = 20f, SteadySeconds = .5f, SettleCapSeconds = 2f;
+        private string? adbWaiting, adbRefusal;
+        private int? adbDone;
+        // An adb hold: the pushed WAV it sends in place of the microphone, and where its sound came from, for its one log line.
+        private byte[]? adbWav;
+        private string? adbHoldFrom;
+        private int adbHoldMs;
+        private float nextAdbAt;
         private bool NeedsCaptureRecovery => unresolvedStartId != null || recoveryStorageFailed;
 
         private Chip? dwellChip;
@@ -126,6 +139,10 @@ namespace Boopy.Quest
         // One task per session. Its open ids are made once, so asking again is the same open.
         private string? taskSessionId, taskOpenEventId, taskOpenId;
         private CancellationTokenSource? taskOpen;
+        private Func<Vector3[], (float Darkest, float Brightest)>? groundUnder;
+        // The clock Boopy's home keeps time by; editor checks set it, so their steps are exact.
+        private float? clock;
+        private float Now => clock ?? Time.realtimeSinceStartup;
         // The button recording is an answer to the presented task, not a Talk turn.
         private bool answeringTask;
         // Boopy's thinking phrases while a turn is with the Mac, one order for the whole app run. A turn that sends
@@ -154,9 +171,15 @@ namespace Boopy.Quest
             console.SetInteractionLocked(frozen);
             console.SetCompanionFrozen(!inputAllowed || console.HasFocus || console.Reading || pendingControl != ConsoleAction.None);
             if (turnAnswered && console.ReplySettled) CloseTurn();
-            var home = following.Home;
-            if (!turnOpen && !console.Relocating && !frozen && (!scene.ConsolePlaced || following.FarFrom(home))) scene.ReanchorConsole(console, home);
-            else scene.HoldConsole(console);
+            // Over a recording the console keeps to its home on the recording (KeepRecordingLook moves it there); in the room
+            // it follows the view.
+            if (scene.OnRecording) { if (!console.Relocating) scene.HoldConsole(console); }
+            else
+            {
+                var home = following.Home;
+                if (!turnOpen && !console.Relocating && !frozen && (!scene.ConsolePlaced || following.FarFrom(home))) scene.ReanchorConsole(console, home);
+                else scene.HoldConsole(console);
+            }
             if (!console.Relocating) dialogue?.SetFallback(!scene.ConsolePlaced);
         }
 
@@ -186,7 +209,7 @@ namespace Boopy.Quest
 
         private void Start()
         {
-            rig = FindAnyObjectByType<OVRCameraRig>();
+            var rig = FindAnyObjectByType<OVRCameraRig>();
             if (rig == null)
             {
                 Debug.LogError("Boopy: the scene has no OVRCameraRig. Run Boopy > Build Scene.");
@@ -207,7 +230,7 @@ namespace Boopy.Quest
             left = new HandInput(false, rig.leftHandAnchor.GetComponentInChildren<OVRHand>(true), rig.leftHandAnchor.GetComponentInChildren<OVRSkeleton>(true));
             right = new HandInput(true, rig.rightHandAnchor.GetComponentInChildren<OVRHand>(true), rig.rightHandAnchor.GetComponentInChildren<OVRSkeleton>(true));
             Debug.Log($"Boopy: hands left={(left.Found ? "found" : "missing")} right={(right.Found ? "found" : "missing")}.");
-            rig.UpdatedAnchors += HoldView;
+            if (OVRManager.display != null) OVRManager.display.RecenteredPose += OnRecentered;
 
             passthrough = new PassthroughView(gameObject);
             passthrough.Start(Time.unscaledTime);
@@ -265,45 +288,174 @@ namespace Boopy.Quest
             DiscardRecording();
             OVRManager.InputFocusLost -= OnFocusLost;
             OVRManager.InputFocusAcquired -= OnFocusAcquired;
-            if (rig != null) rig.UpdatedAnchors -= HoldView;
+            if (OVRManager.display != null) OVRManager.display.RecenteredPose -= OnRecentered;
             client?.Dispose();
         }
 
-        /// <summary>
-        /// While a recording shows, the view is held where the eyes were when it appeared, as a full-screen video is: after
-        /// every anchor update the rig's tracking space moves against the head, so the eyes stay put in the world and the
-        /// picture, its word, its outline and Boopy stay where the person sees them. Hands and controllers are in the
-        /// tracking space, so they point across the picture as they point across the view.
-        /// </summary>
-        private void HoldView(OVRCameraRig moved)
+        // Over a recording the console keeps only Boopy and his line, as a caption on the word block's glow, and once he
+        // asks, a hint that holding answers.
+        private void KeepRecordingLook(bool recording)
         {
-            if (heldView is not Pose held) return;
-            var space = HeldSpace(held, moved.centerEyeAnchor.localPosition, moved.centerEyeAnchor.localRotation);
-            moved.trackingSpace.SetPositionAndRotation(space.position, space.rotation);
+            console?.SetRecording(recording);
+            dialogue?.SetBoxless(recording);
+            // Each caption line keeps 4.5:1 over the footage under it (AUDIT), read from the still shown, or the worst case while
+            // the clip plays.
+            if (recording && scene != null) dialogue?.SetGround(groundUnder ??= scene.GroundUnder, System.HashCode.Combine(recorded?.Scene?.FrameId, recorded?.Playing));
+            else dialogue?.SetGround(null);
+            dialogue?.SetHint(recording && PresentedTask?.AnswerLabel != null && !answeringTask && !busy ? "Hold to answer" : null);
+            // Its home on the recording is chosen once a reply has fully arrived (its task opened or refused too) and its
+            // layout holds still, then kept; the log says which home and whether it is clear.
+            if (recording && console != null && scene != null) scene.KeepRecordingHome(console, Now, !busy && taskOpen == null);
         }
 
-        /// <summary>Where the tracking space goes so that eyes at this pose in it are at <paramref name="held"/> in the world.</summary>
-        internal static Pose HeldSpace(Pose held, Vector3 eyesInSpace, Quaternion eyesTurnInSpace)
+        // The system recenter turns the person's view, so the recording is placed in front of them again.
+        private void OnRecentered() => placeRecording = true;
+
+        // A read recording is placed in front of the person, at eye level, once they wear the headset with focus and the head
+        // has settled (it can still point down or aside while the headset goes on): steady for SteadySeconds, or at most
+        // SettleCapSeconds after it is on. After a recenter it is placed again at once. Never from an unworn pose.
+        private void PlaceRecording(float now)
         {
-            var turn = held.rotation * Quaternion.Inverse(eyesTurnInSpace);
-            return new Pose(held.position - turn * eyesInSpace, turn);
+            if (recorded == null || head == null) return;
+            var turned = Quaternion.Angle(lastHead, head.rotation) / Mathf.Max(1e-3f, Time.unscaledDeltaTime);
+            lastHead = head.rotation;
+            var worn = inputAllowed && OVRManager.instance != null && OVRManager.instance.isUserPresent;
+            if (!worn) { wornSince = steadySince = null; return; }
+            if (!recorded.Loaded || (recorded.Placed && !placeRecording)) return;
+            if (placeRecording) { PlaceAndLog("after the recenter"); placeRecording = false; return; }
+            wornSince ??= now;
+            if (turned > SteadyDegreesPerSecond) steadySince = null; else steadySince ??= now;
+            if ((steadySince is float steady && now - steady >= SteadySeconds) || now - wornSince.Value >= SettleCapSeconds) PlaceAndLog("once worn");
         }
 
-        // Holds the view once a recording shows and lets it go with the recording.
-        private void KeepView()
+        private void PlaceAndLog(string when)
         {
-            var showing = recorded != null && recorded.Showing;
-            if (rig == null || head == null || showing == (heldView != null)) return;
-            if (showing)
+            if (recorded == null || head == null) return;
+            recorded.Place(head);
+            var turn = head.rotation.eulerAngles;
+            float Signed(float degrees) => Mathf.DeltaAngle(0f, degrees);
+            Debug.Log($"Boopy: recording placed {when}, head yaw {Signed(turn.y):0} pitch {-Signed(turn.x):0} degrees.");
+        }
+
+        // ROOT's device check with the headset unworn: from each new adb intent, once, a place (the read recording placed and
+        // playing), a boop at a point and clip time, or a hold as a pinch would be. Each decision is logged once.
+        private void PollAdbBoop(float now)
+        {
+            if (now < nextAdbAt) return;
+            nextAdbAt = now + 1f;
+            if (!AdbBoop.TryRead(out var asked, out var refused))
             {
-                trackingRest = new Pose(rig.trackingSpace.localPosition, rig.trackingSpace.localRotation);
-                heldView = new Pose(head.position, head.rotation);
-                Debug.Log("Boopy: view held for the recording.");
+                if (refused != null && refused != adbRefusal) Debug.LogWarning("Boopy: adb hook ignored: " + refused + ".");
+                adbRefusal = refused;
                 return;
             }
-            heldView = null;
-            rig.trackingSpace.SetLocalPositionAndRotation(trackingRest.position, trackingRest.rotation);
-            Debug.Log("Boopy: view let go.");
+            if (asked.Identity == adbDone) return;
+            var waits = recorded == null || !recorded.Loaded ? "no recording read yet" : NeedsCaptureRecovery ? "an earlier capture is still being settled"
+                : busy || voice.Recording ? "a turn is running" : !inputAllowed ? "the app has no input focus" : null;
+            if (waits != null)
+            {
+                if (waits != adbWaiting) Debug.Log("Boopy: adb hook waits: " + waits + ".");
+                adbWaiting = waits;
+                return;
+            }
+            adbWaiting = null; adbDone = asked.Identity;
+            // Whether a shell launch names the shell as its referrer, or none, decides whether the hook can require it.
+            Debug.Log("Boopy: adb hook from " + (asked.From ?? "no referrer") + ".");
+            if (!recorded!.Placed) PlaceAndLog("by adb");
+            if (asked.Placing) Debug.Log("Boopy: adb place done.");
+            Point2? at = asked.At.x >= 0f && asked.At.x <= 1f && asked.At.y >= 0f && asked.At.y <= 1f ? new Point2 { X = asked.At.x, Y = asked.At.y } : null;
+            if (asked.Hold is int held)
+            {
+                Debug.Log($"Boopy: adb hold {held} ms" + (at != null ? $" at {at.X:0.###}, {at.Y:0.###}" : "") + (asked.Time is float t ? $", {t:0.##} s" : "") + ".");
+                _ = AdbHold(held, asked.Wav, at, asked.Time);
+                return;
+            }
+            if (asked.BoopId == null) return;
+            if (at == null) { Debug.LogWarning("Boopy: adb boop ignored: its point is off the picture."); return; }
+            Debug.Log($"Boopy: adb boop {asked.BoopId} at {at.X:0.###}, {at.Y:0.###}" + (asked.Time is float seconds ? $", {seconds:0.##} s." : "."));
+            TapRecording(null, at, asked.Time, "adb", false);
+        }
+
+        /// <summary>True when a tap now plays the clip on: it stands stopped on a boop and this pinch did not just stop it.</summary>
+        private bool ResumesOnTap(bool stoppedNow) => recorded != null && recorded.Showing && recorded.Paused && !stoppedNow;
+
+        /// <summary>
+        /// The one tap rule on a recording, by hand or by adb: the first tap after Boopy's answer plays the clip on and clears
+        /// his line, the word and the shape; the next tap boops. The log says which a tap did.
+        /// </summary>
+        private void TapRecording(HandInput? hand, Point2? at, double? seconds, string by, bool stoppedNow)
+        {
+            if (ResumesOnTap(stoppedNow))
+            {
+                EndTask(); ForgetPicture(); dialogue?.Hide(); CloseTurn(); recordedHold = null; recorded!.Resume();
+                Debug.Log($"Boopy: tap by {by} after the answer: the clip plays on, his line, the word and the shape cleared.");
+                return;
+            }
+            Debug.Log($"Boopy: tap by {by}: a boop.");
+            _ = BoopWithoutWords(hand, at, seconds);
+        }
+
+        // An adb hold, exactly as a pinch held this long would be, aimed at the point when given: a talk turn when nothing is
+        // open, the answer once Boopy has asked. It records from the microphone, or sends the pushed WAV in its place.
+        private async Task AdbHold(int milliseconds, string? wavName, Point2? at, double? seconds)
+        {
+            if (head == null || recorded == null) return;
+            byte[]? file = null;
+            if (wavName != null)
+            {
+                var path = Path.Combine(Application.persistentDataPath, wavName);
+                if (wavName != Path.GetFileName(wavName) || wavName.Contains("..") || !wavName.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+                { Debug.LogWarning("Boopy: adb hold ignored: its WAV is not a .wav file in the app's own folder."); return; }
+                file = File.ReadAllBytes(path);
+            }
+            if (seconds != null) { StopRecording(seconds); if (recordedHold != null) await recordedHold; }
+            var hand = new HandInput(true, null, null);
+            var plane = recorded.Plane;
+            var aim = at is Point2 point ? Unity(plane.At(point.X, point.Y)) - head.position : head.forward;
+            hand.Update(head, Time.unscaledTime, true, new HandInput.Controller(true, 0f, head.position, aim));
+            adbWav = file; adbHoldFrom = file != null ? "file" : "mic"; adbHoldMs = milliseconds;
+            Handle(PinchEvent.Began, hand);
+            await Awaitable.WaitForSecondsAsync(Mathf.Max(0f, milliseconds) / 1000f);
+            hand.Update(head, Time.unscaledTime, true, new HandInput.Controller(true, 0f, head.position, aim));
+            Handle(PinchEvent.Released, hand);
+            adbWav = null; adbHoldFrom = null;
+        }
+
+        // The sound an adb hold sends, in its one log line: its length asked, where it came from, and its peak and RMS level
+        // in dBFS. No audio is kept or logged.
+        private void ReportHold(byte[]? wav, int milliseconds)
+        {
+            if (adbHoldFrom == null) return;
+            var (peak, rms) = Levels(wav);
+            Debug.Log($"Boopy: adb hold {milliseconds} ms from {adbHoldFrom}, peak {peak:0.0} dBFS, rms {rms:0.0} dBFS.");
+            adbHoldFrom = null;
+        }
+
+        private static Vector3 Unity(System.Numerics.Vector3 value) => new Vector3(value.X, value.Y, value.Z);
+
+        /// <summary>A 16-bit PCM WAV's peak and RMS level in dBFS, read from its data chunk; minus infinity when it has none.</summary>
+        internal static (double Peak, double Rms) Levels(byte[]? wav)
+        {
+            if (wav == null || wav.Length < 12) return (double.NegativeInfinity, double.NegativeInfinity);
+            for (var at = 12; at + 8 <= wav.Length;)
+            {
+                var size = BitConverter.ToInt32(wav, at + 4);
+                if (wav[at] == 'd' && wav[at + 1] == 'a' && wav[at + 2] == 't' && wav[at + 3] == 'a')
+                {
+                    var end = Math.Min(wav.Length, at + 8 + Math.Max(0, size));
+                    double peak = 0, sum = 0; var count = 0;
+                    for (var i = at + 8; i + 1 < end; i += 2)
+                    {
+                        var sample = Math.Abs(BitConverter.ToInt16(wav, i) / 32768.0);
+                        peak = Math.Max(peak, sample); sum += sample * sample; count++;
+                    }
+                    double Db(double level) => level > 0 ? 20 * Math.Log10(level) : double.NegativeInfinity;
+                    return (Db(peak), Db(count > 0 ? Math.Sqrt(sum / count) : 0));
+                }
+                if (size < 0) break;
+                at += 8 + size + (size & 1);
+            }
+            return (double.NegativeInfinity, double.NegativeInfinity);
         }
 
         /// <summary>Focus lost to a system menu: hands give no input, and a recording in progress is dropped (VRC.Quest.Input.4).</summary>
@@ -410,10 +562,12 @@ namespace Boopy.Quest
             var now = Time.unscaledTime;
             ExpireButtonRecording(now);
             passthrough?.Poll(now);
-            KeepView();
-            // The recording's media cue stays in view, away from the subject's word.
+            PlaceRecording(now);
+            PollAdbBoop(now);
+            // The recording's media cue keeps clear of the subject's word.
             var recording = recorded != null && recorded.Showing;
             if (recording) recorded!.Follow(head, scene.TryGetWord(out var wordAt) ? wordAt : (Vector3?)null, Time.unscaledDeltaTime);
+            KeepRecordingLook(recording);
             // Read both hands before drawing or resolving targets: never use last frame's ray. On a recording a hand points
             // with the Quest's own pointing pose.
             var rightPinch = right.Update(head, now, inputAllowed, Held(OVRInput.Controller.RTouch, rightController), recording);
@@ -430,8 +584,7 @@ namespace Boopy.Quest
             var gazeControl = ControlHit(gazeRay, out var onControl);
             if (gazeControl != ConsoleAction.None) gaze.Show(onControl, true);
             else if (gazeChip != null) gaze.Show(onChip, true);
-            // The eyes always rest on the middle of a held recording, so that point is kept but not marked: the one dot on
-            // the picture is where the hand or controller points.
+            // On a recording the one dot is where the hand or controller points; where the eyes rest is kept, not marked.
             else if (recorded != null && recorded.TryHit(gazeRay, out var onPicture, out _)) { gaze.Show(onPicture, true); gaze.Hide(); }
             else if (room.TryHit(gazeRay, 6f, out var point, out _)) gaze.Show(point, true);
             else gaze.Show(head.position + head.forward * 1.5f, false);
@@ -572,8 +725,7 @@ namespace Boopy.Quest
         // The picture changes only between turns: never while the person talks, Boopy works, a turn holds its still, or an
         // earlier capture waits to be checked.
         private bool RecordedSceneMayChange => inputAllowed && isActiveAndEnabled && client != null && recorded != null && head != null
-            && !busy && !voice.Recording && !buttonTalk.Recording && active == null && pending == null && pendingEvidence == null
-            && !NeedsCaptureRecovery;
+            && !busy && !voice.Recording && !buttonTalk.Recording && active == null && pending == null && pendingEvidence == null;
 
         /// <summary>
         /// Reads the recorded scene the Mac shows and shows its still, fetched only when the still changes and checked
@@ -591,16 +743,21 @@ namespace Boopy.Quest
                 if (shown == null)
                 {
                     if (!recorded.Showing) return;
-                    recorded.Hide(); ForgetPicture(); KeepView();
+                    recorded.Hide(); ForgetPicture();
                     Debug.Log("Boopy: recorded scene cleared.");
                     return;
                 }
-                if (recorded.Showing && recorded.Scene!.RecordingId == shown.RecordingId && recorded.Scene.FrameId == shown.FrameId) return;
+                if (recorded.Loaded && recorded.Source!.RecordingId == shown.RecordingId && recorded.Source.FrameId == shown.FrameId) return;
                 var still = await client.ReadRecordedFrameAsync(shown.FrameId, shown.FrameSha256, read.Token);
                 if (read.IsCancellationRequested || !RecordedSceneMayChange) return;
                 if (!recorded.Show(shown, still, head!)) { Debug.LogWarning("Boopy: recorded still did not decode."); return; }
-                ForgetPicture(); KeepView();
-                Debug.Log($"Boopy: recorded scene shown {shown.Kind} {shown.Width}x{shown.Height}.");
+                ForgetPicture(); recordedHold = null;
+                if (NeedsCaptureRecovery) _ = SettleRecovery();
+                // A clip plays its own video as it was recorded; its still shows until the first frame.
+                if (shown.Video != null) recorded.Play(client.RecordedVideoUrl(shown.Video), shown.Video);
+                Debug.Log($"Boopy: recorded scene shown {shown.Kind} {shown.Width}x{shown.Height}"
+                    + (shown.Video != null ? $", video {shown.Video.Width}x{shown.Video.Height} at {shown.Video.FrameRate:0.##} fps" : "")
+                    + (shown.Projection != null ? ", at its camera's angles." : "; no projection measured, so fitted whole into the view."));
             }
             catch (OperationCanceledException) { }
             catch (ServiceException refused)
@@ -610,6 +767,96 @@ namespace Boopy.Quest
                 recordedFailure = failure;
             }
             finally { if (ReferenceEquals(recordedRead, read)) { recordedRead = null; nextRecordedAt = Time.unscaledTime + 5f; } }
+        }
+
+        /// <summary>
+        /// A pinch on a playing clip stops it and holds the analyzed still nearest where it stopped: the clip goes to that
+        /// still's time and the turn is about it. A still that cannot be read leaves the turn on the Mac's own still.
+        /// </summary>
+        private void StopRecording(double? at = null)
+        {
+            stoppedThisPinch = false;
+            if (client == null || recorded == null || recorded.Source == null) return;
+            var stopped = recorded.Pause();
+            stoppedThisPinch = stopped != null;
+            if ((at ?? stopped) is double moment && RecordedScenes.Nearest(recorded.Source, moment) is RecordedFrameInfo near)
+                recordedHold = HoldStill(recorded.Source, near);
+        }
+
+        private async Task HoldStill(RecordedSceneView source, RecordedFrameInfo near)
+        {
+            _ = ReadOutlines(near.FrameId);
+            try
+            {
+                var jpeg = await client!.ReadRecordedFrameAsync(near.FrameId, near.FrameSha256);
+                var held = new RecordedSceneView
+                {
+                    RecordingId = source.RecordingId, FrameId = near.FrameId, FrameSha256 = near.FrameSha256, Kind = source.Kind,
+                    Width = source.Width, Height = source.Height, SourceTimeSeconds = near.Seconds, DurationSeconds = source.DurationSeconds,
+                    CapturedAt = source.CapturedAt, Frames = source.Frames, Video = source.Video, Projection = source.Projection,
+                };
+                if (recorded == null || recorded.Source != source || !recorded.Hold(held, jpeg)) Debug.LogWarning("Boopy: the still the clip stopped at did not decode.");
+            }
+            catch (ServiceException refused) { Debug.LogWarning("Boopy: the still the clip stopped at is unavailable: " + refused.Code); }
+        }
+
+        // The objects the outline run proposed on the held frame, read beside its still: Boopy's line keeps off them. The log
+        // says how many, never what.
+        private async Task ReadOutlines(string frameId)
+        {
+            if (client == null) return;
+            try
+            {
+                var outlined = (await client.ReadRecordedOutlinesAsync()).On(frameId);
+                scene?.SetOutlined(frameId, outlined);
+                Debug.Log($"Boopy: {outlined.Count} outlined objects on the held frame.");
+            }
+            catch (ServiceException refused) { Debug.LogWarning("Boopy: the recording's outlines are unavailable: " + refused.Code); }
+        }
+
+        /// <summary>
+        /// A tap on a recording: a turn about where the hand points, or the given point for an adb boop, with no words;
+        /// the Mac answers it as "What is this?".
+        /// </summary>
+        private async Task BoopWithoutWords(HandInput? hand, Point2? at = null, double? seconds = null)
+        {
+            // A tap whose pinch started no talk (no microphone, or an adb boop) stops a playing clip here; an adb boop may
+            // name the clip time to stop on.
+            if (seconds != null) StopRecording(seconds);
+            else if (recorded != null && !recorded.Paused) StopRecording();
+            if (recordedHold != null) await recordedHold;
+            if ((at == null && !inputAllowed) || busy || recorded == null || !recorded.Showing || NeedsCaptureRecovery) return;
+            console?.InputPolicy.SetInteractionState(true, busy);
+            pendingEvidence = console?.InputPolicy.Begin();
+            if (pendingEvidence == null) return;
+            if (at is Point2 point) { pending = recorded.Still(); pendingTarget = null; pendingCues = new Cues { Gaze = new Cue { Point = point } }; }
+            else { active = hand; Capture(null); active = null; }
+            if (pending == null) { pendingEvidence = null; console?.InputPolicy.End(); ReportFailure("I couldn't get the picture. Tap it again."); return; }
+            OpenTurn();
+            await Send(null);
+        }
+
+        /// <summary>
+        /// A recording shown with an earlier capture still unresolved: it is settled with the Mac quietly, never shown as a
+        /// card over the recording. A start the Mac finished, failed or never had is let go; one still running is kept.
+        /// </summary>
+        private async Task SettleRecovery()
+        {
+            if (client == null || unresolvedStartId is not string identity || recoveryStorageFailed) return;
+            string status;
+            try { status = (await client.ReadStartAsync(identity)).Status; }
+            catch (ServiceException refused) { status = refused.Status == 404 ? "unknown" : ""; }
+            catch (Exception) { status = ""; }
+            if (unresolvedStartId != identity || status == "" || status == "pending")
+            {
+                Debug.Log("Boopy: earlier capture kept: " + (status == "" ? "the Mac did not answer" : "still running") + ".");
+                return;
+            }
+            if (!ClearCaptureRecovery()) return;
+            cancelledWaitNotice = null;
+            console?.SetCaptureRecovery(false);
+            dialogue?.Hide();
+            Debug.Log("Boopy: earlier capture let go for the recording: " + status + ".");
         }
 
         private void ForgetPicture()
@@ -658,6 +905,7 @@ namespace Boopy.Quest
             {
                 case PinchEvent.Began:
                     StopSpeech();
+                    stoppedThisPinch = false;
                     if (!buttonTalk.Recording && !busy && dialogue?.HitPage(hand.RayActive ? hand.Ray : new Ray(head!.position, head.forward)) == true)
                     {
                         active = hand; pendingDialogue = true; dialogue.SetInteractionLocked(true); dialogue.NextPage(); return;
@@ -684,6 +932,13 @@ namespace Boopy.Quest
                         return;
                     }
                     pendingControl = ConsoleAction.None;
+                    // On a recording there is no Answer button: once Boopy asks, holding answers.
+                    if (recorded != null && recorded.Showing && PresentedTask?.AnswerLabel != null)
+                    {
+                        active = hand; BeginAnswer();
+                        if (answeringTask) dialogue?.Show(DialogueStage.Listening, "Listening… Release to finish.");
+                        break;
+                    }
                     BeginTalk(hand);
                     break;
                 case PinchEvent.Holding:
@@ -696,11 +951,13 @@ namespace Boopy.Quest
                     dialogue?.Hide();
                     active = null;
                     marker?.Hide();
-                    // A stray tap leaves the task's line in place; the hint shows over it and gives it back.
-                    ShowTask();
+                    // On a recording a tap needs no words and keeps the tap rule; a stray tap elsewhere leaves the task's line in
+                    // place and gives it back.
+                    var onRecording = pendingTarget == null && recorded != null && recorded.Showing && !busy;
+                    if (!onRecording || !ResumesOnTap(stoppedThisPinch)) ShowTask();
                     if (pendingTarget != null) _ = Act(pendingTarget);
-                    else SayStatus("Hold and ask.", 4f);
                     RestoreConsole();
+                    if (onRecording) TapRecording(hand, null, null, "hand", stoppedThisPinch);
                     break;
                 case PinchEvent.Released:
                     if (ReleaseControl(hand)) return;
@@ -745,7 +1002,10 @@ namespace Boopy.Quest
                 dialogue?.Show(DialogueStage.Error, "Recording wasn’t ready. Tap Talk to try again.");
                 return;
             }
-            var wav = voice.End(); feedback?.SetRecording(false);
+            var heard = voice.End(); feedback?.SetRecording(false);
+            // An adb hold sends its pushed WAV in place of what the microphone heard.
+            var wav = adbWav ?? heard;
+            ReportHold(wav, adbHoldMs);
             if (wav == null)
             {
                 DiscardRecording(); marker?.Hide(); RestoreConsole();
@@ -792,7 +1052,9 @@ namespace Boopy.Quest
         private void FinishAnswer()
         {
             answeringTask = false;
-            var wav = voice.End(); feedback?.SetRecording(false);
+            var heard = voice.End(); feedback?.SetRecording(false);
+            var wav = adbWav ?? heard;
+            ReportHold(wav, adbHoldMs);
             var answered = PresentedTask;
             if (wav == null || answered == null)
             {
@@ -825,17 +1087,17 @@ namespace Boopy.Quest
             dialogue?.SetCancelableWait(true);
             // A new event for each answer; a retry after a lost reply reuses it, so the Mac records the answer once.
             var eventId = TaskIds.NewEventId();
-            string? reply = null, failure = null;
+            string? reply = null, failure = null, code = null;
             var stale = false;
             try
             {
                 reply = await AnswerAsync(answered, eventId, wav, request.Token);
                 request.Token.ThrowIfCancellationRequested();
             }
-            catch (OperationCanceledException) { failure = "Stopped waiting. The Mac may still record this answer."; }
+            catch (OperationCanceledException) { failure = "Stopped waiting. The Mac may still record this answer."; code = "stopped"; }
             catch (ServiceException refused) when (refused.Status == 422 && refused.Code == "no_words")
             {
-                failure = TryAnswerAgain("No speech recorded.", answered);
+                failure = TryAnswerAgain("No speech recorded.", answered); code = refused.Code;
             }
             catch (ServiceException refused) when (refused.Status == 409 && refused.Code == "stale_revision")
             {
@@ -850,8 +1112,8 @@ namespace Boopy.Quest
                 }
                 catch (Exception) { failure = "That answer was not recorded. Reconnect before answering again."; }
             }
-            catch (ServiceException refused) { failure = refused.Message; }
-            catch (Exception) { failure = unconfirmed; }
+            catch (ServiceException refused) { failure = refused.Message; code = refused.Code; }
+            catch (Exception other) { failure = unconfirmed; code = other.GetType().Name; }
             finally
             {
                 if (ReferenceEquals(captureRequest, request)) captureRequest = null;
@@ -862,6 +1124,7 @@ namespace Boopy.Quest
             if (session?.Id != sessionId) return;
             if (failure != null || reply == null)
             {
+                Debug.LogWarning("Boopy: task answer failed: " + (code ?? "no reply") + ".");
                 cancelledWaitNotice = failure ?? unconfirmed;
                 ReportFailure(cancelledWaitNotice);
                 return;
@@ -935,6 +1198,7 @@ namespace Boopy.Quest
             cancelledWaitNotice = null;
             captureScan?.Hide();
             pending = null; pendingCues = null; pendingTarget = null;
+            StopRecording();
             active = hand;
             if (session == null || session.State == "committed")
             {
@@ -1006,6 +1270,8 @@ namespace Boopy.Quest
                 // Give the actual listening acknowledgement one render opportunity while
                 // recording already runs. The saved source pose/time is taken below, not at pinch.
                 await Awaitable.NextFrameAsync(preparation.Token);
+                // A pinch that stopped a clip waits for the still it stopped at.
+                if (recordedHold != null) await recordedHold;
                 if (generation != captureGeneration || (fromButton ? !buttonTalk.Recording : active != hand) || pendingEvidence != evidenceTurn ||
                     !inputAllowed || !isActiveAndEnabled || !voice.Recording) return;
                 if (evidenceTurn.RequiresPicture)
@@ -1039,9 +1305,9 @@ namespace Boopy.Quest
         {
             if (room == null || gaze == null || scene == null) return;
             pendingTarget = targetId;
-            // A recorded scene: the turn is about its still, with the point the person attends to on it; no room frame. The
-            // view is held on it, so the eyes rest on its middle: the point is where the talking hand or controller points on
-            // it, else where the eyes rest. The Mac takes it as the gaze cue, the one point a recorded frame takes.
+            // A recorded scene: the turn is about its still, with the point the person attends to on it; no room frame: where
+            // the talking hand or controller points on it, else where the eyes rest. The Mac takes it as the gaze cue, the
+            // one point a recorded frame takes.
             if (recorded != null && recorded.Showing && head != null)
             {
                 pending = recorded.Still();
@@ -1082,7 +1348,8 @@ namespace Boopy.Quest
             console?.ShowTurnProgress(progress);
         }
 
-        private async Task Send(byte[] wav)
+        /// <summary>Sends the turn: the person's words, or with none (<paramref name="wav"/> null) a tap's boop.</summary>
+        private async Task Send(byte[]? wav)
         {
             if (client == null || status == null || scene == null) return;
             busy = true;
@@ -1091,8 +1358,10 @@ namespace Boopy.Quest
             var evidenceTurn = pendingEvidence ?? new EvidenceTurn(false);
             dialogue?.ShowThinking(Thinking(evidenceTurn.RequiresPicture));
             VisitSubject(evidenceTurn.RequiresPicture);
-            Debug.Log("Boopy: sending capture to Mac.");
+            Debug.Log(wav != null ? "Boopy: sending capture to Mac." : "Boopy: sending a tap boop to Mac.");
             var snapshot = pending;
+            // Where the person pointed on a recorded still: a pin marks it when the model's only shape there is a loose box.
+            var pointedAt = snapshot?.Recorded != null ? pendingCues?.Gaze?.Point : null;
             using var request = new CancellationTokenSource();
             captureRequest = request;
             dialogue?.SetCancelableWait(true);
@@ -1100,12 +1369,12 @@ namespace Boopy.Quest
             bool restoreAfterWait = false;
             try
             {
-                var speech = new SpeechData { Wav = Convert.ToBase64String(wav) };
+                var speech = wav != null ? new SpeechData { Wav = Convert.ToBase64String(wav) } : new SpeechData { Gesture = "tap" };
                 var still = snapshot?.Recorded;
                 var frame = still == null ? snapshot?.ToFrame() : null;
                 if (frame != null) { frame.Source = "current-surroundings"; frame.TimestampTrusted = false; }
                 SessionView view;
-                var starting = session == null || session.State == "committed";
+                var starting = evidenceTurn.StartsSession(session?.State, still);
                 if (starting)
                 {
                     if (evidenceTurn.RequiresPicture && snapshot == null)
@@ -1122,20 +1391,20 @@ namespace Boopy.Quest
                 }
                 else
                 {
-                    view = await client.UtterStreamingAsync(session.Id, evidenceTurn.Utter(speech, pendingCues, frame, still), TurnProgressFor(request, session.Id), request.Token);
+                    view = await client.UtterStreamingAsync(session!.Id, evidenceTurn.Utter(speech, pendingCues, frame, still), TurnProgressFor(request, session.Id), request.Token);
                 }
                 request.Token.ThrowIfCancellationRequested();
                 // A recovered start returns the current projection. Its original pixels belong
                 // to the first observation, never a later observation from another turn.
                 var observation = starting ? view.Observations.FirstOrDefault() : view.Observations.LastOrDefault();
-                if (snapshot != null && observation != null) { scene.Remember(observation.Id, snapshot); pictureObserved |= snapshot.Recorded != null; }
+                if (snapshot != null && observation != null) { scene.Remember(observation.Id, snapshot, pointedAt); pictureObserved |= snapshot.Recorded != null; }
                 if (starting && !ClearCaptureRecovery()) return;
                 Apply(view);
                 speechView = view;
                 // A first turn with Boopy's line on a grounded referent may be the session's task.
                 // Its follow-ups wait for the Mac's answer, so they never flash and vanish.
                 if (starting && TaskTurn(view)) { taskView = view; console?.ShowTask(null); }
-                Debug.Log($"Boopy: received session state={view.State} items={view.Items.Count}.");
+                Debug.Log($"Boopy: received session state={view.State} items={view.Items.Count}, word {(scene.TryGetWord(out _) ? "shown" : "none")}.");
             }
             catch (OperationCanceledException)
             {
@@ -1145,13 +1414,22 @@ namespace Boopy.Quest
             }
             catch (ServiceException refused)
             {
-                Debug.LogWarning($"Boopy: request refused status={refused.Status}.");
+                Debug.LogWarning($"Boopy: request refused status={refused.Status} code={refused.Code}.");
                 if (refused.Code == "service_unavailable") ClearCaptureRecovery();
+                // The Mac answered with its reason, so it is connected, and a start it refused made no session to check.
+                else if (refused.Code != "connection_lost" && refused.Code != "request_timeout" && refused.Code != "invalid_reply")
+                {
+                    console?.SetConnectionStatus("connected", connectionSpeechAvailable);
+                    if (unresolvedStartId != null) ClearCaptureRecovery();
+                }
                 // The Mac shows another still now, or none, or looks only at recordings: read its scene again at once, and say
-                // so in DESIGN's words.
+                // so in DESIGN's words. Anything else is said in the Mac's own words, its real reason.
                 var words = refused.Code == "recorded_frame_changed" ? "The picture changed before I could look. Ask again."
                     : refused.Code == "recorded_frame_unknown" ? "Your Mac doesn't have that picture."
-                    : refused.Code == "recorded_only" ? "Open a video or photo on your Mac first." : refused.Message;
+                    : refused.Code == "recorded_only" ? "Open a video or photo on your Mac first."
+                    : refused.Code == "no_words" ? (recorded?.Showing == true ? "I didn't hear any words. Tap the picture to ask what it is, or hold and talk."
+                        : "I didn't hear any words. Hold and talk again.")
+                    : refused.Message;
                 if (refused.Code == "recorded_frame_changed" || refused.Code == "recorded_frame_unknown" || refused.Code == "recorded_only")
                 {
                     // Refused before any session or journal row: nothing waits on the Mac.
@@ -1245,6 +1523,7 @@ namespace Boopy.Quest
             dialogue?.SetComfort(console?.ComfortScale ?? 1f, console?.ReducedMotion ?? false);
             dialogue?.ShowTask(shown.SpeakerLine, shown.Caption);
             console?.ShowTask(shown.AnswerLabel);
+            Debug.Log($"Boopy: task view revision {shown.Revision}, speaker line \"{shown.SpeakerLine}\", word {(scene != null && scene.TryGetWord(out _) ? "shown" : "none")}.");
             // Boopy's reply to a new answer shows what it heard, on the word and on Boopy, once.
             if (shown.RepliesToAnswer && shown.LastAttempt is TaskAttempt attempt && attempt.Heard is string heard && attempt.EventId != assessedEventId)
             {
@@ -1460,7 +1739,7 @@ namespace Boopy.Quest
             else
             {
                 console?.Render(session);
-                if (session.State != "committed" && scene != null && !scene.ConsolePlaced && console != null) console.ShowControlsOnly(console.transform.position);
+                if (session.State != "committed" && scene != null && !scene.ConsolePlaced && !scene.OnRecording && console != null) console.ShowControlsOnly(console.transform.position);
             }
         }
 
