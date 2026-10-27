@@ -160,7 +160,7 @@ describe('connector', async () => {
   for (const mode of ['legacy', 'auto'] as const) {
     it(`serves MCP search and fetch to a client negotiating ${mode}`, async () => {
       const client = new Client(
-        { name: `boopy-test-${mode}`, version: '1.0.0' },
+        { name: `boopy-${mode}`, version: '1.0.0' },
         { versionNegotiation: { mode } },
       );
       const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
