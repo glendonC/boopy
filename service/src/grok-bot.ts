@@ -8,8 +8,8 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import sharp from 'sharp';
 import { z } from 'zod';
-import type { Box, Point } from './contracts.ts';
-import { gazeView, intoView } from './evidence.ts';
+import type { Point } from './contracts.ts';
+import { gazeView } from './evidence.ts';
 import type { Journal } from './journal.ts';
 
 export type GrokBotLink = {
@@ -103,35 +103,57 @@ export async function deliver(
   }
 }
 
+/** How the picture marks what the person pointed at: the subject's traced outline, or a ring. */
+export type PictureMark = { readonly contour: readonly Point[] } | { readonly ring: Point };
+
+/** The ring's radius and every stroke, in pixels of the picture (at most 480 on a side). */
+const RING_RADIUS = 18;
+const STROKE = 4;
+
 /**
- * The view around where the person looked, the booped subject's box drawn on it, re-encoded small
- * enough to send (about 40 KB). Re-encoding keeps no capture metadata.
+ * The view around where the person looked, with what they pointed at marked as the headset marks
+ * it: the subject's traced outline, else a small ring at the pointed spot, never the model's loose
+ * box. No text. Re-encoded small enough to send (about 40 KB), with no capture metadata.
  */
-export async function momentPicture(jpeg: Buffer, center: Point, box: Box | null): Promise<Buffer> {
+export async function momentPicture(
+  jpeg: Buffer,
+  center: Point,
+  mark: PictureMark,
+): Promise<Buffer> {
   const view = await gazeView(jpeg, center);
   const small = await sharp(view.image)
     .resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
     .toBuffer({ resolveWithObject: true });
   const { width, height } = small.info;
-  const inside = box === null ? null : intoView(box, view.region);
-  const outlined =
-    inside === null
-      ? small.data
-      : await sharp(small.data)
-          .composite([
-            {
-              input: Buffer.from(
-                `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><rect x="${Math.round(inside.x0 * width)}" y="${Math.round(inside.y0 * height)}" width="${Math.round((inside.x1 - inside.x0) * width)}" height="${Math.round((inside.y1 - inside.y0) * height)}" fill="none" stroke="#ffffff" stroke-width="4"/></svg>`,
-              ),
-              top: 0,
-              left: 0,
-            },
-          ])
-          .toBuffer();
-  let picture = await sharp(outlined).jpeg({ quality: 70 }).toBuffer();
+  const r = view.region;
+  const at = (point: Point) => ({
+    x: Math.round(((point.x - r.x0) / (r.x1 - r.x0)) * width),
+    y: Math.round(((point.y - r.y0) / (r.y1 - r.y0)) * height),
+  });
+  const shape =
+    'contour' in mark
+      ? `<polygon points="${mark.contour
+          .map(at)
+          .map(({ x, y }) => `${x},${y}`)
+          .join(
+            ' ',
+          )}" fill="none" stroke="#ffffff" stroke-width="${STROKE}" stroke-linejoin="round"/>`
+      : `<circle cx="${at(mark.ring).x}" cy="${at(mark.ring).y}" r="${RING_RADIUS}" fill="none" stroke="#ffffff" stroke-width="${STROKE}"/>`;
+  const marked = await sharp(small.data)
+    .composite([
+      {
+        input: Buffer.from(
+          `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${shape}</svg>`,
+        ),
+        top: 0,
+        left: 0,
+      },
+    ])
+    .toBuffer();
+  let picture = await sharp(marked).jpeg({ quality: 70 }).toBuffer();
   for (const quality of [55, 40]) {
     if (picture.length <= 40_000) break;
-    picture = await sharp(outlined).jpeg({ quality }).toBuffer();
+    picture = await sharp(marked).jpeg({ quality }).toBuffer();
   }
   return picture;
 }

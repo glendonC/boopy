@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import sharp from 'sharp';
+import { gazeView } from './evidence.ts';
 import {
   deliver,
   type GrokBotLink,
@@ -53,11 +54,7 @@ const moment = async (over: Partial<Moment> = {}): Promise<Moment> => ({
   memory: null,
   recorded: true,
   pointed: false,
-  picture: await momentPicture(
-    await frame(),
-    { x: 0.8, y: 0.4 },
-    { x0: 0.7, y0: 0.3, x1: 0.9, y1: 0.5 },
-  ),
+  picture: await momentPicture(await frame(), { x: 0.8, y: 0.4 }, { ring: { x: 0.8, y: 0.4 } }),
   ...over,
 });
 
@@ -207,5 +204,49 @@ test('the webhook file must be private, name an https URL, and hold a known kind
     });
   } finally {
     await rm(folder, { recursive: true, force: true });
+  }
+});
+
+/** How bright the picture is at a frame point, read back through the same gaze view. */
+async function brightness(
+  picture: Buffer,
+  frameJpeg: Buffer,
+  center: { x: number; y: number },
+  at: { x: number; y: number },
+) {
+  const { region } = await gazeView(frameJpeg, center);
+  const { data, info } = await sharp(picture).raw().toBuffer({ resolveWithObject: true });
+  const x = Math.round(((at.x - region.x0) / (region.x1 - region.x0)) * (info.width - 1));
+  const y = Math.round(((at.y - region.y0) / (region.y1 - region.y0)) * (info.height - 1));
+  const i = (y * info.width + x) * info.channels;
+  return ((data[i] ?? 0) + (data[i + 1] ?? 0) + (data[i + 2] ?? 0)) / 3;
+}
+
+test('the picture marks the subject by its outline, or by a ring at the point, never by a box', async () => {
+  const jpeg = await frame();
+  const gaze = { x: 0.5, y: 0.5 };
+  // A subject with only the model's loose box: a ring at the gaze, and nothing on the box's edge.
+  const ringed = await momentPicture(jpeg, gaze, { ring: gaze });
+  const box = { x0: 0.4, y0: 0.35, x1: 0.62, y1: 0.66 };
+  assert.ok((await brightness(ringed, jpeg, gaze, { x: box.x0, y: 0.5 })) < 170);
+  assert.ok((await brightness(ringed, jpeg, gaze, { x: 0.5, y: box.y0 })) < 170);
+  const { region } = await gazeView(jpeg, gaze);
+  // The ring's radius is 18 px of the picture, which is never enlarged past its view.
+  const width = (await sharp(ringed).metadata()).width ?? 1;
+  const ringEdge = { x: gaze.x + (18 / width) * (region.x1 - region.x0), y: gaze.y };
+  assert.ok((await brightness(ringed, jpeg, gaze, ringEdge)) > 200);
+  assert.ok((await brightness(ringed, jpeg, gaze, gaze)) < 170);
+  // A traced subject: its outline is drawn, and its inside stays the picture.
+  const contour = [
+    { x: 0.45, y: 0.6 },
+    { x: 0.5, y: 0.4 },
+    { x: 0.55, y: 0.6 },
+  ];
+  const traced = await momentPicture(jpeg, gaze, { contour });
+  assert.ok((await brightness(traced, jpeg, gaze, { x: 0.5, y: 0.6 })) > 200);
+  assert.ok((await brightness(traced, jpeg, gaze, { x: 0.5, y: 0.53 })) < 170);
+  for (const picture of [ringed, traced]) {
+    assert.ok(picture.length <= 40_000);
+    assert.equal((await sharp(picture).metadata()).exif, undefined);
   }
 });

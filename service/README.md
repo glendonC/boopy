@@ -334,8 +334,9 @@ assesses: one POST, a 10 s bound, no retry. Answers never wait for it; an openin
 `subject` (Boopy's guess), `term` (`text`, `language`, `source`), `heard` (`true`, `false`, or
 `null` before an answer), `memory` (the line Boopy's memory of earlier practice shaped, if any),
 `recorded` (`true` for recorded footage), and on the opening's moment `image`: the view around
-where you looked, the subject's box drawn on it, as a JPEG of about 40 KB or less with no capture
-metadata. No transcript, capture time or place is sent.
+where you looked, with what you pointed at marked as the headset marks it (the subject's traced
+outline, else a small ring at the pointed spot, never the model's loose box, and no text), as a
+JPEG of about 40 KB or less with no capture metadata. No transcript, capture time or place is sent.
 
 The journal records `grokbot.delivery.started` (with the Bot's run id when it gives one) or
 `grokbot.delivery.failed` (the HTTP status only). A started delivery means the Bot's run began,

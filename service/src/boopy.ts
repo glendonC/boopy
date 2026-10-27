@@ -265,16 +265,21 @@ export class Boopy {
     if (session === undefined || observation === undefined)
       return { picture: null, recorded: false, pointed };
     const referent = session.items.find((item) => item.id === session.referentId);
-    const box =
-      referent?.grounding.observationId === observation.id
-        ? (referent.grounding.box ?? null)
-        : null;
+    const grounding =
+      referent?.grounding.observationId === observation.id ? referent.grounding : null;
+    const box = grounding?.box ?? null;
+    // The pointed spot: the gaze, else the pointer, else the subject's middle.
     const center =
       observation.cues.gaze?.point ??
+      observation.cues.pointer?.point ??
       (box === null ? { x: 0.5, y: 0.5 } : { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 });
     const jpeg = this.#deps.media.get(observation.frameSha256, 'jpg');
     return {
-      picture: await momentPicture(jpeg, center, box),
+      picture: await momentPicture(
+        jpeg,
+        center,
+        grounding?.contour === undefined ? { ring: center } : { contour: grounding.contour },
+      ),
       recorded: observation.recorded !== undefined,
       pointed,
     };
