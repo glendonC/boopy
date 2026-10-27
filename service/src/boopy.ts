@@ -1678,7 +1678,7 @@ export class Boopy {
       id: `${interpretationId}.at-point`,
       kind: 'object',
       label,
-      statement: `The recording's own outline at the point you tapped: ${label}.`,
+      statement: `The recording's own outline where you pointed: ${label}.`,
       grounding: grounding.data,
       confidence: outline.confidence,
       why: 'The model named nothing at the point, and the outline pass had this there.',

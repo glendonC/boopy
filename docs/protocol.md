@@ -85,9 +85,10 @@ serve the task without its result.
 
 The task's source is that turn's observation: `src_` and the observation id, revision 1, and
 the SHA-256 of the frame stored for it. The intent is `consult_source`. The utterance is the
-person's words for that turn, exactly as stored. The system is the actor of this opening,
-because Boopy opens the task from the person's turn. A task opened directly in the task store
-has the person as its actor.
+person's words for that turn, exactly as stored, and exactly `""` for a boop with no words (a tap,
+or a held boop with no words heard): nothing is put in the person's mouth. The system is the actor
+of this opening, because Boopy opens the task from the person's turn. A task opened directly in
+the task store has the person as its actor.
 
 ## The local stand-in result
 
@@ -154,7 +155,9 @@ the Mac runs Zetaris with the practice account.
   journal's practice records; practice on a subject the person marked wrong is left out first. Then
   Boopy runs one fixed Zetaris query on this Mac, `term-pick-v1`, which joins the items whose label
   or alias is that key with the practice record per item and language. The model never names a
-  reference id. The pick is bounded; a result that arrives later is dropped. Every row is checked
+  reference id. The pick is bounded at 6 s from when the open asks, including any wait behind a
+  practice rewrite, so an open stays inside the headset's 10 s limit; a pick whose time ran out
+  while it waited never runs, and a result that arrives later is dropped. Every row is checked
   against the import's receipt kept outside Zetaris.
 - What came back and what Boopy decided are journaled as `task.reference-retrieved`, in the same
   transaction as the opening and the first result. The rows are a dated Wikidata snapshot, never

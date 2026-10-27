@@ -1844,6 +1844,49 @@ describe('practice through the task routes', () => {
     }
   });
 
+  it('the pick bound counts the wait behind a rewrite, so a late pick never holds the open', async () => {
+    const zetaris = link((call) => result(call.request, [pickedRow(guessOf(call.request))]), 1000);
+    // A rewrite that takes 3 s, as a slow Zetaris stage might.
+    const practice: PracticeLink = {
+      ...zetaris.practice,
+      stage: async (rows, signal) => {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        return zetaris.practice.stage(rows, signal);
+      },
+    };
+    const ctx = setup(ASKS, { practice });
+    try {
+      goal(ctx.tasks);
+      const { session, task } = await ctx.opened();
+      ctx.speech.heard = { text: HEARD, language: 'ko' };
+      const answered = await ctx.post(ANSWERS, answer(session.id, task.revision));
+      assert.equal(answered.statusCode, 200, answered.body);
+      // The rewrite is now running; the next boop's pick has to wait behind it.
+      const next = await ctx.start();
+      const began = performance.now();
+      const opened = await ctx.post(`/v1/sessions/${next.id}/task`, {
+        eventId: 'evt_open_next',
+        taskId: 'tsk_next',
+      });
+      const waited = performance.now() - began;
+      assert.equal(opened.statusCode, 200, opened.body);
+      assert.ok(waited >= 900 && waited < 2000, String(waited));
+      const retrieved = ctx.journal
+        .all()
+        .filter((event) => event.type === 'task.reference-retrieved')
+        .at(-1);
+      assert.ok(retrieved?.type === 'task.reference-retrieved');
+      assert.equal(retrieved.data.taskId, 'tsk_next');
+      assert.equal(retrieved.data.phase, 'timeout');
+      // The pick that timed out while it waited never ran, even once the rewrite was done.
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      await settled(ctx, 1);
+      assert.equal(zetaris.picks.length, 1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   it('an answer is assessed against the term, corrected by Boopy, and staged from the journal', async () => {
     const zetaris = link((call) => result(call.request, [pickedRow(guessOf(call.request))]));
     const ctx = setup(ASKS, { practice: zetaris.practice });

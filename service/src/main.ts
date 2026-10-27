@@ -139,7 +139,9 @@ const practice: PracticeLink | undefined = practiceSettings
       );
       return {
         table: practiceSettings.table,
-        timeoutMs: 10_000,
+        // With the opening's wait for the Grok Bot (at most 6 s from the request), an open stays
+        // inside the headset's own 10 s limit.
+        timeoutMs: 6_000,
         pick: (request, signal) =>
           pickTerm({
             request,

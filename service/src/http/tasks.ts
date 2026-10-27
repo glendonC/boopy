@@ -255,17 +255,23 @@ export function registerTaskRoutes(
     let phase: string | null = null;
     let outcome: 'passed' | 'failed' | 'skipped' = 'skipped';
     if (practice !== undefined && guess !== null && request.success && key !== '') {
-      let signal: AbortSignal | null = null;
+      // The bound starts when the open asks, so waiting behind a rewrite in progress counts. A pick
+      // whose time ran out while it waited never runs.
+      const signal = AbortSignal.timeout(practice.timeoutMs);
       try {
-        // The bound starts when this pick's turn comes, after a rewrite in progress.
-        picked = await inTurn(() => {
-          signal = AbortSignal.timeout(practice.timeoutMs);
-          return practice.pick(request.data, signal);
-        });
+        picked = await Promise.race([
+          inTurn(() => {
+            signal.throwIfAborted();
+            return practice.pick(request.data, signal);
+          }),
+          new Promise<never>((_resolve, reject) =>
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
+          ),
+        ]);
         pick = { status: 'passed', rows: picked.rows };
         outcome = 'passed';
       } catch (failure) {
-        phase = (signal as AbortSignal | null)?.aborted
+        phase = signal.aborted
           ? 'timeout'
           : failure instanceof ZetarisPracticeError
             ? failure.phase
