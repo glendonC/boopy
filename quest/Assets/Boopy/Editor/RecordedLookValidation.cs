@@ -33,6 +33,7 @@ namespace Boopy.Quest.Editor
                 using (var f = new Fixture()) ValidateWord(f);
                 using (var dark = new Fixture()) ValidateDarkStill(dark);
                 using (var busy = new Fixture()) ValidateBusyStill(busy);
+                ValidateCaptionContrast();
                 Debug.Log("Boopy recorded look validation passed (synthetic stills, words and transport).");
             }
             catch (Exception error)
@@ -68,7 +69,8 @@ namespace Boopy.Quest.Editor
                 $"The console is not in view in front of the recording: {off:0.0} degrees off the eyes, {away:0.00} m away.");
             Invoke(f.App, "CloseTurn");
             Invoke(f.App, "Capture", new object?[] { null });
-            f.Send(f.Reply("box"));
+            // A real outline: the word sits above it, and it brightens with the word (a loose box gets a pin instead).
+            f.Send(f.Reply("mask"));
             Require(f.App.GetType().GetMethod("PresentTask") != null, "BoopyApp cannot present a task.");
             f.App.PresentTask(Task(1, "Camel, I think. In Korean, that's 낙타. Can you say it?"));
             Settle(f);
@@ -82,7 +84,8 @@ namespace Boopy.Quest.Editor
             var center = ImageOf(plane, word.transform.position);
             var half = new Vector2(word.Size.x / plane.Width, word.Size.y / plane.Height) / 2f;
             var readable = f.Picture.Readable;
-            Require(center.y + half.y <= SubjectBox.Y0 + .001f && center.x - half.x >= readable.X0 && center.x + half.x <= readable.X1 && center.y - half.y >= readable.Y0,
+            // Above the mask's top, at .46.
+            Require(center.y + half.y <= .46f + .001f && center.x - half.x >= readable.X0 && center.x + half.x <= readable.X1 && center.y - half.y >= readable.Y0,
                 $"The word is not above the subject in the sharp part of the view: {center}, half {half}, readable {readable}.");
             // The hand's dot gives way on the word, so it never sits on the term's letters; off the word it shows.
             Require(f.Scene.OnWord(word.WordPosition, f.Eyes.position) && !f.Scene.OnWord(Unity(plane.At(.5f, .9f)), f.Eyes.position),
@@ -139,6 +142,12 @@ namespace Boopy.Quest.Editor
             Require(word.Remembers && underline.enabled && word.GetComponentsInChildren<TextMeshPro>(true).Any(text => text.gameObject.activeSelf && text.text == WordBlock.Memory),
                 "A later turn does not say \"Didn't hear it last time\" with the underline.");
             NeverNow(f, "with the memory on the word");
+
+            // Heard last time: the line under the word says so, in the same place and type, with no Ember underline.
+            f.App.PresentTask(Task(6, "Camel, I think. Last time I heard 낙타. Can you say it again?", Attempt("evt_fourth", "heard"), heardLastTime: true));
+            Settle(f);
+            Require(word.Remembers && !underline.enabled && word.GetComponentsInChildren<TextMeshPro>(true).Any(text => text.gameObject.activeSelf && text.text == WordBlock.HeardMemory),
+                "A later turn heard last time does not say \"Heard it last time\", or underlines it.");
         }
 
         // A dark still takes Frost ink.
@@ -183,13 +192,59 @@ namespace Boopy.Quest.Editor
             var plane = f.Picture.Plane;
             Look(f, plane.At(.42f, .63f));
             Invoke(f.App, "Capture", new object?[] { null });
-            f.Send(f.Reply("box"));
+            // A real outline: the word climbs from its top (on a loose box it sits on the pin instead).
+            f.Send(f.Reply("mask"));
             f.App.PresentTask(Task(1, "Camel, I think. In Korean, that's 낙타. Can you say it?"));
             Settle(f);
             var word = f.Scene.GetComponentsInChildren<WordBlock>(true).Single(block => block.gameObject.activeInHierarchy);
             var center = ImageOf(plane, word.transform.position);
             Require(center.y + word.Size.y / plane.Height / 2f <= BandTop + .01f,
                 $"The word crosses busy detail above the subject: its bottom at {center.y + word.Size.y / plane.Height / 2f:0.000}, the detail from {BandTop}.");
+        }
+
+        // AUDIT's three sands, from mid to the brightest, and stripes of black and that brightest sand, where neither ink alone
+        // reads: every line of Boopy's caption and its speaker line at 4.5:1 or more over each.
+        private static void ValidateCaptionContrast()
+        {
+            foreach (var (name, first, second) in new[]
+            {
+                ("sand 200 180 150", new Color32(200, 180, 150, 255), new Color32(200, 180, 150, 255)),
+                ("sand 230 215 180", new Color32(230, 215, 180, 255), new Color32(230, 215, 180, 255)),
+                ("sand 245 235 210", new Color32(245, 235, 210, 255), new Color32(245, 235, 210, 255)),
+                ("stripes of black and sand 245 235 210", new Color32(0, 0, 0, 255), new Color32(245, 235, 210, 255)),
+            })
+            {
+                using var f = new Fixture();
+                var still = Stripes(first, second);
+                f.Mac.Stills[FrameB] = still;
+                f.Mac.Scene = SceneJson(FrameB, still);
+                f.ReadScene();
+                f.Strip.Show(DialogueStage.Response, "A synthetic line over the sand, long enough to wrap onto a second line under the first.");
+                Frames(f, 2);
+                for (var t = 0f; t < 1f; t += .1f) { f.Console.RefreshVisuals(.1f); f.Strip.RefreshVisuals(.1f); }
+                // The footage is known exactly here: one sand, or its stripes from black to that sand.
+                float Linear(Color32 color) => WordBlock.Luminance(color);
+                var (darkest, brightest) = (Mathf.Min(Linear(first), Linear(second)), Mathf.Max(Linear(first), Linear(second)));
+                var measured = f.Scene.GroundUnder(new[] { Unity(f.Picture.Plane.At(.3f, .4f)), Unity(f.Picture.Plane.At(.7f, .4f)), Unity(f.Picture.Plane.At(.7f, .6f)), Unity(f.Picture.Plane.At(.3f, .6f)) });
+                Require(Mathf.Abs(measured.Darkest - darkest) < .06f && Mathf.Abs(measured.Brightest - brightest) < .06f,
+                    $"The footage under the line over {name} reads {measured.Darkest:0.000} to {measured.Brightest:0.000}, not {darkest:0.000} to {brightest:0.000}.");
+                RequireCaptionContrast(f, "over " + name, _ => (darkest, brightest));
+            }
+        }
+
+        // Vertical stripes 8 pixels wide of two colours, the same colour making a plain still.
+        private static byte[] Stripes(Color32 first, Color32 second)
+        {
+            var texture = new Texture2D(Width, Height, TextureFormat.RGB24, false);
+            try
+            {
+                var pixels = new Color32[Width * Height];
+                for (var y = 0; y < Height; y++)
+                    for (var x = 0; x < Width; x++) pixels[y * Width + x] = (x / 8) % 2 == 0 ? first : second;
+                texture.SetPixels32(pixels); texture.Apply();
+                return texture.EncodeToJPG(95);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(texture); }
         }
 
         private static byte[] Still(Color color)
@@ -207,7 +262,8 @@ namespace Boopy.Quest.Editor
             $"{{\"eventId\":\"{eventId}\",\"text\":\"synthetic\",\"recognitionUncertain\":true,\"kind\":\"practice-attempt\",\"heard\":\"{heard}\"}}";
 
         // A practice task on the fixture's subject, in the service's shape: Boopy's guess, the outside term and its source.
-        private static string Task(int revision, string line, string? attempt = null, bool notHeardLastTime = false, string? replies = null) =>
+        private static string Task(int revision, string line, string? attempt = null, bool notHeardLastTime = false, string? replies = null,
+            bool heardLastTime = false) =>
             "{" +
             $"\"taskId\":\"tsk_synthetic_practice\",\"sessionId\":\"{SessionId}\",\"revision\":{revision}," +
             "\"source\":{\"sourceId\":\"src_synthetic\",\"sourceRevision\":1,\"sha256\":\"" + new string('a', 64) + "\"}," +
@@ -218,7 +274,7 @@ namespace Boopy.Quest.Editor
             $"{{\"type\":\"annotation\",\"text\":\"{Guess}\",\"evidenceIds\":[\"subject\"]}}," +
             $"{{\"type\":\"term\",\"text\":\"{Term}\",\"language\":\"ko\",\"gloss\":\"camel\",\"sourceId\":\"wikidata:Q7375\",\"revision\":\"101\"," +
             "\"retrievedAt\":\"1970-01-01T00:00:02.000Z\",\"license\":\"CC0-1.0\",\"via\":\"zetaris-local\",\"reviewed\":false," +
-            $"\"notHeardLastTime\":{(notHeardLastTime ? "true" : "false")}}}," +
+            $"\"notHeardLastTime\":{(notHeardLastTime ? "true" : "false")},\"heardLastTime\":{(heardLastTime ? "true" : "false")}}}," +
             $"{{\"type\":\"dialogue\",\"text\":\"{line}\",\"evidenceIds\":[{(replies != null ? "\"" + replies + "\"" : "\"subject\"")}]}}," +
             "{\"type\":\"voice_reply\",\"prompt\":\"Answer.\"}," +
             $"{{\"type\":\"detail\",\"text\":\"{Source}\"}}," +
